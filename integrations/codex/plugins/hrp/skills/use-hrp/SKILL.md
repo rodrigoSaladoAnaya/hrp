@@ -27,6 +27,7 @@ Antes de la primera operación HRP de una tarea, lee [references/agent-workflow.
 8. No completes un nodo sin diff no vacío y verificación exitosa.
 9. Un fallo técnico se corrige con `retry` en el mismo nodo. El trabajo imprevisto se publica como nodo descubierto y vuelve a requerir aprobación.
 10. Publica explicaciones operativas breves y comprobables; nunca cadena de pensamiento privada, credenciales ni secretos.
+11. Al completar un nodo, reporta tu consumo con `--tokens N` únicamente si tu entorno expone el uso real de tokens; si no lo conoces, omite el parámetro. Nunca inventes el número.
 
 ## Pausas humanas
 

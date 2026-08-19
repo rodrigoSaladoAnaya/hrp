@@ -204,7 +204,7 @@ El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 hrp node assign "$run_id" nodo-a codex   # '-' retira la asignación
 ```
 
-Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base).
+Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base). La asignación se congela mientras el nodo está en curso: el humano solo puede reasignar nodos pendientes o fallidos.
 
 Cada inicio con identidad registra la **presencia** del agente en la ejecución (`seenAgents`). El panel usa esa señal para advertir al humano cuando un nodo está asignado a un modelo que nunca se ha presentado, ofrecerle el comando que debe pegar en ese modelo, y permitirle devolver el nodo al modelo base si el asignado no responde.
 
@@ -249,8 +249,10 @@ Ejecuta la verificación más pequeña que demuestre el nodo, sin omitir las ver
 
 ```sh
 hrp verify run "$run_id" sharing-dependency -- npm ls expo-sharing --depth=0
-hrp node complete "$run_id" sharing-dependency
+hrp node complete "$run_id" sharing-dependency --tokens 12500
 ```
+
+`--tokens` es opcional y reporta el consumo del agente en este nodo para que el humano vea el costo en el panel. Repórtalo únicamente si tu entorno expone el consumo real (o un delta medible de tu presupuesto); si no lo conoces, omítelo — un número inventado es peor que la ausencia del dato.
 
 `hrp verify run` publica comando, salida y código de terminación. Un nodo sólo puede completarse cuando tiene un diff no vacío y su verificación más reciente pasó.
 

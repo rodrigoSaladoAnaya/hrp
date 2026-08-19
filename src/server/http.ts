@@ -146,7 +146,8 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/nodes/:nodeId/complete", (request, response, next) => {
     try {
-      const node = store.completeNode(request.params.runId, request.params.nodeId);
+      const input = z.object({ tokens: z.number().int().positive().optional() }).strict().parse(request.body ?? {});
+      const node = store.completeNode(request.params.runId, request.params.nodeId, input.tokens);
       broadcast(projectForRun(request.params.runId), request.params.runId, "node-completed");
       response.json(node);
     } catch (error) { next(error); }

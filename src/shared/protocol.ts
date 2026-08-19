@@ -44,6 +44,7 @@ export type ChangeNode = {
   patchSummary?: string;
   patchRationale?: string;
   verification?: Verification;
+  tokens?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -80,4 +81,4 @@ export type GraphInput = {
   nodes: ChangeNodeInput[];
 };
 
-export const PROTOCOL_VERSION = "2.2";
+export const PROTOCOL_VERSION = "2.3";

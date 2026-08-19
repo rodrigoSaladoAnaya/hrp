@@ -121,6 +121,8 @@ hrp node complete "$run_id" <node-id>
 
 `verify run` publica comando, salida y código de salida, y devuelve el mismo código que el proceso. Un nodo solo puede completarse con diff no vacío y su verificación más reciente aprobada.
 
+Si tu entorno te muestra el presupuesto de tokens restante (por ejemplo `<total_tokens>` en los resultados de herramienta), calcula el delta consumido durante el nodo y repórtalo al completar: `hrp node complete "$run_id" <node-id> --tokens <delta>`. Es aproximado pero real; si no puedes medirlo, omite el parámetro — nunca inventes el número.
+
 ### 4. Fallos: reintenta el MISMO nodo
 
 Si la verificación falla, el nodo queda `failed` y sus dependientes bloqueados. Diagnostica, corrige, y:

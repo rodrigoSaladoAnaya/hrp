@@ -234,6 +234,9 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .assign-row button:hover { background: #dfe5e1; }
 .node-agent-select { min-width: 0; max-width: 128px; margin-right: auto; padding: 3px 5px; border: 1px solid #b3bdb7; border-radius: 3px; color: #3f4c47; background: #eef0ea; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .64rem; }
 .node-agent-warning { display: inline-flex; align-items: center; gap: 3px; color: #8a4a12; font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.node-tokens { flex: none; color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .62rem; }
+.inspector-signals { display: grid; justify-items: end; gap: 4px; }
+.inspector-executor { color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
 .node-agent-warning .icon { width: 12px; height: 12px; }
 .agent-commands { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 9px 16px; border-bottom: 1px solid #b9c2bc; background: #eef0ea; }
 .agent-command-row { min-width: 0; display: flex; align-items: center; gap: 10px; }

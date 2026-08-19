@@ -49,7 +49,7 @@ describe("HrpStore", () => {
     expect(() => store.completeNode(run.id, "change")).toThrow(/diff/i);
     store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
     store.publishVerification(run.id, "change", { command: "npm test", output: "failed", exitCode: 1 });
-    expect(() => store.completeNode(run.id, "change")).toThrow(/passing verification/i);
+    expect(() => store.completeNode(run.id, "change")).toThrow(/retry first/i);
     expect(store.startNode(run.id, "change").status).toBe("running");
     expect(store.getRunDetail(run.id)?.activity.filter((event) => event.nodeId === "change" && event.type === "verify")).toHaveLength(1);
   });
@@ -106,6 +106,21 @@ describe("HrpStore", () => {
     expect(() => store.startNode(run.id, "second")).toThrow(/one node at a time/i);
   });
 
+  it("freezes assignment while a node runs and stores reported tokens", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+    expect(() => store.assignNode(run.id, "change", "claude")).toThrow(/cannot be reassigned/i);
+    store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
+    store.publishVerification(run.id, "change", { command: "npm test", output: "ok", exitCode: 0 });
+    const completed = store.completeNode(run.id, "change", 48000);
+    expect(completed.tokens).toBe(48000);
+    expect(store.getRunDetail(run.id)?.activity.some((event) => event.message.includes("~48k tokens"))).toBe(true);
+  });
+
   it("enforces the human assignment when the agent declares itself", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [
@@ -114,8 +129,9 @@ describe("HrpStore", () => {
     store.approveNodes(run.id);
     expect(store.assignNode(run.id, "change", "codex").assignee).toBe("codex");
     expect(() => store.startNode(run.id, "change", "claude")).toThrow(/assigned to codex/);
-    expect(store.startNode(run.id, "change", "codex").status).toBe("running");
     expect(store.assignNode(run.id, "change", null).assignee).toBeUndefined();
+    store.assignNode(run.id, "change", "codex");
+    expect(store.startNode(run.id, "change", "codex").status).toBe("running");
   });
 
   it("labels operations discovered during execution", () => {

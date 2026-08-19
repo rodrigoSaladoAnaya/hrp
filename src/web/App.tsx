@@ -29,6 +29,10 @@ type MapNodeData = {
 
 const supportedAgents = ["claude", "codex", "antigravity"] as const;
 
+function formatTokens(tokens: number): string {
+  return `~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens`;
+}
+
 function agentMissing(change: ChangeNode, baseAgent: string | undefined, seenAgents: string[]): boolean {
   return Boolean(change.assignee
     && change.status !== "completed" && change.status !== "running"
@@ -107,7 +111,7 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
       <strong className="node-symbol">{change.symbol}</strong>
       <p>{change.title}</p>
       <div className="node-status-row">
-        {change.status !== "completed" ? (
+        {change.status === "pending" || change.status === "failed" ? (
           <select
             className="node-agent-select nodrag"
             value={change.assignee ?? ""}
@@ -121,7 +125,10 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
             <option value="">{data.baseAgent ? `base · ${data.baseAgent}` : "modelo base"}</option>
             {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
           </select>
-        ) : change.assignee && <span className="node-assignee" title={`Implementado por ${change.assignee}`}>{change.assignee}</span>}
+        ) : (change.assignee ?? data.baseAgent) && (
+          <span className="node-assignee" title={`${change.status === "completed" ? "Implementado" : "En ejecución"} por ${change.assignee ?? data.baseAgent}`}>{change.assignee ?? data.baseAgent}</span>
+        )}
+        {change.tokens != null && <span className="node-tokens" title={`Consumo reportado por el agente: ${change.tokens} tokens`}>{formatTokens(change.tokens)}</span>}
         {missing && <span className="node-agent-warning" title={`${change.assignee} no se ha presentado en esta ejecución`}><Icon name="warning"/>sin señal</span>}
         <StatusSignal status={change.status}/>
       </div>
@@ -212,10 +219,16 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
           <span className="inspector-file">{node.file}</span>
           <h2>{node.symbol}</h2>
         </div>
-        <StatusSignal status={node.status}/>
+        <div className="inspector-signals">
+          <StatusSignal status={node.status}/>
+          {(node.status === "running" || node.status === "completed") && (node.assignee ?? baseAgent) && (
+            <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.assignee ?? baseAgent}</span>
+          )}
+          {node.tokens != null && <span className="inspector-executor" title={`Consumo reportado por el agente: ${node.tokens} tokens`}>{formatTokens(node.tokens)}</span>}
+        </div>
       </header>
 
-      {node.status !== "completed" && (
+      {(node.status === "pending" || node.status === "failed") && (
         <section className="human-controls">
           {!node.approved && (
             <button type="button" className="approve-button" onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>Aprobar esta operación</button>
@@ -440,7 +453,8 @@ export function App() {
     if (!id) { loadedRunId.current = ""; setDetail(undefined); setLoadingRun(false); return; }
     // Solo el cambio de ejecución muestra la pantalla de carga; los refrescos
     // del run visible (SSE) actualizan en sitio para no desmontar el mapa.
-    if (loadedRunId.current !== id) setLoadingRun(true);
+    const switching = loadedRunId.current !== id;
+    if (switching) setLoadingRun(true);
     try {
       const response = await fetch(`/api/runs/${id}`);
       if (!response.ok) throw new Error("No se pudo cargar la ejecución");
@@ -450,7 +464,8 @@ export function App() {
       loadedRunId.current = id;
       setDetail(next);
       setSelectedId((current) => newlyFailed?.id
-        ?? (current && next.nodes.some((node) => node.id === current) ? current : next.nodes.find((node) => node.status === "running")?.id ?? next.nodes[0]?.id));
+        ?? (!switching && current === "" ? ""
+          : current && next.nodes.some((node) => node.id === current) ? current : next.nodes.find((node) => node.status === "running")?.id ?? next.nodes[0]?.id));
     } finally {
       setLoadingRun(false);
     }
@@ -541,7 +556,7 @@ export function App() {
                 )}
                 <AgentCommands run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot}/>
                 {view === "map" ? (
-                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onNodeClick={(_event, node) => setSelectedId(node.id)} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
+                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>

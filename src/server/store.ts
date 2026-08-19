@@ -50,6 +50,7 @@ function nodeFromRow(row: Row): ChangeNode {
     patchSummary: row.patch_summary ? String(row.patch_summary) : undefined,
     patchRationale: row.patch_rationale ? String(row.patch_rationale) : undefined,
     verification,
+    tokens: row.tokens == null ? undefined : Number(row.tokens),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -124,6 +125,9 @@ export class HrpStore {
     }
     if (!nodeColumns.some((column) => String(column.name) === "assignee")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN assignee TEXT");
+    }
+    if (!nodeColumns.some((column) => String(column.name) === "tokens")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN tokens INTEGER");
     }
     const runColumns = this.database.pragma("table_info(runs)") as Row[];
     if (!runColumns.some((column) => String(column.name) === "base_agent")) {
@@ -288,6 +292,7 @@ export class HrpStore {
   assignNode(runId: string, nodeId: string, assignee: string | null): ChangeNode {
     const node = this.requireNode(runId, nodeId);
     if (node.status === "completed") throw new Error("Completed nodes cannot be reassigned");
+    if (node.status === "running") throw new Error("Running nodes cannot be reassigned; wait for the node to finish or fail");
     const normalized = assignee?.trim() || null;
     const timestamp = now();
     this.database.prepare("UPDATE nodes SET assignee = ?, updated_at = ? WHERE run_id = ? AND id = ?").run(normalized, timestamp, runId, nodeId);
@@ -354,12 +359,18 @@ export class HrpStore {
     return this.requireNode(runId, nodeId);
   }
 
-  completeNode(runId: string, nodeId: string): ChangeNode {
+  completeNode(runId: string, nodeId: string, tokens?: number): ChangeNode {
     const node = this.requireNode(runId, nodeId);
+    if (node.status !== "running") throw new Error("Node must be running before completion; a failed node needs a retry first");
     if (!node.diff) throw new Error("A diff is required before completion");
     if (!node.verification?.passed) throw new Error("A passing verification is required before completion");
+    if (tokens != null) {
+      if (!Number.isInteger(tokens) || tokens <= 0) throw new Error("tokens must be a positive integer");
+      this.database.prepare("UPDATE nodes SET tokens = ? WHERE run_id = ? AND id = ?").run(tokens, runId, nodeId);
+    }
     this.updateNodeStatus(runId, nodeId, "completed");
-    this.addActivity(runId, "node", `Terminado: ${node.file} · ${node.symbol}`, node.patchSummary, nodeId);
+    const tokensNote = tokens != null ? ` · ~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens` : "";
+    this.addActivity(runId, "node", `Terminado: ${node.file} · ${node.symbol}${tokensNote}`, node.patchSummary, nodeId);
     return this.requireNode(runId, nodeId);
   }
 

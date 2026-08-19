@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -220,7 +220,7 @@ Uso:
   hrp node retry <run-id> <node-id> [--agent NOMBRE]
   hrp patch publish <run-id> <node-id> --summary TEXTO [--rationale TEXTO] --diff-file PATH|-
   hrp verify run <run-id> <node-id> -- <comando> [args...]
-  hrp node complete <run-id> <node-id>
+  hrp node complete <run-id> <node-id> [--tokens N]
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
   hrp state <run-id>
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
@@ -305,7 +305,8 @@ async function main() {
     return print(await api(`/api/runs/${first}/nodes/${second}/start`, { method: "POST", body: JSON.stringify(agent ? { agent } : {}) }));
   }
   if (group === "node" && action === "complete") {
-    return print(await api(`/api/runs/${first}/nodes/${second}/complete`, { method: "POST", body: "{}" }));
+    const tokens = value("--tokens");
+    return print(await api(`/api/runs/${first}/nodes/${second}/complete`, { method: "POST", body: JSON.stringify(tokens ? { tokens: Number(tokens) } : {}) }));
   }
   if (group === "patch" && action === "publish") {
     const diffFile = value("--diff-file");

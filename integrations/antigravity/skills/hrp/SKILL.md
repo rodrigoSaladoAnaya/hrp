@@ -132,7 +132,8 @@ For each node whose dependencies are completed and is approved:
    - CLI: `hrp verify run "$run_id" nodeId -- npm test`
 7. **Complete node**:
    - MCP: `hrp_complete_node(runId, nodeId)`
-   - CLI: `hrp node complete "$run_id" nodeId`
+   - CLI: `hrp node complete "$run_id" nodeId --tokens N`
+   - Report `--tokens` (your real token usage for this node) only if your environment exposes actual usage; omit it otherwise. Never fabricate the number.
 
 ### 6. Handling Failures and Retries
 
