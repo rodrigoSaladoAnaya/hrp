@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dagre from "@dagrejs/dagre";
 import {
   Background,
@@ -12,6 +12,7 @@ import {
   type AriaLabelConfig,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import type { Activity, ChangeNode, NodeStatus, Project, RunDetail, RunSummary } from "../shared/protocol";
 
@@ -310,24 +311,44 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
   );
 }
 
-function AgentCommands({ run, nodes, workspaceRoot }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string }) {
-  const [copied, setCopied] = useState("");
+function AgentDock({ run, nodes, workspaceRoot }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string }) {
+  const [copyFeedback, setCopyFeedback] = useState<{ agent: string; result: "copied" | "failed" }>();
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
   if (!nodes.length) return null;
   const commandFor = (agent: string) => `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
+  const copyCommand = async (agent: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(commandFor(agent));
+      setCopyFeedback({ agent, result: "copied" });
+    } catch {
+      setCopyFeedback({ agent, result: "failed" });
+    }
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+    feedbackTimer.current = setTimeout(() => setCopyFeedback(undefined), 2000);
+  };
   return (
-    <section className="agent-commands" aria-label="Instrucciones para los agentes">
+    <section className="agent-dock" aria-label="Agentes de la ejecución">
       {supportedAgents.map((agent) => {
-        const count = nodes.filter((node) => node.assignee === agent && node.status !== "completed").length;
         const isBase = agent === run.baseAgent;
-        const present = run.seenAgents.includes(agent);
+        const present = isBase || run.seenAgents.includes(agent);
+        const count = nodes.filter((node) => node.status !== "completed" && (node.assignee === agent || (isBase && !node.assignee))).length;
+        const presenceLabel = isBase ? "Modelo base" : present ? "Presente" : "Sin señal";
+        const buttonLabel = copyFeedback?.agent === agent
+          ? copyFeedback.result === "copied" ? "Copiado" : "No se pudo copiar"
+          : "Copiar";
         return (
-          <div className="agent-command-row" key={agent}>
-            <span className={`agent-presence agent-presence-${present ? "present" : "absent"}`}>{agent} · {isBase ? "modelo base" : present ? "ya se presentó" : "aún sin señal"}</span>
-            <code title={commandFor(agent)}>{commandFor(agent)}</code>
+          <div className="agent-dock-row" key={agent}>
+            <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
+            <span className="agent-dock-name" title={agent}>{agent}</span>
+            <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
             <button
               type="button"
-              onClick={() => { navigator.clipboard.writeText(commandFor(agent)).then(() => { setCopied(agent); setTimeout(() => setCopied(""), 2000); }).catch(() => undefined); }}
-            >{copied === agent ? "Copiado" : count ? `Copiar (${count} ${count === 1 ? "nodo" : "nodos"})` : "Copiar"}</button>
+              aria-label={`Copiar instrucciones para ${agent}; ${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}
+              aria-live="polite"
+              onClick={() => { copyCommand(agent).catch(() => undefined); }}
+            >{buttonLabel}</button>
           </div>
         );
       })}
@@ -378,17 +399,18 @@ function LoadingState({ label }: { label: string }) {
   );
 }
 
-function ProjectTree({ projects, projectId, runId, onProject, onRun }: {
+function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun }: {
   projects: ProjectWithRuns[];
   projectId: string;
   runId: string;
+  agentDock?: ReactNode;
   onProject: (project: ProjectWithRuns) => void;
   onRun: (projectId: string, runId: string) => void;
 }) {
   const orderedProjects = sortProjects(projects);
   const formatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
   return (
-    <aside className="project-tree" aria-label="Proyectos y ejecuciones">
+    <aside className="project-tree" aria-label={agentDock ? "Proyectos, ejecuciones y agentes" : "Proyectos y ejecuciones"}>
       <header className="tree-head">
         <div><Icon name="folder"/><h2>Proyectos</h2></div>
         <span>{projects.length}</span>
@@ -419,6 +441,7 @@ function ProjectTree({ projects, projectId, runId, onProject, onRun }: {
           );
         })}
       </div>
+      {agentDock}
     </aside>
   );
 }
@@ -436,6 +459,7 @@ export function App() {
   const [error, setError] = useState<string>();
   const observedStatuses = useRef(new Map<string, NodeStatus>());
   const loadedRunId = useRef("");
+  const flowInstance = useRef<ReactFlowInstance<Node<MapNodeData>, Edge> | null>(null);
 
   const loadCatalog = useCallback(async () => {
     try {
@@ -509,6 +533,16 @@ export function App() {
   }, [runId, loadDetail]);
 
   const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, assignAgent]);
+
+  // El layout se re-acomoda cuando aparecen o desaparecen nodos (descubiertos,
+  // grafo republicado) y el contenido puede quedar fuera del viewport: reencuadra
+  // solo cuando cambia el conjunto de ids, no en cada refresco de estado.
+  const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
+  useEffect(() => {
+    if (!nodeSetKey) return;
+    const frame = requestAnimationFrame(() => { flowInstance.current?.fitView({ padding: 0.22, maxZoom: 1, duration: 320 }); });
+    return () => cancelAnimationFrame(frame);
+  }, [nodeSetKey]);
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
@@ -532,6 +566,7 @@ export function App() {
           projects={catalog.projects}
           projectId={projectId}
           runId={runId}
+          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot}/> : undefined}
           onProject={(nextProject) => { setProjectId(nextProject.id); setRunId(sortRuns(nextProject.runs)[0]?.id ?? ""); }}
           onRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }}
         />
@@ -554,9 +589,8 @@ export function App() {
                     <button type="button" onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
                   </div>
                 )}
-                <AgentCommands run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot}/>
                 {view === "map" ? (
-                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
+                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>

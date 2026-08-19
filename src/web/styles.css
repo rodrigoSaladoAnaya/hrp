@@ -122,7 +122,7 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 
 .app-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
 
-.project-tree { min-width: 0; min-height: 0; display: grid; grid-template-rows: 58px minmax(0, 1fr); color: #17201e; background: #e7ebe7; border-right: 1px solid #7c8983; }
+.project-tree { min-width: 0; min-height: 0; display: grid; grid-template-rows: 58px minmax(0, 1fr) auto; color: #17201e; background: #e7ebe7; border-right: 1px solid #7c8983; }
 .tree-head { display: flex; align-items: center; justify-content: space-between; padding: 0 17px; border-bottom: 1px solid #9ba69f; background: #f0f2ee; }
 .tree-head > div { display: flex; align-items: center; gap: 9px; }
 .tree-head h2 { margin: 0; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.12rem; font-weight: 700; }
@@ -238,14 +238,15 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .inspector-signals { display: grid; justify-items: end; gap: 4px; }
 .inspector-executor { color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
 .node-agent-warning .icon { width: 12px; height: 12px; }
-.agent-commands { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 9px 16px; border-bottom: 1px solid #b9c2bc; background: #eef0ea; }
-.agent-command-row { min-width: 0; display: flex; align-items: center; gap: 10px; }
-.agent-presence { flex: none; min-width: 168px; font-size: .72rem; font-weight: 800; }
-.agent-presence-present { color: #2d6a50; }
-.agent-presence-absent { color: #8a4a12; }
-.agent-command-row code { min-width: 0; flex: 1; overflow: hidden; color: #4a5853; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.agent-command-row button { flex: none; min-height: 34px; padding: 0 11px; border: 1px solid #35443f; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .72rem; font-weight: 750; }
-.agent-command-row button:hover { background: #dfe5e1; }
+.agent-dock { display: grid; gap: 2px; padding: 8px 13px 12px; border-top: 1px solid #b9c2bc; background: #dfe4df; }
+.agent-dock-row { min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 34px; }
+.agent-presence-dot { flex: none; width: 9px; height: 9px; border-radius: 999px; }
+.agent-presence-dot.agent-presence-present { background: #2d6a50; }
+.agent-presence-dot.agent-presence-absent { background: #bb6b13; }
+.agent-dock-name { min-width: 0; flex: 1; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.agent-dock-count { flex: none; min-width: 21px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #c9d1ca; font-size: .68rem; font-weight: 800; text-align: center; }
+.agent-dock-row button { flex: none; min-height: 30px; padding: 0 10px; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .7rem; font-weight: 750; }
+.agent-dock-row button:hover { background: #d2d9d2; }
 .assign-row select { min-width: 0; flex: 1; min-height: 42px; padding: 0 8px; border: 1px solid #9aa69f; border-radius: 3px; background: #fff; cursor: pointer; font: inherit; font-size: .8rem; }
 .assign-warning { display: flex; align-items: center; gap: 7px; margin: 0; color: #8a4a12; font-size: .76rem; }
 .assign-warning .icon { flex: none; width: 14px; height: 14px; }
