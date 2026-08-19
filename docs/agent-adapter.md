@@ -47,6 +47,8 @@ Protocolo: 2.1
 
 El servicio es local y no tiene autenticación. No debe exponerse directamente a una red pública.
 
+Para instalar la skill de un agente concreto (Claude, Codex o Antigravity) y mantenerla sincronizada con cada actualización de HRP, usa `hrp skills install <agente>`; las rutas por agente y el mecanismo de actualización automática están en [agent-skills.md](agent-skills.md).
+
 ## Regla de granularidad
 
 Un nodo representa exactamente:
@@ -186,7 +188,7 @@ hrp node approve "$run_id"              # todo lo pendiente de aprobación
 hrp node approve "$run_id" nodo-a nodo-b # nodos concretos
 ```
 
-Después de publicar el grafo, el adaptador debe avisar al humano y esperar la aprobación; puede sondear `hrp state` hasta que sus nodos muestren `approved: true`. Volver a publicar el grafo devuelve al gate los nodos no completados.
+Después de publicar el grafo, el adaptador debe avisar al humano y esperar la aprobación; puede sondear `hrp state` hasta que sus nodos muestren `approved: true`. Los comandos de aprobación son controles humanos: el adaptador sólo puede ejecutarlos cuando el usuario le ordena explícitamente aprobar nodos, nunca por inferirlo de la autonomía general de la tarea. Volver a publicar el grafo devuelve al gate los nodos no completados.
 
 El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 
@@ -437,10 +439,11 @@ run = crear_ejecucion(project, requerimiento)
 
 graph = inspeccionar_y_descomponer_por_archivo_y_simbolo()
 publicar_grafo(run, graph)
+informar_al_humano_y_esperar_aprobacion(run)
 
 mientras existan nodos sin terminar:
-    node = siguiente_nodo_con_dependencias_completas()
-    iniciar(node)
+    node = siguiente_nodo_aprobado_asignado_a_este_agente()
+    iniciar(node, identidad_del_agente)
     capturar_estado_anterior(node.file, node.symbol)
 
     intentar:
@@ -457,6 +460,7 @@ mientras existan nodos sin terminar:
             reintentar_mismo_nodo()
     al descubrir trabajo_nuevo:
         publicar_nodo_descubierto(trabajo_nuevo)
+        informar_al_humano_y_esperar_aprobacion(trabajo_nuevo)
 
 consultar_estado(run)
 ejecutar_verificacion_integral()
@@ -471,7 +475,7 @@ Integra esta tarea con Human Review Protocol v2 siguiendo docs/agent-adapter.md.
 
 Trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está disponible y HTTP local como alternativa. Antes de editar, registra el workspace, crea una sola ejecución y publica un grafo granular: un nodo por archivo + símbolo o sección lógica + intención, con dependencias reales.
 
-Para cada nodo: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
+Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones y ejecuta sólo un nodo a la vez. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
 
 Antes de finalizar, consulta el estado y confirma que todos los nodos tengan diff y verificación aprobada.
 ```

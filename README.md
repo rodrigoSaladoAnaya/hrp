@@ -25,6 +25,14 @@ También puedes iniciar y detener el servicio con:
 ./scripts/stop.sh
 ```
 
+Para instalar o actualizar la integración opcional de Codex:
+
+```sh
+./scripts/install-codex.sh
+```
+
+Reinicia Codex después y usa `Usa $use-hrp para esta tarea.` La skill publica mediante las herramientas MCP de HRP cuando estén disponibles y usa el CLI como alternativa; no modifica el proyecto observado.
+
 ## Conectar un proyecto
 
 Desde la carpeta que quieres observar:
@@ -73,7 +81,7 @@ hrp project list
 hrp project remove <project-id> --yes
 hrp run create|list|delete
 hrp graph publish <run-id> <graph.json>
-hrp node discover|start|complete
+hrp node discover|approve|assign|start|complete
 hrp node retry <run-id> <node-id>
 hrp patch publish
 hrp verify run
@@ -85,8 +93,9 @@ Consulta [docs/protocol.md](docs/protocol.md) para el contrato y el formato del 
 
 ## Alcance de esta etapa
 
-- Todo se ejecuta en modo automático.
-- No existen gates `REVISAR`, `OBSERVAR` o `AUTO`.
+- Todo nodo nuevo requiere aprobación humana antes de comenzar.
+- No existen los modos heredados `REVISAR`, `OBSERVAR` o `AUTO`; la aprobación es un gate único y explícito.
+- El humano puede asignar nodos a agentes y sólo se ejecuta un nodo a la vez por ejecución.
 - No se captura cadena de pensamiento; sólo intención y justificación operativa.
 - Un nodo sólo termina cuando tiene diff y verificación aprobada.
 - Un nodo fallido se corrige y reintenta dentro de la misma ejecución; `hrp node retry` conserva el intento anterior en Actividad.
