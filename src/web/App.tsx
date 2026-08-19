@@ -299,23 +299,25 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
 
 function AgentCommands({ run, nodes, workspaceRoot }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string }) {
   const [copied, setCopied] = useState("");
-  const pending = supportedAgents
-    .map((agent) => ({ agent, count: nodes.filter((node) => node.assignee === agent && node.status !== "completed").length }))
-    .filter((entry) => entry.count > 0 && entry.agent !== run.baseAgent);
-  if (!pending.length) return null;
-  const commandFor = (agent: string) => `Trabaja los nodos asignados a "${agent}" de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
+  if (!nodes.length) return null;
+  const commandFor = (agent: string) => `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
   return (
-    <section className="agent-commands" aria-label="Instrucciones para los agentes asignados">
-      {pending.map(({ agent, count }) => (
-        <div className="agent-command-row" key={agent}>
-          <span className={`agent-presence agent-presence-${run.seenAgents.includes(agent) ? "present" : "absent"}`}>{agent} · {run.seenAgents.includes(agent) ? "ya se presentó" : "aún sin señal"}</span>
-          <code title={commandFor(agent)}>{commandFor(agent)}</code>
-          <button
-            type="button"
-            onClick={() => { navigator.clipboard.writeText(commandFor(agent)).then(() => { setCopied(agent); setTimeout(() => setCopied(""), 2000); }).catch(() => undefined); }}
-          >{copied === agent ? "Copiado" : `Copiar (${count} ${count === 1 ? "nodo" : "nodos"})`}</button>
-        </div>
-      ))}
+    <section className="agent-commands" aria-label="Instrucciones para los agentes">
+      {supportedAgents.map((agent) => {
+        const count = nodes.filter((node) => node.assignee === agent && node.status !== "completed").length;
+        const isBase = agent === run.baseAgent;
+        const present = run.seenAgents.includes(agent);
+        return (
+          <div className="agent-command-row" key={agent}>
+            <span className={`agent-presence agent-presence-${present ? "present" : "absent"}`}>{agent} · {isBase ? "modelo base" : present ? "ya se presentó" : "aún sin señal"}</span>
+            <code title={commandFor(agent)}>{commandFor(agent)}</code>
+            <button
+              type="button"
+              onClick={() => { navigator.clipboard.writeText(commandFor(agent)).then(() => { setCopied(agent); setTimeout(() => setCopied(""), 2000); }).catch(() => undefined); }}
+            >{copied === agent ? "Copiado" : count ? `Copiar (${count} ${count === 1 ? "nodo" : "nodos"})` : "Copiar"}</button>
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -420,6 +422,7 @@ export function App() {
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
   const observedStatuses = useRef(new Map<string, NodeStatus>());
+  const loadedRunId = useRef("");
 
   const loadCatalog = useCallback(async () => {
     try {
@@ -434,14 +437,17 @@ export function App() {
   }, []);
 
   const loadDetail = useCallback(async (id: string) => {
-    if (!id) { setDetail(undefined); setLoadingRun(false); return; }
-    setLoadingRun(true);
+    if (!id) { loadedRunId.current = ""; setDetail(undefined); setLoadingRun(false); return; }
+    // Solo el cambio de ejecución muestra la pantalla de carga; los refrescos
+    // del run visible (SSE) actualizan en sitio para no desmontar el mapa.
+    if (loadedRunId.current !== id) setLoadingRun(true);
     try {
       const response = await fetch(`/api/runs/${id}`);
       if (!response.ok) throw new Error("No se pudo cargar la ejecución");
       const next = await response.json() as RunDetail;
       const newlyFailed = next.nodes.find((node) => node.status === "failed" && observedStatuses.current.get(`${next.run.id}:${node.id}`) !== "failed");
       for (const node of next.nodes) observedStatuses.current.set(`${next.run.id}:${node.id}`, node.status);
+      loadedRunId.current = id;
       setDetail(next);
       setSelectedId((current) => newlyFailed?.id
         ?? (current && next.nodes.some((node) => node.id === current) ? current : next.nodes.find((node) => node.status === "running")?.id ?? next.nodes[0]?.id));
