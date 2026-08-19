@@ -1,0 +1,10 @@
+{
+  "name": "@guided/example-user-registration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test test/*.test.ts"
+  }
+}
+

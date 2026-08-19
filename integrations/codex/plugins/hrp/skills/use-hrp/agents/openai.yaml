@@ -1,0 +1,6 @@
+interface:
+  display_name: "Use HRP"
+  short_description: "Guía trabajo de agentes con revisión humana"
+  default_prompt: "Usa $use-hrp para ejecutar esta tarea con revisión humana selectiva."
+policy:
+  allow_implicit_invocation: true

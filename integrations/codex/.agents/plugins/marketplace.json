@@ -1,0 +1,20 @@
+{
+  "name": "hrp-team",
+  "interface": {
+    "displayName": "Hrp Team"
+  },
+  "plugins": [
+    {
+      "name": "hrp",
+      "source": {
+        "source": "local",
+        "path": "./plugins/hrp"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

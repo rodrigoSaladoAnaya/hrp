@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if command -v hrp >/dev/null 2>&1; then
+  resolved="$(command -v hrp)"
+  if [ "$resolved" != "${BASH_SOURCE[0]}" ]; then
+    exec "$resolved" "$@"
+  fi
+fi
+
+plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_cli="$(cd "$plugin_root/../../../.." && pwd)/packages/cli/bin/hrp.mjs"
+
+if [ -f "$repo_cli" ]; then
+  exec node "$repo_cli" "$@"
+fi
+
+echo "Error: no se encontró el CLI hrp. Ejecuta scripts/install-codex.sh desde el repositorio de HRP." >&2
+exit 1

@@ -1,0 +1,13 @@
+{
+  "workspaceRoot": ".",
+  "dataDirectory": ".human-review",
+  "http": {
+    "host": "127.0.0.1",
+    "port": 4317
+  },
+  "workspaceObserver": {
+    "enabled": true,
+    "pollIntervalMs": 900,
+    "maxDiffBytes": 524288
+  }
+}
