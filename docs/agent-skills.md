@@ -44,13 +44,15 @@ Cada instalación escribe un recibo `.hrp-install-source` con la ruta de su fuen
 
 ## Actualización automática
 
-`hrp service start` sincroniza las skills instaladas antes de reportar el estado del servicio: cualquier skill con recibo propio cuyo contenido difiera de la fuente se reinstala y se informa en la salida (`Skills sincronizadas con esta versión de HRP: …`). Con eso, el flujo normal de actualización de HRP deja las skills al día sin pasos adicionales:
+`hrp service start` sincroniza las skills instaladas antes de reportar el estado del servicio: cualquier skill con recibo propio cuyo contenido difiera de la fuente se reinstala y se informa en la salida (`Skills sincronizadas con esta versión de HRP: …`).
+
+El comando único recomendado es `scripts/update.sh`: compila, reinicia el servicio e instala/actualiza las **tres** skills (incluidas las que aún no estaban instaladas), terminando con el `status`:
 
 ```sh
 cd /ruta/a/hrp
 git pull
-npm install && npm run build
-hrp service stop && hrp service start   # reinicia el servicio y sincroniza las skills
+npm install
+./scripts/update.sh
 ```
 
 El instalador histórico `scripts/install-codex.sh` sigue funcionando y usa el mismo recibo, así que ambas vías son intercambiables para Codex (además enlaza el CLI en `~/.local/bin/hrp`).

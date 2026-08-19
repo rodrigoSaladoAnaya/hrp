@@ -1,4 +1,4 @@
-# Flujo de agente para HRP 2.1
+# Flujo de agente para HRP 2.2
 
 Usa este flujo desde la raíz del proyecto observado. Los ejemplos muestran el CLI; las herramientas MCP `hrp_*` exponen las mismas operaciones con argumentos estructurados.
 
@@ -51,18 +51,22 @@ Inspecciona antes de editar. Cada nodo declara un solo archivo, un símbolo o se
 ```
 
 ```sh
-hrp graph publish "$run_id" /ruta/temporal/graph.json
+hrp graph publish "$run_id" /ruta/temporal/graph.json --agent codex
 ```
+
+`--agent codex` te registra como **modelo base** si eres el primer publicador: ejecutas por defecto los nodos sin asignación y los nodos descubiertos se te asignan automáticamente.
 
 Usa identificadores estables con letras, números, `_` o `-`; rutas relativas al workspace; dependencias reales y sin ciclos. No crees nodos por comandos, fases genéricas ni grupos de archivos.
 
 ## 3. Esperar aprobación y respetar asignaciones
 
-Todo nodo nuevo queda con `approved: false`. Publica el enlace del panel al humano y detente. En el siguiente turno consulta:
+Todo nodo nuevo queda con `approved: false`. Espera el visto bueno del humano con el comando bloqueante:
 
 ```sh
-hrp state "$run_id" --json
+hrp wait approval "$run_id" --agent codex --timeout 300
 ```
+
+Sale con éxito en cuanto hay trabajo aprobado disponible para ti; al agotar el timeout devuelve error: reintenta, o entrega al humano el enlace del panel y termina el turno. Para inspeccionar el detalle usa `hrp state "$run_id" --json`.
 
 Continúa sólo cuando el nodo tenga `approved: true` y esté sin asignar o asignado a `codex`. `hrp node approve` y `hrp_approve_nodes` son controles humanos: ejecútalos únicamente ante una instrucción explícita del usuario.
 
