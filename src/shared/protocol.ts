@@ -39,6 +39,7 @@ export type ChangeNode = {
   discovered: boolean;
   approved: boolean;
   assignee?: string;
+  suggestedAgent?: string;
   executedBy?: string;
   dependencies: string[];
   diff?: string;
@@ -74,7 +75,7 @@ export type RunDetail = {
   activity: Activity[];
 };
 
-export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies"> & {
+export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent"> & {
   discovered?: boolean;
 };
 
@@ -82,4 +83,22 @@ export type GraphInput = {
   nodes: ChangeNodeInput[];
 };
 
-export const PROTOCOL_VERSION = "2.3";
+// Configuración persistida de Ollama Cloud; la key solo vive en el servidor.
+export type OllamaSettings = {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+};
+
+// Vista para la web: nunca incluye la key completa, solo su terminación.
+export type OllamaSettingsView = {
+  configured: boolean;
+  model: string;
+  baseUrl: string;
+  keyMask?: string;
+};
+
+export const DEFAULT_OLLAMA_MODEL = "kimi-k2.7-code";
+export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
+
+export const PROTOCOL_VERSION = "2.4";

@@ -119,6 +119,35 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .connection.offline { color: #f0c9a1; }
 .connection.offline i { background: #d06a3f; }
 .connection button { min-height: 44px; padding: 0 3px; border: 0; color: #f4d58f; background: transparent; cursor: pointer; font-size: .72rem; font-weight: 800; text-decoration: underline; text-underline-offset: 3px; }
+.topbar-tools { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+
+.settings-wrap { position: relative; }
+.settings-toggle { position: relative; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #5d6d66; border-radius: 999px; color: #dfe5e1; background: transparent; cursor: pointer; }
+.settings-toggle:hover, .settings-toggle[aria-expanded="true"] { color: #17201e; background: #dfe5e1; }
+.settings-toggle .icon { width: 16px; height: 16px; }
+.settings-state { position: absolute; right: -1px; top: -1px; width: 9px; height: 9px; border: 1px solid #17201e; border-radius: 999px; }
+.settings-state-on { background: #2d6a50; }
+.settings-state-off { background: #bb6b13; }
+.settings-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(23,32,30,.28); }
+.settings-panel { position: absolute; top: 44px; right: 0; z-index: 41; width: min(390px, 86vw); padding: 16px 19px 17px; border: 1px solid #7c8983; border-radius: 4px; color: #17201e; background: #f5f4ec; box-shadow: 4px 9px 26px rgba(23,32,30,.32); }
+.settings-panel h3 { margin: 0 0 6px; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.04rem; font-weight: 700; }
+.settings-status { margin: 0 0 12px; color: #3f4c47; font-size: .78rem; line-height: 1.45; }
+.settings-field { display: grid; gap: 3px; margin: 0 0 10px; }
+.settings-field span { color: #43514c; font-size: .68rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.settings-field input { min-height: 38px; padding: 0 10px; border: 1px solid #87938d; border-radius: 3px; color: #17201e; background: #fff; font-size: .8rem; }
+.settings-field input:focus-visible { outline: 2px solid #35443f; outline-offset: 1px; }
+.settings-feedback { margin: 0 0 10px; font-size: .76rem; font-weight: 700; }
+.settings-feedback-ok { color: #2d6a50; }
+.settings-feedback-error { color: #8c3029; }
+.settings-actions { display: flex; align-items: center; gap: 8px; }
+.settings-actions button { min-height: 38px; padding: 0 14px; border-radius: 3px; cursor: pointer; font-size: .8rem; font-weight: 750; }
+.settings-actions button:disabled { opacity: .6; cursor: default; }
+.settings-save { border: 1px solid #35443f; color: #fff; background: #35443f; }
+.settings-save:hover:not(:disabled) { background: #2d423b; }
+.settings-clear { border: 1px solid #a03c2c; color: #a03c2c; background: transparent; }
+.settings-clear:hover:not(:disabled) { color: #fff; background: #a03c2c; }
+.settings-hint { margin: 11px 0 0; color: #58655f; font-size: .7rem; line-height: 1.4; }
+
 .help-wrap { position: relative; }
 .help-toggle { width: 34px; height: 34px; border: 1px solid #5d6d66; border-radius: 999px; color: #dfe5e1; background: transparent; cursor: pointer; font-size: .9rem; font-weight: 800; }
 .help-toggle:hover, .help-toggle[aria-expanded="true"] { color: #17201e; background: #dfe5e1; }
@@ -237,6 +266,8 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .change-node p { min-height: 34px; margin: 5px 0 11px; color: #4d5b56; font-size: .79rem; line-height: 1.35; }
 .node-status-row { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
 .approval-label { flex: none; color: #8a4a12; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.suggested-label { flex: none; color: #3d5a8a; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.suggested-note { display: flex; margin: 0; color: #3d5a8a; font-size: .76rem; line-height: 1.4; }
 .node-assignee { min-width: 0; overflow: hidden; margin-right: auto; padding: 2px 7px; border: 1px solid #b3bdb7; border-radius: 999px; color: #3f4c47; background: #eef0ea; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
 .approval-banner { display: flex; align-items: center; gap: 11px; padding: 10px 16px; border-bottom: 1px solid #d9b98a; background: #f7ecd7; }
 .approval-banner .icon { flex: none; width: 18px; height: 18px; color: #8a4a12; }

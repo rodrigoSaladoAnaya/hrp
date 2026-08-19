@@ -14,7 +14,7 @@ import {
   type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import type { Activity, ChangeNode, NodeStatus, Project, RunDetail, RunSummary } from "../shared/protocol";
+import type { Activity, ChangeNode, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -24,17 +24,21 @@ type MapNodeData = {
   isSelected: boolean;
   baseAgent?: string;
   seenAgents: string[];
+  ollamaConfigured: boolean;
   onSelect: (id: string) => void;
   onAssign: (id: string, assignee: string | null) => void;
 };
 
-const supportedAgents = ["claude", "codex", "antigravity"] as const;
+const supportedAgents = ["claude", "codex", "antigravity", "ollama"] as const;
 
 function formatTokens(tokens: number): string {
   return `~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens`;
 }
 
-function agentMissing(change: ChangeNode, baseAgent: string | undefined, seenAgents: string[]): boolean {
+function agentMissing(change: ChangeNode, baseAgent: string | undefined, seenAgents: string[], ollamaConfigured = false): boolean {
+  // ollama no abre sesión propia: el modelo base delega vía el servicio, así
+  // que basta con que exista una API key configurada para considerarlo listo.
+  if (change.assignee === "ollama" && ollamaConfigured) return false;
   return Boolean(change.assignee
     && change.status !== "completed" && change.status !== "running"
     && change.assignee !== baseAgent
@@ -72,8 +76,9 @@ function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   });
 }
 
-function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" }) {
+function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" }) {
   const paths = {
+    sliders: <><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></>,
     route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 3 4"/></>,
     activity: <><path d="M4 17h3l2-10 4 13 3-8 2 5h2"/></>,
     folder: <><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h7l2 2"/></>,
@@ -92,7 +97,7 @@ function StatusSignal({ status }: { status: NodeStatus }) {
 
 function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
   const change = data.change;
-  const missing = agentMissing(change, data.baseAgent, data.seenAgents);
+  const missing = agentMissing(change, data.baseAgent, data.seenAgents, data.ollamaConfigured);
   return (
     <div
       role="button"
@@ -108,6 +113,9 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
         <span className="node-file">{change.file}</span>
         {change.discovered && <span className="discovered-label">Descubierto</span>}
         {!change.approved && <span className="approval-label">Por aprobar</span>}
+        {change.suggestedAgent && change.status !== "completed" && (
+          <span className="suggested-label" title={`El modelo base sugiere que esta operación la implemente ${change.suggestedAgent}`}>sugiere {change.suggestedAgent}</span>
+        )}
       </div>
       <strong className="node-symbol">{change.symbol}</strong>
       <p>{change.title}</p>
@@ -153,7 +161,7 @@ const graphAriaLabels: Partial<AriaLabelConfig> = {
   "handle.ariaLabel": "Conexión de dependencia",
 };
 
-function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
+function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, ollamaConfigured: boolean, onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "LR", ranksep: 86, nodesep: 46, marginx: 44, marginy: 44 });
   for (const change of changes) graph.setNode(change.id, { width: 272, height: 148 });
@@ -166,7 +174,7 @@ function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run:
       id: change.id,
       type: "change",
       position: { x: point.x - 136, y: point.y - 74 },
-      data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], onSelect, onAssign },
+      data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], ollamaConfigured, onSelect, onAssign },
     };
   });
   const edges = changes.flatMap((change) => change.dependencies.map((dependency) => ({
@@ -196,7 +204,7 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; baseAgent?: string; seenAgents: string[]; onChanged: () => void }) {
+function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollamaConfigured, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; onChanged: () => void }) {
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
@@ -234,6 +242,9 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
           {!node.approved && (
             <button type="button" className="approve-button" onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>Aprobar esta operación</button>
           )}
+          {node.suggestedAgent && (
+            <p className="suggested-note">El modelo base sugiere delegar esta operación a <strong>{node.suggestedAgent}</strong>; tú decides con el selector.</p>
+          )}
           <div className="assign-row">
             <select
               value={node.assignee ?? ""}
@@ -243,11 +254,11 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
               <option value="">{baseAgent ? `modelo base · ${baseAgent}` : "modelo base"}</option>
               {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
             </select>
-            {agentMissing(node, baseAgent, seenAgents) && baseAgent && (
+            {agentMissing(node, baseAgent, seenAgents, ollamaConfigured) && baseAgent && (
               <button type="button" onClick={() => post(`/nodes/${node.id}/assign`, { assignee: baseAgent })}>Devolver a {baseAgent}</button>
             )}
           </div>
-          {agentMissing(node, baseAgent, seenAgents) && (
+          {agentMissing(node, baseAgent, seenAgents, ollamaConfigured) && (
             <p className="assign-warning"><Icon name="warning"/>{node.assignee} no se ha presentado en esta ejecución; puedes devolver la operación al modelo base.</p>
           )}
         </section>
@@ -311,12 +322,16 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
   );
 }
 
-function AgentDock({ run, nodes, workspaceRoot }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string }) {
+function AgentDock({ run, nodes, workspaceRoot, ollama }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string; ollama?: OllamaSettingsView }) {
   const [copyFeedback, setCopyFeedback] = useState<{ agent: string; result: "copied" | "failed" }>();
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
   if (!nodes.length) return null;
-  const commandFor = (agent: string) => `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
+  const commandFor = (agent: string) => agent === "ollama"
+    // ollama no abre su propia sesión: la instrucción va a la sesión del modelo
+    // base, que administra la delegación y revisa el resultado antes de publicar.
+    ? `Como modelo base de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, trabaja los nodos asignados a "ollama" delegando la implementación: inicia cada nodo con hrp node start --agent ollama, genera el cambio con hrp ollama run --prompt-file <prompt con el contexto del nodo>, revisa y corrige el resultado como administrador, aplica el cambio, y publica su diff y su verificación antes de completarlo.`
+    : `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
   const copyCommand = async (agent: string) => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
@@ -332,9 +347,12 @@ function AgentDock({ run, nodes, workspaceRoot }: { run: RunSummary; nodes: Chan
     <section className="agent-dock" aria-label="Agentes de la ejecución">
       {supportedAgents.map((agent) => {
         const isBase = agent === run.baseAgent;
-        const present = isBase || run.seenAgents.includes(agent);
+        const isOllama = agent === "ollama";
+        const present = isBase || run.seenAgents.includes(agent) || (isOllama && Boolean(ollama?.configured));
         const count = nodes.filter((node) => node.status !== "completed" && (node.assignee === agent || (isBase && !node.assignee))).length;
-        const presenceLabel = isBase ? "Modelo base" : present ? "Presente" : "Sin señal";
+        const presenceLabel = isBase ? "Modelo base"
+          : isOllama ? (ollama?.configured ? `Ollama Cloud · ${ollama.model}` : "Sin API key configurada")
+            : present ? "Presente" : "Sin señal";
         const buttonLabel = copyFeedback?.agent === agent
           ? copyFeedback.result === "copied" ? "Copiado" : "No se pudo copiar"
           : "Copiar";
@@ -472,6 +490,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string>();
   const [view, setView] = useState<"map" | "activity">("map");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
+  const [ollama, setOllama] = useState<OllamaSettingsView>();
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
@@ -513,7 +532,15 @@ export function App() {
     }
   }, []);
 
+  const loadOllama = useCallback(async () => {
+    try {
+      const response = await fetch("/api/settings/ollama");
+      if (response.ok) setOllama(await response.json() as OllamaSettingsView);
+    } catch { /* la configuración es opcional; el panel sigue funcionando sin ella */ }
+  }, []);
+
   useEffect(() => { loadCatalog().catch((cause) => setError(String(cause))); }, [loadCatalog]);
+  useEffect(() => { loadOllama().catch(() => undefined); }, [loadOllama]);
 
   const project = catalog.projects.find((candidate) => candidate.id === projectId);
   useEffect(() => {
@@ -565,7 +592,7 @@ export function App() {
     await loadCatalog();
   }, [projectId, loadCatalog]);
 
-  const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, assignAgent]);
+  const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, ollama?.configured ?? false, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, ollama?.configured, assignAgent]);
 
   // El layout se re-acomoda cuando aparecen o desaparecen nodos (descubiertos,
   // grafo republicado) y el contenido puede quedar fuera del viewport: reencuadra
@@ -594,18 +621,18 @@ export function App() {
   }, [runId, loadDetail]);
 
   if (error) return <div className="fatal-error"><Icon name="warning"/><h1>HRP no pudo iniciar</h1><p>{error}</p><button onClick={() => location.reload()}>Volver a intentar</button></div>;
-  if (loadingCatalog) return <><TopBar connectionState={connectionState}/><LoadingState label="Cargando proyectos"/></>;
-  if (!catalog.projects.length) return <><TopBar connectionState={connectionState}/><EmptyState kind="projects"/></>;
+  if (loadingCatalog) return <><TopBar connectionState={connectionState} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><LoadingState label="Cargando proyectos"/></>;
+  if (!catalog.projects.length) return <><TopBar connectionState={connectionState} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><EmptyState kind="projects"/></>;
 
   return (
     <div className="app-shell">
-      <TopBar connectionState={connectionState} project={project} run={detail?.run} progress={progress}/>
+      <TopBar connectionState={connectionState} project={project} run={detail?.run} progress={progress} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/>
       <div className="app-body">
         <ProjectTree
           projects={catalog.projects}
           projectId={projectId}
           runId={runId}
-          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot}/> : undefined}
+          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot} ollama={ollama}/> : undefined}
           onProject={(nextProject) => { setProjectId(nextProject.id); setRunId(sortRuns(nextProject.runs)[0]?.id ?? ""); }}
           onRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }}
           onDeleteProject={(target) => { deleteProject(target).catch(() => undefined); }}
@@ -635,11 +662,106 @@ export function App() {
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
             </main>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function OllamaSettingsPanel({ ollama, onSaved }: { ollama?: OllamaSettingsView; onSaved?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string }>();
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  // Al abrir, el formulario parte de lo guardado; la key nunca se rehidrata:
+  // el campo vacío significa "conservar la actual".
+  useEffect(() => {
+    if (!open) return;
+    setApiKey("");
+    setModel(ollama?.model ?? "");
+    setBaseUrl(ollama?.baseUrl ?? "");
+    setFeedback(undefined);
+  }, [open, ollama]);
+  const submit = async (body: Record<string, string | null>, confirmation: string) => {
+    setSaving(true);
+    setFeedback(undefined);
+    try {
+      const response = await fetch("/api/settings/ollama", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la configuración");
+      setApiKey("");
+      setFeedback({ kind: "ok", text: confirmation });
+      onSaved?.();
+    } catch (cause) {
+      setFeedback({ kind: "error", text: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const save = () => {
+    const body: Record<string, string> = {};
+    if (apiKey.trim()) body.apiKey = apiKey.trim();
+    if (model.trim()) body.model = model.trim();
+    if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
+    if (!Object.keys(body).length) { setFeedback({ kind: "error", text: "No hay cambios que guardar." }); return; }
+    submit(body, "Configuración guardada.").catch(() => undefined);
+  };
+  return (
+    <div className="settings-wrap">
+      <button type="button" className="settings-toggle" aria-expanded={open} aria-label="Configurar Ollama Cloud" title="Configurar Ollama Cloud" onClick={() => setOpen((value) => !value)}>
+        <Icon name="sliders"/>
+        <span className={`settings-state settings-state-${ollama?.configured ? "on" : "off"}`} aria-hidden="true"/>
+      </button>
+      {open && (
+        <>
+          <div className="settings-backdrop" onClick={() => setOpen(false)}/>
+          <section className="settings-panel" role="dialog" aria-label="Configuración de Ollama Cloud">
+            <h3>Ollama Cloud</h3>
+            <p className="settings-status">
+              {ollama?.configured
+                ? <>API key guardada ({ollama.keyMask}) · modelo <strong>{ollama.model}</strong></>
+                : "Sin API key: los nodos delegados a ollama no podrán ejecutarse."}
+            </p>
+            <label className="settings-field">
+              <span>API key</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={apiKey}
+                placeholder={ollama?.configured ? "Deja vacío para conservar la actual" : "Pega aquí tu API key de ollama.com"}
+                onChange={(event) => setApiKey(event.target.value)}
+              />
+            </label>
+            <label className="settings-field">
+              <span>Modelo</span>
+              <input type="text" value={model} placeholder="kimi-k2.7-code" onChange={(event) => setModel(event.target.value)}/>
+            </label>
+            <label className="settings-field">
+              <span>URL base</span>
+              <input type="text" value={baseUrl} placeholder="https://ollama.com" onChange={(event) => setBaseUrl(event.target.value)}/>
+            </label>
+            {feedback && <p className={`settings-feedback settings-feedback-${feedback.kind}`} role="status">{feedback.text}</p>}
+            <div className="settings-actions">
+              <button type="button" className="settings-save" disabled={saving} onClick={save}>{saving ? "Guardando…" : "Guardar"}</button>
+              {ollama?.configured && (
+                <button type="button" className="settings-clear" disabled={saving} onClick={() => { submit({ apiKey: null }, "API key eliminada.").catch(() => undefined); }}>Borrar key</button>
+              )}
+            </div>
+            <p className="settings-hint">La key se guarda en el servicio local de HRP y nunca vuelve al navegador; el modelo puede cambiarse sin reingresarla.</p>
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -683,7 +805,7 @@ function HelpPanel() {
   );
 }
 
-function TopBar({ connectionState, project, run, progress = 0 }: { connectionState: ConnectionState; project?: Project; run?: RunSummary; progress?: number }) {
+function TopBar({ connectionState, project, run, progress = 0, ollama, onOllamaSaved }: { connectionState: ConnectionState; project?: Project; run?: RunSummary; progress?: number; ollama?: OllamaSettingsView; onOllamaSaved?: () => void }) {
   const connectionCopy = connectionState === "connected" ? "En vivo" : connectionState === "offline" ? "Sin conexión" : "Conectando";
   return (
     <header className="topbar">
@@ -692,7 +814,11 @@ function TopBar({ connectionState, project, run, progress = 0 }: { connectionSta
         {run && <div className="progress-track" role="progressbar" aria-label="Progreso de la ejecución" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }}/></div>}
         <div className="telemetry-copy"><strong>{run ? statusCopy[run.status] : "Sin ejecución"}</strong><span>{project?.workspaceRoot ?? "Ningún proyecto conectado"}</span></div>
       </div>
-      <HelpPanel/>
+      {/* Una sola celda del grid: la barra conserva sus 4 hijos originales. */}
+      <div className="topbar-tools">
+        <OllamaSettingsPanel ollama={ollama} onSaved={onOllamaSaved}/>
+        <HelpPanel/>
+      </div>
       <span className={`connection ${connectionState}`}><i/>{connectionCopy}{connectionState === "offline" && <button type="button" onClick={() => location.reload()}>Reintentar</button>}</span>
     </header>
   );

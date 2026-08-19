@@ -3,17 +3,21 @@ import { mkdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type {
-  Activity,
-  ActivityType,
-  ChangeNode,
-  ChangeNodeInput,
-  GraphInput,
-  NodeStatus,
-  Project,
-  RunDetail,
-  RunSummary,
-  Verification,
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OLLAMA_MODEL,
+  type Activity,
+  type ActivityType,
+  type ChangeNode,
+  type ChangeNodeInput,
+  type GraphInput,
+  type NodeStatus,
+  type OllamaSettings,
+  type OllamaSettingsView,
+  type Project,
+  type RunDetail,
+  type RunSummary,
+  type Verification,
 } from "../shared/protocol.js";
 
 type Row = Record<string, unknown>;
@@ -46,6 +50,7 @@ function nodeFromRow(row: Row): ChangeNode {
     discovered: Number(row.discovered) === 1,
     approved: Number(row.approved) === 1,
     assignee: row.assignee ? String(row.assignee) : undefined,
+    suggestedAgent: row.suggested_agent ? String(row.suggested_agent) : undefined,
     executedBy: row.executed_by ? String(row.executed_by) : undefined,
     dependencies: JSON.parse(String(row.dependencies_json)) as string[],
     diff: row.diff ? String(row.diff) : undefined,
@@ -113,6 +118,11 @@ export class HrpStore {
         detail TEXT,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS runs_project_updated ON runs(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS activity_run_id ON activity(run_id, id DESC);
     `);
@@ -127,6 +137,9 @@ export class HrpStore {
     }
     if (!nodeColumns.some((column) => String(column.name) === "assignee")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN assignee TEXT");
+    }
+    if (!nodeColumns.some((column) => String(column.name) === "suggested_agent")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN suggested_agent TEXT");
     }
     if (!nodeColumns.some((column) => String(column.name) === "tokens")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN tokens INTEGER");
@@ -164,6 +177,42 @@ export class HrpStore {
 
   close(): void {
     this.database.close();
+  }
+
+  getOllamaSettings(): OllamaSettings {
+    const row = this.database.prepare("SELECT value_json FROM settings WHERE key = 'ollama'").get() as Row | undefined;
+    const stored = row ? JSON.parse(String(row.value_json)) as Partial<OllamaSettings> : {};
+    return {
+      apiKey: stored.apiKey ?? "",
+      model: stored.model?.trim() || DEFAULT_OLLAMA_MODEL,
+      baseUrl: stored.baseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL,
+    };
+  }
+
+  // apiKey omitida conserva la key actual; null la borra. Así la web puede
+  // actualizar el modelo sin obligar al humano a reingresar la credencial.
+  setOllamaSettings(update: { apiKey?: string | null; model?: string; baseUrl?: string }): OllamaSettingsView {
+    const current = this.getOllamaSettings();
+    const next: OllamaSettings = {
+      apiKey: update.apiKey === null ? "" : update.apiKey?.trim() || current.apiKey,
+      model: update.model?.trim() || current.model,
+      baseUrl: (update.baseUrl?.trim() || current.baseUrl).replace(/\/+$/, ""),
+    };
+    this.database.prepare(`
+      INSERT INTO settings (key, value_json, updated_at) VALUES ('ollama', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    `).run(JSON.stringify(next), now());
+    return this.getOllamaSettingsView();
+  }
+
+  getOllamaSettingsView(): OllamaSettingsView {
+    const settings = this.getOllamaSettings();
+    return {
+      configured: Boolean(settings.apiKey),
+      model: settings.model,
+      baseUrl: settings.baseUrl,
+      keyMask: settings.apiKey ? `…${settings.apiKey.slice(-4)}` : undefined,
+    };
   }
 
   attachProject(workspaceRoot: string): Project {
@@ -267,18 +316,28 @@ export class HrpStore {
     };
     for (const nodeId of dependencyGraph.keys()) visit(nodeId, []);
     const upsert = this.database.prepare(`
-      INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, discovered, dependencies_json, created_at, updated_at)
-      VALUES (@id, @runId, @file, @symbol, @title, @description, @rationale, 'pending', @discovered, @dependencies, @timestamp, @timestamp)
+      INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, discovered, suggested_agent, dependencies_json, created_at, updated_at)
+      VALUES (@id, @runId, @file, @symbol, @title, @description, @rationale, 'pending', @discovered, @suggestedAgent, @dependencies, @timestamp, @timestamp)
       ON CONFLICT(run_id, id) DO UPDATE SET
         file = excluded.file, symbol = excluded.symbol, title = excluded.title,
         description = excluded.description, rationale = excluded.rationale,
-        discovered = excluded.discovered, dependencies_json = excluded.dependencies_json,
+        discovered = excluded.discovered, suggested_agent = excluded.suggested_agent,
+        dependencies_json = excluded.dependencies_json,
         approved = CASE WHEN nodes.status = 'completed' THEN nodes.approved ELSE 0 END,
         updated_at = excluded.updated_at
     `);
+    // La sugerencia del modelo base pre-asigna el nodo solo si el humano no
+    // decidió ya un ejecutor; la asignación sigue siendo editable hasta aprobar.
+    const suggestAssign = this.database.prepare(`
+      UPDATE nodes SET assignee = @suggestedAgent
+      WHERE run_id = @runId AND id = @id AND assignee IS NULL AND status IN ('pending','failed')
+    `);
     const timestamp = now();
     this.database.transaction((nodes: ChangeNodeInput[]) => {
-      for (const node of nodes) upsert.run({ ...node, runId, discovered: node.discovered ? 1 : 0, dependencies: JSON.stringify(node.dependencies), timestamp });
+      for (const node of nodes) {
+        upsert.run({ ...node, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, dependencies: JSON.stringify(node.dependencies), timestamp });
+        if (node.suggestedAgent) suggestAssign.run({ runId, id: node.id, suggestedAgent: node.suggestedAgent });
+      }
       this.database.prepare("UPDATE runs SET graph_version = graph_version + 1, updated_at = ? WHERE id = ?").run(timestamp, runId);
     })(input.nodes);
     this.addActivity(runId, "graph", `Mapa actualizado · ${input.nodes.length} operaciones`, `Versión ${run.graphVersion + 1}`);
@@ -288,8 +347,11 @@ export class HrpStore {
   addDiscoveredNode(runId: string, node: ChangeNodeInput): ChangeNode {
     this.publishGraph(runId, { nodes: [{ ...node, discovered: true }] });
     this.addActivity(runId, "inspect", `Cambio descubierto: ${node.file} · ${node.symbol}`, node.rationale, node.id);
+    // Un descubierto sugerido para otro modelo (p. ej. ollama) respeta esa
+    // sugerencia; el resto vuelve al modelo base para no esperar a nadie.
     const baseAgent = this.getRun(runId)?.baseAgent;
-    if (baseAgent) this.assignNode(runId, node.id, baseAgent);
+    const assignee = node.suggestedAgent ?? baseAgent;
+    if (assignee) this.assignNode(runId, node.id, assignee);
     return this.getNode(runId, node.id)!;
   }
 

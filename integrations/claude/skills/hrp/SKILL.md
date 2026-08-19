@@ -76,6 +76,8 @@ Los ids: únicos, estables, solo `[A-Za-z0-9_-]`. Sin ciclos; toda dependencia d
 
 `--agent claude` te registra como **modelo base** de la ejecución: ejecutas por defecto todos los nodos sin asignación, y los nodos que descubras se te asignan automáticamente para que el proceso no espere a otro agente.
 
+Como modelo base también decides qué conviene delegar: agrega `"suggestedAgent": "ollama"` a los nodos mecánicos, repetitivos o de bajo riesgo (renombres, boilerplate, estilos, textos, migraciones triviales) cuando haya Ollama Cloud configurado (`hrp ollama status`). HRP los pre-asigna a `ollama` y el humano confirma o reasigna al aprobar. Reserva para ti los nodos de diseño, seguridad o integración delicada.
+
 ### 2b. Espera la aprobación humana (protocolo 2.1)
 
 Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Tras publicar el grafo, espera el clic del humano con el comando bloqueante:
@@ -122,6 +124,19 @@ hrp node complete "$run_id" <node-id>
 `verify run` publica comando, salida y código de salida, y devuelve el mismo código que el proceso. Un nodo solo puede completarse con diff no vacío y su verificación más reciente aprobada.
 
 Si tu entorno te muestra el presupuesto de tokens restante (por ejemplo `<total_tokens>` en los resultados de herramienta), calcula el delta consumido durante el nodo y repórtalo al completar: `hrp node complete "$run_id" <node-id> --tokens <delta>`. Es aproximado pero real; si no puedes medirlo, omite el parámetro — nunca inventes el número.
+
+### 3b. Nodos asignados a ollama: delega y revisa como administrador
+
+Un nodo asignado a `ollama` no espera a otra sesión: tú lo administras. El ciclo es el mismo, pero la generación del cambio se delega al modelo configurado de Ollama Cloud:
+
+```sh
+hrp node start "$run_id" <node-id> --agent ollama
+# prompt.txt: contexto exacto del nodo — archivo, símbolo, descripción,
+# fragmentos de código actuales y el formato de salida que esperas.
+hrp ollama run --prompt-file /ruta/scratchpad/prompt.txt > /ruta/scratchpad/salida.txt
+```
+
+Después actúas como revisor: valida la salida, corrige lo que haga falta, aplica el cambio al workspace con tus herramientas y sigue el ciclo normal (patch → verify → complete). En el `--summary` del parche distingue qué generó ollama y qué corregiste tú. `hrp ollama run` reporta por stderr los tokens de prompt/respuesta del modelo delegado: úsalo para `--tokens` al completar. Nunca completes un nodo delegado sin haber revisado y verificado su resultado; si la salida es inservible, corrígela tú mismo y anótalo en el resumen.
 
 ### 4. Fallos: reintenta el MISMO nodo
 

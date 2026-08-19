@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -226,6 +226,9 @@ Uso:
   hrp verify run <run-id> <node-id> -- <comando> [args...]
   hrp node complete <run-id> <node-id> [--tokens N]
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
+  hrp ollama status
+  hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
+  hrp ollama run --prompt-file PATH|- [--system-file PATH] [--model MODELO]
   hrp state <run-id>
   hrp version
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
@@ -388,6 +391,32 @@ async function main() {
         try { state = copy[skillState(spec)] ?? skillState(spec); } catch (error) { state = `error: ${error.message}`; }
         return [name, { estado: state, destino: spec.target }];
       })));
+    }
+  }
+  if (group === "ollama") {
+    if (action === "status") return print(await api("/api/settings/ollama"));
+    if (action === "config") {
+      const body = {};
+      if (flag("--clear-key")) body.apiKey = null;
+      else if (value("--api-key")) body.apiKey = value("--api-key");
+      if (value("--model")) body.model = value("--model");
+      if (value("--base-url")) body.baseUrl = value("--base-url");
+      if (!Object.keys(body).length) throw new Error("Nada que actualizar: usa --api-key, --model, --base-url o --clear-key");
+      return print(await api("/api/settings/ollama", { method: "PUT", body: JSON.stringify(body) }));
+    }
+    if (action === "run") {
+      const promptFile = value("--prompt-file");
+      if (!promptFile) throw new Error("Falta --prompt-file PATH|- (el prompt para el modelo de ollama)");
+      const body = { prompt: promptFile === "-" ? readFileSync(0, "utf8") : readFileSync(path.resolve(promptFile), "utf8") };
+      const systemFile = value("--system-file");
+      if (systemFile) body.system = readFileSync(path.resolve(systemFile), "utf8");
+      if (value("--model")) body.model = value("--model");
+      const result = await api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
+      if (json) return print(result);
+      // El desglose va a stderr para poder canalizar la respuesta limpia a un archivo.
+      process.stderr.write(`# ${result.model} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens\n`);
+      process.stdout.write(result.content.endsWith("\n") ? result.content : `${result.content}\n`);
+      return;
     }
   }
   if (group === "state") return print(await api(`/api/runs/${action}`));

@@ -179,7 +179,8 @@ Requisitos del grafo:
 - `file` es relativo al workspace;
 - `symbol` identifica el método, componente, clave o sección lógica real;
 - `description` explica qué hará;
-- `rationale` explica por qué existe.
+- `rationale` explica por qué existe;
+- `suggestedAgent` (opcional) recomienda quién debería implementarlo — por ejemplo `"ollama"` para trabajo mecánico o de bajo riesgo. HRP pre-asigna el nodo al agente sugerido si el humano no ha decidido otra cosa; la insignia «sugiere» del panel deja visible que la recomendación vino del modelo base.
 
 ### 4b. Esperar la aprobación humana
 
@@ -391,6 +392,22 @@ Confirma que:
 - cada nodo tenga verificación aprobada;
 - el mapa incluya los cambios descubiertos;
 - el workspace haya pasado la verificación integral apropiada.
+
+## Delegación a Ollama Cloud
+
+HRP puede usar modelos de Ollama Cloud como ejecutores modestos bajo la administración del modelo base: el modelo avanzado planifica, delega el trabajo mecánico y revisa el resultado antes de publicarlo. La API key y el modelo se configuran una sola vez —desde el panel web (icono de ajustes en la barra superior) o con `hrp ollama config --api-key KEY --model MODELO`— y quedan persistidos en el servicio. La key nunca regresa a los clientes: `GET /api/settings/ollama` sólo expone una vista enmascarada, y las llamadas al modelo salen del servidor vía `POST /api/ollama/chat`.
+
+Flujo de delegación:
+
+1. Al publicar el grafo, marca con `"suggestedAgent": "ollama"` los nodos mecánicos, repetitivos o de bajo riesgo. HRP los pre-asigna a `ollama` y el humano puede reasignarlos antes de aprobar.
+2. Tras la aprobación, el modelo base administra cada nodo asignado a `ollama`: lo inicia con `hrp node start <run-id> <node-id> --agent ollama`, prepara un prompt con el contexto exacto del nodo (archivo, símbolo, descripción y fragmentos de código relevantes) y genera la implementación con:
+
+   ```sh
+   hrp ollama run --prompt-file prompt.txt [--system-file system.txt] [--model MODELO]
+   ```
+
+3. El modelo base revisa el resultado como administrador: corrige lo necesario, aplica el cambio al workspace y publica el diff, la verificación y el cierre como en cualquier nodo. En el `--summary` del parche distingue qué generó ollama y qué ajustó la revisión; `executedBy` queda como `ollama` para que el panel muestre la autoría real.
+4. `hrp ollama status` muestra la configuración vigente (key enmascarada, modelo y URL base); `hrp ollama run` reporta por stderr el consumo upstream (tokens de prompt y respuesta), útil para `node complete --tokens`.
 
 ## Integración directa mediante HTTP
 

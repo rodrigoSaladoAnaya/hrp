@@ -202,6 +202,54 @@ describe("HrpStore", () => {
     expect(store.getRun(run.id)?.seenAgents).toEqual(expect.arrayContaining(["claude", "codex"]));
   });
 
+  it("persists ollama settings, updates the model without resending the key, and clears it", () => {
+    const { store } = fixture();
+    expect(store.getOllamaSettingsView()).toMatchObject({ configured: false, model: "kimi-k2.7-code", baseUrl: "https://ollama.com" });
+    store.setOllamaSettings({ apiKey: "sk-secreta-9876" });
+    expect(store.getOllamaSettingsView()).toMatchObject({ configured: true, keyMask: "…9876" });
+    store.setOllamaSettings({ model: "otro-modelo", baseUrl: "https://ollama.example/" });
+    expect(store.getOllamaSettings()).toMatchObject({ apiKey: "sk-secreta-9876", model: "otro-modelo", baseUrl: "https://ollama.example" });
+    store.setOllamaSettings({ apiKey: null });
+    expect(store.getOllamaSettingsView().configured).toBe(false);
+  });
+
+  it("keeps ollama settings across store reopenings", () => {
+    const { store } = fixture();
+    store.setOllamaSettings({ apiKey: "sk-persistente-4321" });
+    const dataDirectory = store.dataDirectory;
+    store.close();
+    const reopened = new HrpStore(dataDirectory);
+    expect(reopened.getOllamaSettingsView()).toMatchObject({ configured: true, keyMask: "…4321" });
+    reopened.close();
+  });
+
+  it("stores the suggested agent and pre-assigns it without overriding human choices", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "delegable", file: "A.ts", symbol: "A.a", title: "Delegable", description: "Mechanical work", rationale: "Cheap model suffices", dependencies: [], suggestedAgent: "ollama" },
+      { id: "propio", file: "B.ts", symbol: "B.b", title: "Propio", description: "Core work", rationale: "Needs the base model", dependencies: [] },
+    ] });
+    const nodes = store.getRunDetail(run.id)!.nodes;
+    expect(nodes.find((node) => node.id === "delegable")).toMatchObject({ suggestedAgent: "ollama", assignee: "ollama" });
+    expect(nodes.find((node) => node.id === "propio")?.assignee).toBeUndefined();
+    store.assignNode(run.id, "delegable", "claude");
+    store.publishGraph(run.id, { nodes: [
+      { id: "delegable", file: "A.ts", symbol: "A.a", title: "Delegable", description: "Mechanical work", rationale: "Cheap model suffices", dependencies: [], suggestedAgent: "ollama" },
+    ] });
+    expect(store.getRunDetail(run.id)!.nodes.find((node) => node.id === "delegable")?.assignee).toBe("claude");
+  });
+
+  it("assigns discovered nodes to their suggested agent instead of the base agent", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "seed", file: "A.ts", symbol: "A.seed", title: "Seed", description: "Work", rationale: "Required", dependencies: [] },
+    ] }, "claude");
+    const discovered = store.addDiscoveredNode(run.id, { id: "extra", file: "B.ts", symbol: "B.extra", title: "Extra", description: "Follow-up", rationale: "Found later", dependencies: [], suggestedAgent: "ollama" });
+    expect(discovered.assignee).toBe("ollama");
+    const fallback = store.addDiscoveredNode(run.id, { id: "extra2", file: "C.ts", symbol: "C.extra", title: "Extra 2", description: "Follow-up", rationale: "Found later", dependencies: [] });
+    expect(fallback.assignee).toBe("claude");
+  });
+
   it("rejects dependency cycles before persisting the graph", () => {
     const { store, run } = fixture();
     expect(() => store.publishGraph(run.id, { nodes: [

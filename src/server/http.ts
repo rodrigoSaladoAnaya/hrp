@@ -15,6 +15,9 @@ const nodeInput = z.object({
   rationale: z.string().min(1),
   dependencies: z.array(z.string()),
   discovered: z.boolean().optional(),
+  // Recomendación del modelo base sobre quién debería implementar el nodo
+  // (p. ej. "ollama" para trabajo mecánico); el humano decide al aprobar.
+  suggestedAgent: z.string().min(1).optional(),
 }).strict();
 
 export function createApp(store: HrpStore) {
@@ -36,6 +39,59 @@ export function createApp(store: HrpStore) {
   };
 
   app.get("/api/health", (_request, response) => response.json({ ok: true, product: "hrp", protocolVersion: PROTOCOL_VERSION }));
+
+  // La configuración viaja siempre enmascarada hacia los clientes; la key
+  // completa solo se recibe en el PUT y queda en el almacén del servicio.
+  app.get("/api/settings/ollama", (_request, response) => response.json(store.getOllamaSettingsView()));
+
+  app.put("/api/settings/ollama", (request, response, next) => {
+    try {
+      const input = z.object({
+        apiKey: z.string().min(1).nullable().optional(),
+        model: z.string().min(1).optional(),
+        baseUrl: z.url().optional(),
+      }).strict().parse(request.body ?? {});
+      response.json(store.setOllamaSettings(input));
+    } catch (error) { next(error); }
+  });
+
+  // Proxy hacia Ollama Cloud: los agentes delegan sin conocer la key, que
+  // se adjunta aquí como Bearer y nunca sale del servicio hacia los clientes.
+  app.post("/api/ollama/chat", async (request, response, next) => {
+    try {
+      const input = z.object({
+        prompt: z.string().min(1),
+        system: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+      }).strict().parse(request.body);
+      const settings = store.getOllamaSettings();
+      if (!settings.apiKey) throw new Error("Ollama no está configurado: guarda la API key desde el panel o con 'hrp ollama config --api-key ...'");
+      const model = input.model ?? settings.model;
+      const upstream = await fetch(`${settings.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          messages: [
+            ...(input.system ? [{ role: "system", content: input.system }] : []),
+            { role: "user", content: input.prompt },
+          ],
+        }),
+      });
+      const body = await upstream.json().catch(() => ({})) as {
+        model?: string; message?: { content?: string }; error?: string;
+        prompt_eval_count?: number; eval_count?: number;
+      };
+      if (!upstream.ok) throw new Error(`Ollama respondió ${upstream.status}: ${body.error ?? upstream.statusText}`);
+      response.json({
+        model: body.model ?? model,
+        content: body.message?.content ?? "",
+        promptTokens: body.prompt_eval_count,
+        completionTokens: body.eval_count,
+      });
+    } catch (error) { next(error); }
+  });
 
   app.get("/api/projects", (_request, response) => {
     const projects = store.listProjects().map((project) => ({ ...project, runs: store.listRuns(project.id) }));
