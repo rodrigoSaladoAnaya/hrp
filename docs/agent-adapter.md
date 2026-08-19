@@ -197,7 +197,7 @@ git diff -- package.json > /tmp/sharing-dependency.diff
 
 Si varios nodos modifican el mismo archivo, captura el estado inmediatamente antes de cada nodo y compáralo con el estado posterior. No reutilices un diff acumulado que mezcle símbolos.
 
-El servidor valida la atribución: el texto del diff debe contener la ruta declarada del nodo (`file`) o al menos su nombre de archivo, como ocurre naturalmente en los encabezados de `git diff` y `diff -u`, o en un encabezado mínimo `@@ ruta/archivo`. Un diff que nunca menciona el archivo del nodo se rechaza con error.
+El servidor valida la atribución en ambas direcciones: el texto del diff debe contener la ruta declarada del nodo (`file`) o al menos su nombre de archivo, como ocurre naturalmente en los encabezados de `git diff` y `diff -u`, o en un encabezado mínimo `@@ ruta/archivo`; y sus encabezados no pueden tocar ningún otro archivo. Un diff que nunca menciona el archivo del nodo, o que mezcla cambios de archivos ajenos (por ejemplo, el cableado en otro módulo o el ajuste de un test existente), se rechaza con error: publica ese trabajo como nodos propios o descubiertos.
 
 Publica la evidencia:
 

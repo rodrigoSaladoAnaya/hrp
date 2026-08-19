@@ -254,6 +254,19 @@ export class HrpStore {
     if (!diff.includes(node.file) && !diff.includes(fileName)) {
       throw new Error(`Diff is not attributable to this node: it never references ${node.file}`);
     }
+    const foreignFiles = new Set<string>();
+    for (const line of diff.split("\n")) {
+      const gitHeader = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      const markerHeader = !gitHeader && /^(\+\+\+|---) /.test(line) ? [line.slice(4)] : [];
+      for (const raw of gitHeader ? [gitHeader[1], gitHeader[2]] : markerHeader) {
+        const candidate = raw.split("\t")[0].trim().replace(/^[ab]\//, "");
+        if (!candidate || candidate === "/dev/null" || candidate.includes(fileName)) continue;
+        foreignFiles.add(candidate);
+      }
+    }
+    if (foreignFiles.size) {
+      throw new Error(`Diff mixes files that belong to other operations: ${[...foreignFiles].join(", ")}. Publish them as their own nodes or discover them`);
+    }
     const timestamp = now();
     this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, patch_rationale = ?, updated_at = ? WHERE run_id = ? AND id = ?")
       .run(diff, summary, rationale?.trim() || null, timestamp, runId, nodeId);

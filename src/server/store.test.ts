@@ -63,6 +63,20 @@ describe("HrpStore", () => {
     expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "change")?.diff).toContain("src/A.ts");
   });
 
+  it("rejects diffs that mix files from other operations", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "src/A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
+      { id: "created", file: "src/New.ts", symbol: "New", title: "New module", description: "Create it", rationale: "Required", dependencies: [] },
+    ] });
+    store.startNode(run.id, "change");
+    const mixed = "diff --git a/src/A.ts b/src/A.ts\n+++ b/src/A.ts\n+return true\ndiff --git a/src/Server.ts b/src/Server.ts\n+++ b/src/Server.ts\n+wire()";
+    expect(() => store.publishPatch(run.id, "change", "Changed method", mixed)).toThrow(/src\/Server\.ts/);
+    store.startNode(run.id, "created");
+    store.publishPatch(run.id, "created", "Created module", "diff --git a/src/New.ts b/src/New.ts\n--- /dev/null\n+++ b/src/New.ts\n+export const value = 1;");
+    expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "created")?.diff).toContain("/dev/null");
+  });
+
   it("labels operations discovered during execution", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [
