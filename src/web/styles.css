@@ -232,6 +232,20 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .assign-row input { min-width: 0; flex: 1; min-height: 42px; padding: 0 11px; border: 1px solid #9aa69f; border-radius: 3px; background: #fff; font: inherit; font-size: .8rem; }
 .assign-row button { flex: none; min-height: 42px; padding: 0 13px; border: 1px solid #35443f; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .8rem; font-weight: 750; }
 .assign-row button:hover { background: #dfe5e1; }
+.node-agent-select { min-width: 0; max-width: 128px; margin-right: auto; padding: 3px 5px; border: 1px solid #b3bdb7; border-radius: 3px; color: #3f4c47; background: #eef0ea; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .64rem; }
+.node-agent-warning { display: inline-flex; align-items: center; gap: 3px; color: #8a4a12; font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.node-agent-warning .icon { width: 12px; height: 12px; }
+.agent-commands { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 9px 16px; border-bottom: 1px solid #b9c2bc; background: #eef0ea; }
+.agent-command-row { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.agent-presence { flex: none; min-width: 168px; font-size: .72rem; font-weight: 800; }
+.agent-presence-present { color: #2d6a50; }
+.agent-presence-absent { color: #8a4a12; }
+.agent-command-row code { min-width: 0; flex: 1; overflow: hidden; color: #4a5853; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.agent-command-row button { flex: none; min-height: 34px; padding: 0 11px; border: 1px solid #35443f; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .72rem; font-weight: 750; }
+.agent-command-row button:hover { background: #dfe5e1; }
+.assign-row select { min-width: 0; flex: 1; min-height: 42px; padding: 0 8px; border: 1px solid #9aa69f; border-radius: 3px; background: #fff; cursor: pointer; font: inherit; font-size: .8rem; }
+.assign-warning { display: flex; align-items: center; gap: 7px; margin: 0; color: #8a4a12; font-size: .76rem; }
+.assign-warning .icon { flex: none; width: 14px; height: 14px; }
 .node-verify { display: block; margin-top: 8px; padding-top: 7px; border-top: 1px solid #c6ccc5; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
 .node-verify-passed { color: #2d6a50; }
 .node-verify-failed { color: #a03c2c; }

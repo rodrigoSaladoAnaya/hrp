@@ -21,8 +21,20 @@ type ConnectionState = "connecting" | "connected" | "offline";
 type MapNodeData = {
   change: ChangeNode;
   isSelected: boolean;
+  baseAgent?: string;
+  seenAgents: string[];
   onSelect: (id: string) => void;
+  onAssign: (id: string, assignee: string | null) => void;
 };
+
+const supportedAgents = ["claude", "codex", "antigravity"] as const;
+
+function agentMissing(change: ChangeNode, baseAgent: string | undefined, seenAgents: string[]): boolean {
+  return Boolean(change.assignee
+    && change.status !== "completed" && change.status !== "running"
+    && change.assignee !== baseAgent
+    && !seenAgents.includes(change.assignee));
+}
 
 const statusCopy: Record<NodeStatus, string> = {
   pending: "Pendiente",
@@ -75,13 +87,16 @@ function StatusSignal({ status }: { status: NodeStatus }) {
 
 function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
   const change = data.change;
+  const missing = agentMissing(change, data.baseAgent, data.seenAgents);
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className={`change-node nodrag nopan change-node-${change.status} ${data.isSelected ? "is-selected" : ""}`}
       aria-label={`${change.file}, ${change.symbol}, ${statusCopy[change.status]}`}
       aria-pressed={data.isSelected}
       onClick={() => data.onSelect(change.id)}
+      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); data.onSelect(change.id); } }}
     >
       <Handle type="target" position={Position.Left} className="route-handle" />
       <div className="node-route-head">
@@ -91,10 +106,28 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
       </div>
       <strong className="node-symbol">{change.symbol}</strong>
       <p>{change.title}</p>
-      <div className="node-status-row">{change.assignee && <span className="node-assignee" title={`Asignado a ${change.assignee}`}>{change.assignee}</span>}<StatusSignal status={change.status}/></div>
+      <div className="node-status-row">
+        {change.status !== "completed" ? (
+          <select
+            className="node-agent-select nodrag"
+            value={change.assignee ?? ""}
+            aria-label="Modelo que implementará esta operación"
+            title={missing ? `${change.assignee} no se ha presentado en esta ejecución; considera devolverla al modelo base` : "Modelo que implementará esta operación"}
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            onChange={(event) => { event.stopPropagation(); data.onAssign(change.id, event.target.value || null); }}
+          >
+            <option value="">{data.baseAgent ? `base · ${data.baseAgent}` : "modelo base"}</option>
+            {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+          </select>
+        ) : change.assignee && <span className="node-assignee" title={`Implementado por ${change.assignee}`}>{change.assignee}</span>}
+        {missing && <span className="node-agent-warning" title={`${change.assignee} no se ha presentado en esta ejecución`}><Icon name="warning"/>sin señal</span>}
+        <StatusSignal status={change.status}/>
+      </div>
       {change.verification && <code className={`node-verify node-verify-${change.verification.passed ? "passed" : "failed"}`} title={change.verification.command}>{change.verification.command}</code>}
       <Handle type="source" position={Position.Right} className="route-handle" />
-    </button>
+    </div>
   );
 }
 
@@ -112,7 +145,7 @@ const graphAriaLabels: Partial<AriaLabelConfig> = {
   "handle.ariaLabel": "Conexión de dependencia",
 };
 
-function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, onSelect: (id: string) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
+function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "LR", ranksep: 86, nodesep: 46, marginx: 44, marginy: 44 });
   for (const change of changes) graph.setNode(change.id, { width: 272, height: 148 });
@@ -125,7 +158,7 @@ function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, onSe
       id: change.id,
       type: "change",
       position: { x: point.x - 136, y: point.y - 74 },
-      data: { change, isSelected: change.id === selectedId, onSelect },
+      data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], onSelect, onAssign },
     };
   });
   const edges = changes.flatMap((change) => change.dependencies.map((dependency) => ({
@@ -155,9 +188,7 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, activity, runId, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; onChanged: () => void }) {
-  const [assigneeDraft, setAssigneeDraft] = useState("");
-  useEffect(() => { setAssigneeDraft(node?.assignee ?? ""); }, [node?.id, node?.assignee]);
+function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; baseAgent?: string; seenAgents: string[]; onChanged: () => void }) {
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
@@ -190,16 +221,21 @@ function Inspector({ node, nodes, activity, runId, onChanged }: { node?: ChangeN
             <button type="button" className="approve-button" onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>Aprobar esta operación</button>
           )}
           <div className="assign-row">
-            <input
-              value={assigneeDraft}
-              onChange={(event) => setAssigneeDraft(event.target.value)}
-              placeholder="Sin agente asignado"
-              aria-label="Agente asignado"
-              list="hrp-agents"
-            />
-            <datalist id="hrp-agents"><option value="claude"/><option value="codex"/><option value="antigravity"/></datalist>
-            <button type="button" onClick={() => post(`/nodes/${node.id}/assign`, { assignee: assigneeDraft.trim() || null })}>Asignar</button>
+            <select
+              value={node.assignee ?? ""}
+              aria-label="Modelo que implementará esta operación"
+              onChange={(event) => post(`/nodes/${node.id}/assign`, { assignee: event.target.value || null })}
+            >
+              <option value="">{baseAgent ? `modelo base · ${baseAgent}` : "modelo base"}</option>
+              {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+            </select>
+            {agentMissing(node, baseAgent, seenAgents) && baseAgent && (
+              <button type="button" onClick={() => post(`/nodes/${node.id}/assign`, { assignee: baseAgent })}>Devolver a {baseAgent}</button>
+            )}
           </div>
+          {agentMissing(node, baseAgent, seenAgents) && (
+            <p className="assign-warning"><Icon name="warning"/>{node.assignee} no se ha presentado en esta ejecución; puedes devolver la operación al modelo base.</p>
+          )}
         </section>
       )}
 
@@ -258,6 +294,29 @@ function Inspector({ node, nodes, activity, runId, onChanged }: { node?: ChangeN
         </section>
       )}
     </aside>
+  );
+}
+
+function AgentCommands({ run, nodes, workspaceRoot }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string }) {
+  const [copied, setCopied] = useState("");
+  const pending = supportedAgents
+    .map((agent) => ({ agent, count: nodes.filter((node) => node.assignee === agent && node.status !== "completed").length }))
+    .filter((entry) => entry.count > 0 && entry.agent !== run.baseAgent);
+  if (!pending.length) return null;
+  const commandFor = (agent: string) => `Trabaja los nodos asignados a "${agent}" de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
+  return (
+    <section className="agent-commands" aria-label="Instrucciones para los agentes asignados">
+      {pending.map(({ agent, count }) => (
+        <div className="agent-command-row" key={agent}>
+          <span className={`agent-presence agent-presence-${run.seenAgents.includes(agent) ? "present" : "absent"}`}>{agent} · {run.seenAgents.includes(agent) ? "ya se presentó" : "aún sin señal"}</span>
+          <code title={commandFor(agent)}>{commandFor(agent)}</code>
+          <button
+            type="button"
+            onClick={() => { navigator.clipboard.writeText(commandFor(agent)).then(() => { setCopied(agent); setTimeout(() => setCopied(""), 2000); }).catch(() => undefined); }}
+          >{copied === agent ? "Copiado" : `Copiar (${count} ${count === 1 ? "nodo" : "nodos"})`}</button>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -422,7 +481,13 @@ export function App() {
     history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
   }, [projectId, runId]);
 
-  const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, setSelectedId), [detail?.nodes, selectedId]);
+  const assignAgent = useCallback(async (nodeId: string, assignee: string | null) => {
+    if (!runId) return;
+    await fetch(`/api/runs/${runId}/nodes/${nodeId}/assign`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee }) });
+    await loadDetail(runId);
+  }, [runId, loadDetail]);
+
+  const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, assignAgent]);
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
@@ -468,12 +533,13 @@ export function App() {
                     <button type="button" onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
                   </div>
                 )}
+                <AgentCommands run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot}/>
                 {view === "map" ? (
                   detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onNodeClick={(_event, node) => setSelectedId(node.id)} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
             </main>
           )}
         </div>

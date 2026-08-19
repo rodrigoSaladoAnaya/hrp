@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -212,7 +212,7 @@ Uso:
   hrp run create --title TEXTO --requirement TEXTO [--project ID]
   hrp run list [--project ID]
   hrp run delete <run-id> --yes
-  hrp graph publish <run-id> <graph.json>
+  hrp graph publish <run-id> <graph.json> [--agent NOMBRE]
   hrp node discover <run-id> <node.json>
   hrp node approve <run-id> [node-id...]
   hrp node assign <run-id> <node-id> <agente|->
@@ -223,6 +223,7 @@ Uso:
   hrp node complete <run-id> <node-id>
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
   hrp state <run-id>
+  hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
   hrp skills install <claude|codex|antigravity|all>
   hrp skills update
   hrp skills status
@@ -283,7 +284,8 @@ async function main() {
   }
 
   if (group === "graph" && action === "publish") {
-    return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify(readJson(second)) }));
+    const agent = value("--agent");
+    return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), ...(agent ? { agent } : {}) }) }));
   }
   if (group === "node" && action === "discover") {
     return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(readJson(second)) }));
@@ -329,6 +331,21 @@ async function main() {
     return print(await api(`/api/runs/${first}/activity`, { method: "POST", body: JSON.stringify({
       type: value("--type", "note"), message: value("--summary"), detail: value("--detail"), nodeId: value("--node"),
     }) }));
+  }
+  if (group === "wait" && action === "approval") {
+    const timeoutSeconds = Number(value("--timeout", "300"));
+    const agent = value("--agent");
+    const deadline = Date.now() + timeoutSeconds * 1000;
+    process.stderr.write("Esperando la aprobación humana en el panel...\n");
+    while (Date.now() < deadline) {
+      const detail = await api(`/api/runs/${first}`);
+      const mine = agent ? detail.nodes.filter((node) => !node.assignee || node.assignee === agent) : detail.nodes;
+      const ready = mine.filter((node) => node.approved && node.status !== "completed");
+      if (ready.length) return print(`Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
+      if (detail.nodes.length && detail.nodes.every((node) => node.status === "completed")) return print("La ejecución ya está completa.");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error(`Sin aprobación después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval' o pide la aprobación al humano`);
   }
   if (group === "skills") {
     if (action === "install") {

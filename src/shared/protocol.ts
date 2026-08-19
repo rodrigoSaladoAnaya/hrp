@@ -19,6 +19,8 @@ export type RunSummary = {
   requirement: string;
   status: NodeStatus;
   graphVersion: number;
+  baseAgent?: string;
+  seenAgents: string[];
   nodeCount: number;
   completedCount: number;
   createdAt: string;
@@ -78,4 +80,4 @@ export type GraphInput = {
   nodes: ChangeNodeInput[];
 };
 
-export const PROTOCOL_VERSION = "2.1";
+export const PROTOCOL_VERSION = "2.2";

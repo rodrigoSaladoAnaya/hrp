@@ -131,6 +131,34 @@ describe("HrpStore", () => {
     expect(store.getRunDetail(run.id)?.activity.some((event) => event.type === "inspect")).toBe(true);
   });
 
+  it("records the graph publisher as base agent and assigns discovered work to it", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "base", file: "A.ts", symbol: "A.base", title: "Base", description: "Base work", rationale: "Start", dependencies: [] },
+    ] }, "claude");
+    expect(store.getRun(run.id)?.baseAgent).toBe("claude");
+    expect(store.getRun(run.id)?.seenAgents).toContain("claude");
+    store.publishGraph(run.id, { nodes: [
+      { id: "other", file: "B.ts", symbol: "B.other", title: "Other", description: "Work", rationale: "Required", dependencies: [] },
+    ] }, "codex");
+    expect(store.getRun(run.id)?.baseAgent).toBe("claude");
+    const discovered = store.addDiscoveredNode(run.id, {
+      id: "extra", file: "C.ts", symbol: "C.extra", title: "Extra", description: "Add", rationale: "Found", dependencies: [],
+    });
+    expect(discovered.assignee).toBe("claude");
+  });
+
+  it("registers agent presence on successful starts", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] }, "claude");
+    store.approveNodes(run.id);
+    expect(store.getRun(run.id)?.seenAgents).not.toContain("codex");
+    store.startNode(run.id, "change", "codex");
+    expect(store.getRun(run.id)?.seenAgents).toEqual(expect.arrayContaining(["claude", "codex"]));
+  });
+
   it("rejects dependency cycles before persisting the graph", () => {
     const { store, run } = fixture();
     expect(() => store.publishGraph(run.id, { nodes: [

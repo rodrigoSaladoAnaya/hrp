@@ -165,8 +165,10 @@ Antes de modificar archivos, inspecciona el código suficiente para identificar 
 Publica el grafo:
 
 ```sh
-hrp graph publish "$run_id" graph.json
+hrp graph publish "$run_id" graph.json --agent codex
 ```
+
+Declara tu identidad con `--agent` al publicar: el primer publicador queda registrado como **modelo base** de la ejecución. El modelo base es el ejecutor por defecto de todos los nodos sin asignación explícita, y cualquier nodo descubierto durante la ejecución se le asigna automáticamente, para que el proceso no quede colgado esperando a otro agente que no sabe que existe trabajo nuevo.
 
 Requisitos del grafo:
 
@@ -188,7 +190,13 @@ hrp node approve "$run_id"              # todo lo pendiente de aprobación
 hrp node approve "$run_id" nodo-a nodo-b # nodos concretos
 ```
 
-Después de publicar el grafo, el adaptador debe avisar al humano y esperar la aprobación; puede sondear `hrp state` hasta que sus nodos muestren `approved: true`. Los comandos de aprobación son controles humanos: el adaptador sólo puede ejecutarlos cuando el usuario le ordena explícitamente aprobar nodos, nunca por inferirlo de la autonomía general de la tarea. Volver a publicar el grafo devuelve al gate los nodos no completados.
+Después de publicar el grafo, el adaptador debe esperar la aprobación sin exigir un segundo aviso del humano. La forma estándar en cualquier agente es el comando bloqueante:
+
+```sh
+hrp wait approval "$run_id" --agent codex --timeout 300
+```
+
+Sale con éxito en cuanto hay trabajo aprobado disponible para esa identidad (o para cualquiera, si se omite `--agent`); al agotar el timeout devuelve error con la instrucción de reintentar. Un adaptador sin CLI puede sondear `GET /api/runs/:runId` hasta ver `approved: true` en sus nodos. Los comandos de aprobación son controles humanos: el adaptador sólo puede ejecutarlos cuando el usuario le ordena explícitamente aprobar nodos, nunca por inferirlo de la autonomía general de la tarea. Volver a publicar el grafo devuelve al gate los nodos no completados.
 
 El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 
@@ -196,7 +204,9 @@ El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 hrp node assign "$run_id" nodo-a codex   # '-' retira la asignación
 ```
 
-Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar.
+Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base).
+
+Cada inicio con identidad registra la **presencia** del agente en la ejecución (`seenAgents`). El panel usa esa señal para advertir al humano cuando un nodo está asignado a un modelo que nunca se ha presentado, ofrecerle el comando que debe pegar en ese modelo, y permitirle devolver el nodo al modelo base si el asignado no responde.
 
 Solo puede haber **un nodo en curso por ejecución**: el workspace es compartido y dos agentes editando o verificando a la vez se contaminan mutuamente. Si el inicio se rechaza por otro nodo en vuelo, espera a que ese nodo termine.
 

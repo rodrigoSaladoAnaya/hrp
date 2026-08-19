@@ -83,8 +83,8 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/graph", (request, response, next) => {
     try {
-      const input = z.object({ nodes: z.array(nodeInput).min(1) }).strict().parse(request.body);
-      const nodes = store.publishGraph(request.params.runId, input);
+      const input = z.object({ nodes: z.array(nodeInput).min(1), agent: z.string().min(1).optional() }).strict().parse(request.body);
+      const nodes = store.publishGraph(request.params.runId, { nodes: input.nodes }, input.agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "graph-published");
       response.status(201).json({ nodes });
     } catch (error) { next(error); }

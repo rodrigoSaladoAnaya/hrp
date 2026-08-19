@@ -125,6 +125,20 @@ export class HrpStore {
     if (!nodeColumns.some((column) => String(column.name) === "assignee")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN assignee TEXT");
     }
+    const runColumns = this.database.pragma("table_info(runs)") as Row[];
+    if (!runColumns.some((column) => String(column.name) === "base_agent")) {
+      this.database.exec("ALTER TABLE runs ADD COLUMN base_agent TEXT");
+    }
+    if (!runColumns.some((column) => String(column.name) === "seen_agents_json")) {
+      this.database.exec("ALTER TABLE runs ADD COLUMN seen_agents_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
+
+  private registerAgent(runId: string, agent: string): void {
+    const run = this.getRun(runId);
+    if (!run || run.seenAgents.includes(agent)) return;
+    this.database.prepare("UPDATE runs SET seen_agents_json = ? WHERE id = ?")
+      .run(JSON.stringify([...run.seenAgents, agent]), runId);
   }
 
   close(): void {
@@ -200,9 +214,13 @@ export class HrpStore {
     return { run, nodes, activity };
   }
 
-  publishGraph(runId: string, input: GraphInput): ChangeNode[] {
+  publishGraph(runId: string, input: GraphInput, agent?: string): ChangeNode[] {
     const run = this.getRun(runId);
     if (!run) throw new Error(`Unknown run: ${runId}`);
+    if (agent) {
+      if (!run.baseAgent) this.database.prepare("UPDATE runs SET base_agent = ? WHERE id = ?").run(agent, runId);
+      this.registerAgent(runId, agent);
+    }
     const ids = new Set(input.nodes.map((node) => node.id));
     if (ids.size !== input.nodes.length) throw new Error("Node ids must be unique");
     for (const node of input.nodes) {
@@ -246,6 +264,8 @@ export class HrpStore {
   addDiscoveredNode(runId: string, node: ChangeNodeInput): ChangeNode {
     this.publishGraph(runId, { nodes: [{ ...node, discovered: true }] });
     this.addActivity(runId, "inspect", `Cambio descubierto: ${node.file} · ${node.symbol}`, node.rationale, node.id);
+    const baseAgent = this.getRun(runId)?.baseAgent;
+    if (baseAgent) this.assignNode(runId, node.id, baseAgent);
     return this.getNode(runId, node.id)!;
   }
 
@@ -290,6 +310,7 @@ export class HrpStore {
     const inFlight = this.database.prepare("SELECT id FROM nodes WHERE run_id = ? AND status = 'running' AND id != ?").get(runId, nodeId) as Row | undefined;
     if (inFlight) throw new Error(`Another node is already running: ${String(inFlight.id)}. The workspace executes one node at a time`);
     this.updateNodeStatus(runId, nodeId, "running");
+    if (agent) this.registerAgent(runId, agent);
     this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId);
     return this.requireNode(runId, nodeId);
   }
@@ -365,7 +386,10 @@ export class HrpStore {
         : total > 0 && total === completed ? "completed" : "pending";
     return {
       id: String(row.id), projectId: String(row.project_id), title: String(row.title), requirement: String(row.requirement),
-      status, graphVersion: Number(row.graph_version), nodeCount: total, completedCount: completed,
+      status, graphVersion: Number(row.graph_version),
+      baseAgent: row.base_agent ? String(row.base_agent) : undefined,
+      seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
+      nodeCount: total, completedCount: completed,
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),
     };
   }

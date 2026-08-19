@@ -69,14 +69,22 @@ Lee el código suficiente para descomponer la tarea en nodos. Escribe el grafo e
 ```
 
 ```sh
-hrp graph publish "$run_id" /ruta/temporal/graph.json
+hrp graph publish "$run_id" /ruta/temporal/graph.json --agent claude
 ```
 
 Los ids: únicos, estables, solo `[A-Za-z0-9_-]`. Sin ciclos; toda dependencia debe existir.
 
+`--agent claude` te registra como **modelo base** de la ejecución: ejecutas por defecto todos los nodos sin asignación, y los nodos que descubras se te asignan automáticamente para que el proceso no espere a otro agente.
+
 ### 2b. Espera la aprobación humana (protocolo 2.1)
 
-Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Tras publicar el grafo, avisa al humano y espera su aprobación; si trabajas de forma autónoma puedes sondear `hrp state` hasta ver `approved: true` en tus nodos. No apruebes tú mismo con el CLI: la aprobación es del humano.
+Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Tras publicar el grafo, espera el clic del humano con el comando bloqueante:
+
+```sh
+hrp wait approval "$run_id" --agent claude --timeout 300
+```
+
+Sale con éxito en cuanto exista trabajo aprobado disponible para ti; si agota el timeout, vuelve a ejecutarlo o pregunta al humano. Así el humano solo da un clic y tú continúas solo. No apruebes tú mismo con el CLI: la aprobación es del humano.
 
 El humano puede asignar nodos a agentes concretos. Tu identidad es `claude`: trabaja solo nodos asignados a `claude` o sin asignar, y decláralo al iniciar.
 
