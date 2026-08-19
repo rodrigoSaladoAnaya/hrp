@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import type {
@@ -45,6 +46,7 @@ function nodeFromRow(row: Row): ChangeNode {
     discovered: Number(row.discovered) === 1,
     approved: Number(row.approved) === 1,
     assignee: row.assignee ? String(row.assignee) : undefined,
+    executedBy: row.executed_by ? String(row.executed_by) : undefined,
     dependencies: JSON.parse(String(row.dependencies_json)) as string[],
     diff: row.diff ? String(row.diff) : undefined,
     patchSummary: row.patch_summary ? String(row.patch_summary) : undefined,
@@ -129,6 +131,21 @@ export class HrpStore {
     if (!nodeColumns.some((column) => String(column.name) === "tokens")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN tokens INTEGER");
     }
+    if (!nodeColumns.some((column) => String(column.name) === "executed_by")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN executed_by TEXT");
+      // Backfill único desde la actividad: los start con identidad quedaron como
+      // "En curso (agente): archivo · símbolo" antes de que el nodo persistiera al ejecutor.
+      this.database.exec(`
+        UPDATE nodes SET executed_by = (
+          SELECT substr(a.message, 11, instr(a.message, ')') - 11)
+          FROM activity a
+          WHERE a.run_id = nodes.run_id AND a.node_id = nodes.id
+            AND a.type = 'node' AND a.message LIKE 'En curso (%'
+          ORDER BY a.id DESC LIMIT 1
+        )
+        WHERE executed_by IS NULL
+      `);
+    }
     const runColumns = this.database.pragma("table_info(runs)") as Row[];
     if (!runColumns.some((column) => String(column.name) === "base_agent")) {
       this.database.exec("ALTER TABLE runs ADD COLUMN base_agent TEXT");
@@ -155,6 +172,9 @@ export class HrpStore {
       throw new Error(`Workspace does not exist or is not a directory: ${resolved}`);
     }
     const canonical = realpathSync(resolved);
+    if (canonical === path.parse(canonical).root || canonical === os.homedir()) {
+      throw new Error(`Workspace cannot be the filesystem root or the home directory: ${canonical}. Run hrp from the project folder`);
+    }
     const id = createHash("sha256").update(canonical).digest("hex").slice(0, 20);
     const timestamp = now();
     this.database.prepare(`
@@ -321,7 +341,10 @@ export class HrpStore {
     const inFlight = this.database.prepare("SELECT id FROM nodes WHERE run_id = ? AND status = 'running' AND id != ?").get(runId, nodeId) as Row | undefined;
     if (inFlight) throw new Error(`Another node is already running: ${String(inFlight.id)}. The workspace executes one node at a time`);
     this.updateNodeStatus(runId, nodeId, "running");
-    if (agent) this.registerAgent(runId, agent);
+    if (agent) {
+      this.registerAgent(runId, agent);
+      this.database.prepare("UPDATE nodes SET executed_by = ? WHERE run_id = ? AND id = ?").run(agent, runId, nodeId);
+    }
     this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId);
     return this.requireNode(runId, nodeId);
   }

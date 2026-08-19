@@ -126,8 +126,8 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
             <option value="">{data.baseAgent ? `base · ${data.baseAgent}` : "modelo base"}</option>
             {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
           </select>
-        ) : (change.assignee ?? data.baseAgent) && (
-          <span className="node-assignee" title={`${change.status === "completed" ? "Implementado" : "En ejecución"} por ${change.assignee ?? data.baseAgent}`}>{change.assignee ?? data.baseAgent}</span>
+        ) : (change.executedBy ?? change.assignee ?? data.baseAgent) && (
+          <span className="node-assignee" title={`${change.status === "completed" ? "Implementado" : "En ejecución"} por ${change.executedBy ?? change.assignee ?? data.baseAgent}`}>{change.executedBy ?? change.assignee ?? data.baseAgent}</span>
         )}
         {change.tokens != null && <span className="node-tokens" title={`Consumo reportado por el agente: ${change.tokens} tokens`}>{formatTokens(change.tokens)}</span>}
         {missing && <span className="node-agent-warning" title={`${change.assignee} no se ha presentado en esta ejecución`}><Icon name="warning"/>sin señal</span>}
@@ -222,8 +222,8 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, onChan
         </div>
         <div className="inspector-signals">
           <StatusSignal status={node.status}/>
-          {(node.status === "running" || node.status === "completed") && (node.assignee ?? baseAgent) && (
-            <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.assignee ?? baseAgent}</span>
+          {(node.status === "running" || node.status === "completed") && (node.executedBy ?? node.assignee ?? baseAgent) && (
+            <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.executedBy ?? node.assignee ?? baseAgent}</span>
           )}
           {node.tokens != null && <span className="inspector-executor" title={`Consumo reportado por el agente: ${node.tokens} tokens`}>{formatTokens(node.tokens)}</span>}
         </div>
@@ -399,16 +399,27 @@ function LoadingState({ label }: { label: string }) {
   );
 }
 
-function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun }: {
+function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, onDeleteProject, onDeleteRun }: {
   projects: ProjectWithRuns[];
   projectId: string;
   runId: string;
   agentDock?: ReactNode;
   onProject: (project: ProjectWithRuns) => void;
   onRun: (projectId: string, runId: string) => void;
+  onDeleteProject: (project: ProjectWithRuns) => void;
+  onDeleteRun: (run: RunSummary) => void;
 }) {
   const orderedProjects = sortProjects(projects);
   const formatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  // Sin override del usuario, solo el proyecto activo se muestra expandido:
+  // la lista crece con cada ejecución y debe seguir siendo navegable.
+  const [collapseOverrides, setCollapseOverrides] = useState<Record<string, boolean>>({});
+  const isCollapsed = (id: string) => collapseOverrides[id] ?? (id !== projectId);
+  const toggleCollapse = (id: string) => setCollapseOverrides((previous) => ({ ...previous, [id]: !isCollapsed(id) }));
+  const selectProject = (project: ProjectWithRuns) => {
+    setCollapseOverrides((previous) => { const next = { ...previous }; delete next[project.id]; return next; });
+    onProject(project);
+  };
   return (
     <aside className="project-tree" aria-label={agentDock ? "Proyectos, ejecuciones y agentes" : "Proyectos y ejecuciones"}>
       <header className="tree-head">
@@ -419,20 +430,27 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun }
         {orderedProjects.map((project) => {
           const runs = sortRuns(project.runs);
           const selected = project.id === projectId;
+          const collapsed = isCollapsed(project.id);
           return (
             <section className={`tree-project ${selected ? "is-current" : ""}`} key={project.id}>
-              <button type="button" className="tree-project-button" aria-current={selected ? "true" : undefined} onClick={() => onProject(project)}>
-                <span className="tree-branch"><Icon name="folder"/></span>
-                <span><strong>{project.name}</strong><small title={project.workspaceRoot}>{project.workspaceRoot}</small></span>
-              </button>
-              {runs.length ? (
+              <div className="tree-project-row">
+                <button type="button" className="tree-collapse" aria-expanded={!collapsed} aria-label={`${collapsed ? "Expandir" : "Colapsar"} ${project.name}`} onClick={() => toggleCollapse(project.id)}>{collapsed ? "▸" : "▾"}</button>
+                <button type="button" className="tree-project-button" aria-current={selected ? "true" : undefined} onClick={() => selectProject(project)}>
+                  <span className="tree-branch"><Icon name="folder"/></span>
+                  <span><strong>{project.name}</strong><small title={project.workspaceRoot}>{project.workspaceRoot}</small></span>
+                </button>
+                {collapsed && runs.length > 0 && <span className="tree-run-count" aria-label={`${runs.length} ejecuciones`}>{runs.length}</span>}
+                <button type="button" className="tree-delete" aria-label={`Eliminar el proyecto ${project.name}`} title="Eliminar proyecto" onClick={() => onDeleteProject(project)}>×</button>
+              </div>
+              {collapsed ? null : runs.length ? (
                 <ul>
                   {runs.map((run) => (
-                    <li key={run.id}>
+                    <li className="tree-run-row" key={run.id}>
                       <button type="button" className={`tree-run status-${run.status} ${run.id === runId ? "is-current" : ""}`} aria-current={run.id === runId ? "page" : undefined} onClick={() => onRun(project.id, run.id)}>
                         <span className="tree-signal"/>
                         <span className="tree-run-copy"><strong>{run.title}</strong><small>{statusCopy[run.status]} · {run.completedCount}/{run.nodeCount} · {formatter.format(new Date(run.updatedAt))}</small></span>
                       </button>
+                      <button type="button" className="tree-delete" aria-label={`Eliminar la ejecución ${run.title}`} title="Eliminar ejecución" onClick={() => onDeleteRun(run)}>×</button>
                     </li>
                   ))}
                 </ul>
@@ -532,6 +550,21 @@ export function App() {
     await loadDetail(runId);
   }, [runId, loadDetail]);
 
+  const deleteRun = useCallback(async (run: RunSummary) => {
+    if (!window.confirm(`¿Eliminar la ejecución "${run.title}" con toda su evidencia? Esta acción es permanente.`)) return;
+    await fetch(`/api/runs/${run.id}`, { method: "DELETE" });
+    if (run.id === runId) setRunId("");
+    await loadCatalog();
+  }, [runId, loadCatalog]);
+
+  const deleteProject = useCallback(async (target: ProjectWithRuns) => {
+    const runsCopy = target.runs.length === 1 ? "su ejecución" : `sus ${target.runs.length} ejecuciones`;
+    if (!window.confirm(`¿Eliminar el proyecto "${target.name}"${target.runs.length ? ` con ${runsCopy}` : ""}? Esta acción es permanente.`)) return;
+    await fetch(`/api/projects/${target.id}`, { method: "DELETE" });
+    if (target.id === projectId) { setProjectId(""); setRunId(""); }
+    await loadCatalog();
+  }, [projectId, loadCatalog]);
+
   const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, assignAgent]);
 
   // El layout se re-acomoda cuando aparecen o desaparecen nodos (descubiertos,
@@ -540,8 +573,14 @@ export function App() {
   const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
   useEffect(() => {
     if (!nodeSetKey) return;
-    const frame = requestAnimationFrame(() => { flowInstance.current?.fitView({ padding: 0.22, maxZoom: 1, duration: 320 }); });
-    return () => cancelAnimationFrame(frame);
+    // ReactFlow ingiere el layout nuevo de forma asíncrona: un solo fitView puede
+    // ejecutarse contra los límites viejos y dejar el grafo fuera de vista.
+    // Encuadra en el siguiente frame y reintenta una vez ya asentado el render.
+    const fit = () => { flowInstance.current?.fitView({ padding: 0.22, maxZoom: 1, duration: 320 }); };
+    let frame2 = 0;
+    const frame1 = requestAnimationFrame(() => { frame2 = requestAnimationFrame(fit); });
+    const settle = setTimeout(fit, 400);
+    return () => { cancelAnimationFrame(frame1); cancelAnimationFrame(frame2); clearTimeout(settle); };
   }, [nodeSetKey]);
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
@@ -569,6 +608,8 @@ export function App() {
           agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot}/> : undefined}
           onProject={(nextProject) => { setProjectId(nextProject.id); setRunId(sortRuns(nextProject.runs)[0]?.id ?? ""); }}
           onRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }}
+          onDeleteProject={(target) => { deleteProject(target).catch(() => undefined); }}
+          onDeleteRun={(target) => { deleteRun(target).catch(() => undefined); }}
         />
         <div className="content-shell">
           <div className="content-toolbar">
@@ -603,6 +644,45 @@ export function App() {
   );
 }
 
+function HelpPanel() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <div className="help-wrap">
+      <button type="button" className="help-toggle" aria-expanded={open} aria-label="Ayuda" title="Ayuda" onClick={() => setOpen((value) => !value)}>?</button>
+      {open && (
+        <>
+          <div className="help-backdrop" onClick={() => setOpen(false)}/>
+          <section className="help-panel" role="dialog" aria-label="Ayuda de HRP">
+            <h3>Delegar trabajo a otro modelo</h3>
+            <ol>
+              <li>Aprueba el grafo cuando el agente lo publique (botón «Aprobar grafo»).</li>
+              <li>En la cajita del nodo elige quién lo implementa: claude, codex o antigravity.</li>
+              <li>En el dock de agentes (abajo a la izquierda) pulsa «Copiar» junto a ese modelo.</li>
+              <li>Pega el comando en la sesión de ese modelo. Su punto se pone verde al engancharse y trabajará solo sus nodos.</li>
+            </ol>
+            <h3>¿Un agente actúa «a la antigua»?</h3>
+            <p>Las sesiones abiertas conservan la skill con la que arrancaron. Si un agente no continúa solo tras tu aprobación, no declara identidad o queda naranja mientras trabaja, escríbele: <em>«vuelve a leer la skill de hrp antes de continuar»</em>. Las conversaciones nuevas siempre nacen con la skill al día; <code>./scripts/update.sh</code> actualiza HRP y las skills de los tres modelos.</p>
+            <h3>Tips</h3>
+            <ul>
+              <li>Nada se ejecuta sin tu aprobación; los nodos descubiertos también pasan por el gate.</li>
+              <li>Solo hay un nodo en curso por ejecución: los agentes se turnan solos.</li>
+              <li>Naranja prolongado con trabajo aprobado = ese modelo no se enteró; reenvíale el comando o usa «Devolver a claude» en el inspector.</li>
+              <li>Un nodo en curso no puede cambiar de modelo; al terminar, su tarjeta muestra quién lo hizo y su costo (~tokens) si el agente lo reportó.</li>
+              <li>Clic fuera del grafo deselecciona; el chevron colapsa proyectos y la × elimina con confirmación.</li>
+            </ul>
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TopBar({ connectionState, project, run, progress = 0 }: { connectionState: ConnectionState; project?: Project; run?: RunSummary; progress?: number }) {
   const connectionCopy = connectionState === "connected" ? "En vivo" : connectionState === "offline" ? "Sin conexión" : "Conectando";
   return (
@@ -612,6 +692,7 @@ function TopBar({ connectionState, project, run, progress = 0 }: { connectionSta
         {run && <div className="progress-track" role="progressbar" aria-label="Progreso de la ejecución" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }}/></div>}
         <div className="telemetry-copy"><strong>{run ? statusCopy[run.status] : "Sin ejecución"}</strong><span>{project?.workspaceRoot ?? "Ningún proyecto conectado"}</span></div>
       </div>
+      <HelpPanel/>
       <span className={`connection ${connectionState}`}><i/>{connectionCopy}{connectionState === "offline" && <button type="button" onClick={() => location.reload()}>Reintentar</button>}</span>
     </header>
   );

@@ -119,6 +119,16 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .connection.offline { color: #f0c9a1; }
 .connection.offline i { background: #d06a3f; }
 .connection button { min-height: 44px; padding: 0 3px; border: 0; color: #f4d58f; background: transparent; cursor: pointer; font-size: .72rem; font-weight: 800; text-decoration: underline; text-underline-offset: 3px; }
+.help-wrap { position: relative; }
+.help-toggle { width: 34px; height: 34px; border: 1px solid #5d6d66; border-radius: 999px; color: #dfe5e1; background: transparent; cursor: pointer; font-size: .9rem; font-weight: 800; }
+.help-toggle:hover, .help-toggle[aria-expanded="true"] { color: #17201e; background: #dfe5e1; }
+.help-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(23,32,30,.28); }
+.help-panel { position: absolute; top: 44px; right: 0; z-index: 41; width: min(430px, 86vw); max-height: min(560px, 78vh); overflow: auto; padding: 16px 19px 19px; border: 1px solid #7c8983; border-radius: 4px; color: #17201e; background: #f5f4ec; box-shadow: 4px 9px 26px rgba(23,32,30,.32); }
+.help-panel h3 { margin: 13px 0 6px; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.04rem; font-weight: 700; }
+.help-panel h3:first-child { margin-top: 0; }
+.help-panel p, .help-panel li { margin: 0 0 6px; color: #3f4c47; font-size: .8rem; line-height: 1.45; }
+.help-panel ol, .help-panel ul { margin: 0; padding-left: 19px; }
+.help-panel code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .74rem; }
 
 .app-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
 
@@ -130,7 +140,16 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .tree-scroll { min-height: 0; overflow: auto; padding-bottom: 24px; }
 .tree-project { border-bottom: 1px solid #b6c0ba; }
 .tree-project.is-current { background: #eef1ec; }
-.tree-project-button { width: 100%; min-height: 64px; display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: center; gap: 5px; padding: 9px 13px; border: 0; background: transparent; cursor: pointer; text-align: left; }
+.tree-project-row { display: flex; align-items: center; }
+.tree-project-row .tree-project-button { min-width: 0; flex: 1; }
+.tree-collapse { flex: none; width: 26px; min-height: 64px; border: 0; color: #58655f; background: transparent; cursor: pointer; font-size: .72rem; }
+.tree-collapse:hover { color: #17201e; background: #dce3de; }
+.tree-run-count { flex: none; min-width: 21px; margin-right: 3px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #cdd5ce; font-size: .66rem; font-weight: 800; text-align: center; }
+.tree-delete { flex: none; width: 26px; min-height: 44px; align-self: center; border: 0; border-radius: 3px; color: #7c8983; background: transparent; cursor: pointer; font-size: .95rem; line-height: 1; }
+.tree-delete:hover { color: #fff; background: #a03c2c; }
+.tree-run-row { display: flex; align-items: stretch; }
+.tree-run-row .tree-run { min-width: 0; flex: 1; }
+.tree-project-button { width: 100%; min-height: 64px; display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: center; gap: 5px; padding: 9px 4px 9px 0; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .tree-project-button:hover { background: #dce3de; }
 .tree-project-button > span:last-child, .tree-run-copy { min-width: 0; display: grid; gap: 3px; }
 .tree-project-button strong { overflow: hidden; font-size: .83rem; text-overflow: ellipsis; white-space: nowrap; }

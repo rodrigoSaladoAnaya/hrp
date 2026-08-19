@@ -22,6 +22,12 @@ function fixture() {
 }
 
 describe("HrpStore", () => {
+  it("rejects attaching the filesystem root or the home directory", () => {
+    const { store } = fixture();
+    expect(() => store.attachProject("/")).toThrow(/filesystem root or the home directory/);
+    expect(() => store.attachProject(os.homedir())).toThrow(/filesystem root or the home directory/);
+  });
+
   it("keeps one node per symbol and enforces dependency order", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [
@@ -162,6 +168,20 @@ describe("HrpStore", () => {
       id: "extra", file: "C.ts", symbol: "C.extra", title: "Extra", description: "Add", rationale: "Found", dependencies: [],
     });
     expect(discovered.assignee).toBe("claude");
+  });
+
+  it("persists the executing agent on start", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "a", file: "A.ts", symbol: "A.a", title: "A", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "b", file: "B.ts", symbol: "B.b", title: "B", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    expect(store.startNode(run.id, "a", "codex").executedBy).toBe("codex");
+    store.publishPatch(run.id, "a", "done", "@@ A.ts\n+x");
+    store.publishVerification(run.id, "a", { command: "true", output: "", exitCode: 0 });
+    store.completeNode(run.id, "a");
+    expect(store.startNode(run.id, "b").executedBy).toBeUndefined();
   });
 
   it("registers agent presence from an explicit hello", () => {

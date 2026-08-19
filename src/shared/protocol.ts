@@ -39,6 +39,7 @@ export type ChangeNode = {
   discovered: boolean;
   approved: boolean;
   assignee?: string;
+  executedBy?: string;
   dependencies: string[];
   diff?: string;
   patchSummary?: string;
