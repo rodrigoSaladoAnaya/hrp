@@ -273,6 +273,12 @@ export class HrpStore {
     return this.getNode(runId, node.id)!;
   }
 
+  helloAgent(runId: string, agent: string): RunSummary {
+    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    this.registerAgent(runId, agent);
+    return this.getRun(runId)!;
+  }
+
   approveNodes(runId: string, nodeIds?: string[]): ChangeNode[] {
     if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
     const targets = nodeIds?.length

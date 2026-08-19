@@ -99,6 +99,15 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  app.post("/api/runs/:runId/agents", (request, response, next) => {
+    try {
+      const input = z.object({ agent: z.string().min(1) }).strict().parse(request.body);
+      const run = store.helloAgent(request.params.runId, input.agent);
+      broadcast(run.projectId, run.id, "agent-seen");
+      response.json(run);
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/runs/:runId/approve", (request, response, next) => {
     try {
       const input = z.object({ nodeIds: z.array(z.string()).min(1).optional() }).strict().parse(request.body ?? {});

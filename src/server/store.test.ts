@@ -164,6 +164,13 @@ describe("HrpStore", () => {
     expect(discovered.assignee).toBe("claude");
   });
 
+  it("registers agent presence from an explicit hello", () => {
+    const { store, run } = fixture();
+    expect(store.helloAgent(run.id, "codex").seenAgents).toContain("codex");
+    expect(store.helloAgent(run.id, "codex").seenAgents).toEqual(["codex"]);
+    expect(() => store.helloAgent("missing-run", "codex")).toThrow(/Unknown run/);
+  });
+
   it("registers agent presence on successful starts", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [

@@ -42,7 +42,7 @@ Valores predeterminados:
 ```text
 URL:       http://127.0.0.1:4317
 Datos:     ~/.hrp-v2
-Protocolo: 2.1
+Protocolo: 2.3
 ```
 
 El servicio es local y no tiene autenticación. No debe exponerse directamente a una red pública.
@@ -196,7 +196,7 @@ Después de publicar el grafo, el adaptador debe esperar la aprobación sin exig
 hrp wait approval "$run_id" --agent codex --timeout 300
 ```
 
-Sale con éxito en cuanto hay trabajo aprobado disponible para esa identidad (o para cualquiera, si se omite `--agent`); al agotar el timeout devuelve error con la instrucción de reintentar. Un adaptador sin CLI puede sondear `GET /api/runs/:runId` hasta ver `approved: true` en sus nodos. Los comandos de aprobación son controles humanos: el adaptador sólo puede ejecutarlos cuando el usuario le ordena explícitamente aprobar nodos, nunca por inferirlo de la autonomía general de la tarea. Volver a publicar el grafo devuelve al gate los nodos no completados.
+Sale con éxito en cuanto hay trabajo aprobado disponible para esa identidad (o para cualquiera, si se omite `--agent`); al agotar el timeout devuelve error con la instrucción de reintentar. Además, al comenzar la espera con `--agent` el comando **registra la presencia del agente** en la ejecución, de modo que el panel deja de mostrar "sin señal" desde que el agente se engancha, no hasta su primer `start`. Un adaptador sin CLI puede sondear `GET /api/runs/:runId` hasta ver `approved: true` en sus nodos, y anunciar su presencia con `POST /api/runs/:runId/agents`. Los comandos de aprobación son controles humanos: el adaptador sólo puede ejecutarlos cuando el usuario le ordena explícitamente aprobar nodos, nunca por inferirlo de la autonomía general de la tarea. Volver a publicar el grafo devuelve al gate los nodos no completados.
 
 El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 
@@ -411,6 +411,7 @@ http://127.0.0.1:4317
 | Consultar ejecución | `GET /api/runs/:runId` | — |
 | Publicar grafo | `POST /api/runs/:runId/graph` | `{ "nodes": [...] }` |
 | Descubrir nodo | `POST /api/runs/:runId/nodes` | nodo semántico |
+| Anunciar presencia | `POST /api/runs/:runId/agents` | `{ "agent": "codex" }` |
 | Aprobar nodos | `POST /api/runs/:runId/approve` | `{ "nodeIds?": [...] }` |
 | Asignar nodo | `POST /api/runs/:runId/nodes/:nodeId/assign` | `{ "assignee": "codex" \| null }` |
 | Iniciar o reintentar | `POST /api/runs/:runId/nodes/:nodeId/start` | `{ "agent?": "codex" }` |

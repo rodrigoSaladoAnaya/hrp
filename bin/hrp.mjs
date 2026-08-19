@@ -201,8 +201,12 @@ function syncInstalledSkills() {
   return updated;
 }
 
+function localVersion() {
+  try { return JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version; } catch { return "desconocida"; }
+}
+
 function help() {
-  console.log(`Human Review Protocol CLI v2.1
+  console.log(`Human Review Protocol CLI v${localVersion()}
 
 Uso:
   hrp service <start|status|stop> [workspace]
@@ -223,6 +227,7 @@ Uso:
   hrp node complete <run-id> <node-id> [--tokens N]
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
   hrp state <run-id>
+  hrp version
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
   hrp skills install <claude|codex|antigravity|all>
   hrp skills update
@@ -334,10 +339,26 @@ async function main() {
       type: value("--type", "note"), message: value("--summary"), detail: value("--detail"), nodeId: value("--node"),
     }) }));
   }
+  if (group === "version") {
+    const local = localVersion();
+    const health = await fetch(`${url}/api/health`).then((response) => response.ok ? response.json() : undefined).catch(() => undefined);
+    const service = health?.protocolVersion ?? "servicio detenido";
+    if (json) return print({ cli: local, serviceProtocol: health?.protocolVersion ?? null, url });
+    print(`CLI:      v${local}\nServicio: ${health ? `protocolo ${service} (${url})` : `detenido (${url})`}`);
+    if (health && local.split(".").slice(0, 2).join(".") !== String(service)) {
+      print("Aviso: el build local y el servicio en ejecución difieren; reinicia con ./scripts/update.sh");
+    }
+    return;
+  }
   if (group === "wait" && action === "approval") {
     const timeoutSeconds = Number(value("--timeout", "300"));
     const agent = value("--agent");
     const deadline = Date.now() + timeoutSeconds * 1000;
+    if (agent) {
+      // Anuncia presencia desde que comienza la espera: el panel deja de mostrar
+      // "sin señal" aunque el agente aún no haya iniciado ningún nodo.
+      await api(`/api/runs/${first}/agents`, { method: "POST", body: JSON.stringify({ agent }) }).catch(() => undefined);
+    }
     process.stderr.write("Esperando la aprobación humana en el panel...\n");
     while (Date.now() < deadline) {
       const detail = await api(`/api/runs/${first}`);
