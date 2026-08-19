@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,9 +54,15 @@ async function healthy() {
   return fetch(`${url}/api/health`).then((response) => response.ok).catch(() => false);
 }
 
+function reportSkillSync() {
+  const updated = syncInstalledSkills();
+  if (updated.length) print(`Skills sincronizadas con esta versión de HRP: ${updated.join(", ")}`);
+}
+
 async function startService(workspace) {
   if (await healthy()) {
     if (workspace) await api("/api/projects", { method: "POST", body: JSON.stringify({ workspaceRoot: workspace }) });
+    reportSkillSync();
     print(`HRP ya está activo: ${url}`);
     return;
   }
@@ -72,6 +79,7 @@ async function startService(workspace) {
   writeFileSync(path.join(runtime, "server.pid"), String(child.pid));
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (await healthy()) {
+      reportSkillSync();
       print(`HRP iniciado: ${url}\nDatos: ${dataDir}\nLog: ${logPath}`);
       return;
     }
@@ -109,6 +117,90 @@ function readJson(file) {
   return JSON.parse(readFileSync(path.resolve(file), "utf8"));
 }
 
+const skillReceipt = ".hrp-install-source";
+const skillAgents = {
+  claude: {
+    source: path.join(root, "integrations/claude/skills/hrp"),
+    target: path.join(os.homedir(), ".claude", "skills", "hrp"),
+    extras: [{ from: path.join(root, "docs/agent-adapter.md"), to: "references/agent-adapter.md" }],
+  },
+  codex: {
+    source: path.join(root, "integrations/codex/plugins/hrp/skills/use-hrp"),
+    target: path.join(process.env.HRP_CODEX_SKILLS_DIR ?? path.join(os.homedir(), ".agents", "skills"), "use-hrp"),
+    extras: [],
+  },
+  antigravity: {
+    source: path.join(root, "integrations/antigravity/skills/hrp"),
+    target: path.join(os.homedir(), ".gemini", "config", "skills", "hrp"),
+    extras: [],
+  },
+};
+
+function walkSkillFiles(dir, prefix = "") {
+  const result = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.name === skillReceipt) continue;
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) result.push(...walkSkillFiles(path.join(dir, entry.name), relative));
+    else result.push(relative);
+  }
+  return result;
+}
+
+function digestSkillFiles(files) {
+  const hash = createHash("sha256");
+  for (const relative of [...files.keys()].sort()) hash.update(relative).update("\0").update(readFileSync(files.get(relative))).update("\0");
+  return hash.digest("hex");
+}
+
+function skillSourceFiles(spec) {
+  const files = new Map(walkSkillFiles(spec.source).map((relative) => [relative, path.join(spec.source, relative)]));
+  for (const extra of spec.extras) files.set(extra.to, extra.from);
+  return files;
+}
+
+function skillOwnership(spec) {
+  if (!existsSync(spec.target)) return "absent";
+  const receipt = path.join(spec.target, skillReceipt);
+  if (!existsSync(receipt)) return "foreign";
+  return readFileSync(receipt, "utf8").split("\n")[0] === spec.source ? "owned" : "foreign";
+}
+
+function skillState(spec) {
+  const ownership = skillOwnership(spec);
+  if (ownership !== "owned") return ownership;
+  const installed = new Map(walkSkillFiles(spec.target).map((relative) => [relative, path.join(spec.target, relative)]));
+  return digestSkillFiles(installed) === digestSkillFiles(skillSourceFiles(spec)) ? "current" : "stale";
+}
+
+function installSkill(name, spec) {
+  if (!existsSync(path.join(spec.source, "SKILL.md"))) throw new Error(`Falta la fuente de la skill de ${name}: ${spec.source}`);
+  const ownership = skillOwnership(spec);
+  if (ownership === "foreign") throw new Error(`${spec.target} existe y no pertenece a esta instalación de HRP`);
+  mkdirSync(path.dirname(spec.target), { recursive: true });
+  const staging = `${spec.target}.hrp-staging-${process.pid}`;
+  rmSync(staging, { recursive: true, force: true });
+  cpSync(spec.source, staging, { recursive: true });
+  for (const extra of spec.extras) {
+    mkdirSync(path.dirname(path.join(staging, extra.to)), { recursive: true });
+    cpSync(extra.from, path.join(staging, extra.to));
+  }
+  writeFileSync(path.join(staging, skillReceipt), `${spec.source}\n`);
+  rmSync(spec.target, { recursive: true, force: true });
+  renameSync(staging, spec.target);
+  return ownership === "owned" ? "actualizada" : "instalada";
+}
+
+function syncInstalledSkills() {
+  const updated = [];
+  for (const [name, spec] of Object.entries(skillAgents)) {
+    try {
+      if (skillState(spec) === "stale") { installSkill(name, spec); updated.push(name); }
+    } catch { /* fuente incompleta o destino ajeno: hrp skills status lo reporta */ }
+  }
+  return updated;
+}
+
 function help() {
   console.log(`Human Review Protocol CLI v2.1
 
@@ -131,6 +223,9 @@ Uso:
   hrp node complete <run-id> <node-id>
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
   hrp state <run-id>
+  hrp skills install <claude|codex|antigravity|all>
+  hrp skills update
+  hrp skills status
 
 Opciones globales:
   --url URL        Default: http://127.0.0.1:4317
@@ -234,6 +329,26 @@ async function main() {
     return print(await api(`/api/runs/${first}/activity`, { method: "POST", body: JSON.stringify({
       type: value("--type", "note"), message: value("--summary"), detail: value("--detail"), nodeId: value("--node"),
     }) }));
+  }
+  if (group === "skills") {
+    if (action === "install") {
+      const names = !first || first === "all" ? Object.keys(skillAgents) : [first];
+      for (const name of names) if (!skillAgents[name]) throw new Error(`Agente desconocido: ${name}. Usa claude, codex, antigravity o all`);
+      for (const name of names) print(`Skill de ${name} ${installSkill(name, skillAgents[name])}: ${skillAgents[name].target}`);
+      return;
+    }
+    if (action === "update") {
+      const updated = syncInstalledSkills();
+      return print(updated.length ? `Skills actualizadas: ${updated.join(", ")}` : "Todas las skills instaladas están al día.");
+    }
+    if (action === "status") {
+      const copy = { absent: "no instalada", foreign: "existe pero es ajena a HRP", current: "al día", stale: "desactualizada" };
+      return print(Object.fromEntries(Object.entries(skillAgents).map(([name, spec]) => {
+        let state;
+        try { state = copy[skillState(spec)] ?? skillState(spec); } catch (error) { state = `error: ${error.message}`; }
+        return [name, { estado: state, destino: spec.target }];
+      })));
+    }
   }
   if (group === "state") return print(await api(`/api/runs/${action}`));
   help();
