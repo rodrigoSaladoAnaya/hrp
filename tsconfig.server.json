@@ -11,6 +11,6 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["src/server", "src/shared"],
+  "include": ["src/server", "src/shared", "src/mcp"],
   "exclude": ["src/**/*.test.ts"]
 }

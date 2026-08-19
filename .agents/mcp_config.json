@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hrp": {
+      "command": "hrp",
+      "args": ["mcp"]
+    }
+  }
+}

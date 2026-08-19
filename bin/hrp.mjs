@@ -227,6 +227,7 @@ Uso:
   hrp skills install <claude|codex|antigravity|all>
   hrp skills update
   hrp skills status
+  hrp mcp
 
 Opciones globales:
   --url URL        Default: http://127.0.0.1:4317
@@ -368,6 +369,12 @@ async function main() {
     }
   }
   if (group === "state") return print(await api(`/api/runs/${action}`));
+  if (group === "mcp") {
+    const mcpEntry = path.join(root, "dist/server/mcp/index.js");
+    const { HrpMcpClient, startMcpStdioServer } = await import(mcpEntry);
+    const client = new HrpMcpClient(url, dataDir, port);
+    return startMcpStdioServer(client);
+  }
   help();
   process.exitCode = 1;
 }
