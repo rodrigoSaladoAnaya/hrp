@@ -250,6 +250,10 @@ export class HrpStore {
     const node = this.requireNode(runId, nodeId);
     if (node.status !== "running") throw new Error("Node must be running before publishing a patch");
     if (!diff.trim()) throw new Error("A real diff is required");
+    const fileName = node.file.split("/").pop() ?? node.file;
+    if (!diff.includes(node.file) && !diff.includes(fileName)) {
+      throw new Error(`Diff is not attributable to this node: it never references ${node.file}`);
+    }
     const timestamp = now();
     this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, patch_rationale = ?, updated_at = ? WHERE run_id = ? AND id = ?")
       .run(diff, summary, rationale?.trim() || null, timestamp, runId, nodeId);

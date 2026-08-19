@@ -31,7 +31,7 @@ describe("HrpStore", () => {
     ] });
     expect(() => store.startNode(run.id, "resolve")).toThrow(/Incomplete dependencies/);
     store.startNode(run.id, "config");
-    store.publishPatch(run.id, "config", "Declared theme", "+  \"theme\": \"system\"", "The existing config is the shared source of truth");
+    store.publishPatch(run.id, "config", "Declared theme", "@@ config.json\n+  \"theme\": \"system\"", "The existing config is the shared source of truth");
     store.publishVerification(run.id, "config", { command: "npm test", output: "ok", exitCode: 0 });
     store.completeNode(run.id, "config");
     expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "config")?.patchRationale).toBe("The existing config is the shared source of truth");
@@ -45,11 +45,22 @@ describe("HrpStore", () => {
     ] });
     store.startNode(run.id, "change");
     expect(() => store.completeNode(run.id, "change")).toThrow(/diff/i);
-    store.publishPatch(run.id, "change", "Changed method", "+return true");
+    store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
     store.publishVerification(run.id, "change", { command: "npm test", output: "failed", exitCode: 1 });
     expect(() => store.completeNode(run.id, "change")).toThrow(/passing verification/i);
     expect(store.startNode(run.id, "change").status).toBe("running");
     expect(store.getRunDetail(run.id)?.activity.filter((event) => event.nodeId === "change" && event.type === "verify")).toHaveLength(1);
+  });
+
+  it("rejects diffs that never reference the node file", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "src/A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
+    ] });
+    store.startNode(run.id, "change");
+    expect(() => store.publishPatch(run.id, "change", "Changed method", "+return true")).toThrow(/not attributable/i);
+    store.publishPatch(run.id, "change", "Changed method", "--- /tmp/A.ts.before\n+++ src/A.ts\n+return true");
+    expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "change")?.diff).toContain("src/A.ts");
   });
 
   it("labels operations discovered during execution", () => {

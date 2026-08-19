@@ -91,6 +91,7 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
       <strong className="node-symbol">{change.symbol}</strong>
       <p>{change.title}</p>
       <div className="node-status-row"><StatusSignal status={change.status}/></div>
+      {change.verification && <code className={`node-verify node-verify-${change.verification.passed ? "passed" : "failed"}`} title={change.verification.command}>{change.verification.command}</code>}
       <Handle type="source" position={Position.Right} className="route-handle" />
     </button>
   );
@@ -375,7 +376,7 @@ export function App() {
 
   useEffect(() => {
     setConnectionState("connecting");
-    const source = new EventSource(`/api/events${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
+    const source = new EventSource("/api/events");
     source.onopen = () => setConnectionState("connected");
     source.addEventListener("ready", () => setConnectionState("connected"));
     source.addEventListener("change", (event) => {
@@ -385,7 +386,7 @@ export function App() {
     });
     source.onerror = () => setConnectionState("offline");
     return () => source.close();
-  }, [projectId, runId, loadCatalog, loadDetail]);
+  }, [runId, loadCatalog, loadDetail]);
 
   useEffect(() => {
     const params = new URLSearchParams();
