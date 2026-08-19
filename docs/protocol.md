@@ -27,6 +27,14 @@ Cada nodo combina:
 
 Los identificadores pertenecen al adaptador, deben ser estables dentro de una ejecución y no contienen semántica específica de un proveedor.
 
+El plan nunca se sustituye por el resultado. Cuando el agente publica el parche, HRP conserva además:
+
+- `patchSummary`: qué hizo realmente;
+- `patchRationale`: por qué la implementación aplicada tomó esa forma;
+- `diff`: evidencia exacta del cambio.
+
+`patchRationale` es opcional para adaptadores anteriores, pero los adaptadores nuevos deben publicarlo. Si falta, la interfaz lo indica sin atribuir al agente una explicación que no proporcionó.
+
 ## Estados
 
 - `pending`: declarado, sin ejecución.

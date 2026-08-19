@@ -38,12 +38,12 @@ const nodes = [
 await api(`/api/runs/${run.id}/graph`, { method: "POST", body: JSON.stringify({ nodes }) });
 
 for (const completed of [
-  { id: "node-contract", summary: "Se definió el contrato neutral de una operación semántica.", diff: "@@ protocol contract\n+export type ChangeNodeInput = {\n+  file: string;\n+  symbol: string;\n+  rationale: string;\n+  dependencies: string[];\n+};" },
-  { id: "graph-store", summary: "SQLite ahora conserva nodos, dependencias y evidencia por ejecución.", diff: "@@ publishGraph\n+for (const node of input.nodes) {\n+  upsert.run(node);\n+}\n+touchRun(runId);" },
-  { id: "graph-api", summary: "El servidor expone publicación inicial y nodos descubiertos.", diff: "@@ graph route\n+app.post('/api/runs/:runId/graph', publishGraph);\n+app.post('/api/runs/:runId/nodes', addDiscoveredNode);" },
+  { id: "node-contract", summary: "Se definió el contrato neutral de una operación semántica.", rationale: "Un contrato común mantiene la integración independiente del proveedor del agente.", diff: "@@ protocol contract\n+export type ChangeNodeInput = {\n+  file: string;\n+  symbol: string;\n+  rationale: string;\n+  dependencies: string[];\n+};" },
+  { id: "graph-store", summary: "SQLite ahora conserva nodos, dependencias y evidencia por ejecución.", rationale: "La persistencia local permite reconstruir el mapa después de reiniciar el servicio.", diff: "@@ publishGraph\n+for (const node of input.nodes) {\n+  upsert.run(node);\n+}\n+touchRun(runId);" },
+  { id: "graph-api", summary: "El servidor expone publicación inicial y nodos descubiertos.", rationale: "HTTP ofrece el mismo contrato a adaptadores con capacidades distintas.", diff: "@@ graph route\n+app.post('/api/runs/:runId/graph', publishGraph);\n+app.post('/api/runs/:runId/nodes', addDiscoveredNode);" },
 ]) {
   await api(`/api/runs/${run.id}/nodes/${completed.id}/start`, { method: "POST", body: "{}" });
-  await api(`/api/runs/${run.id}/nodes/${completed.id}/patch`, { method: "POST", body: JSON.stringify({ summary: completed.summary, diff: completed.diff }) });
+  await api(`/api/runs/${run.id}/nodes/${completed.id}/patch`, { method: "POST", body: JSON.stringify({ summary: completed.summary, rationale: completed.rationale, diff: completed.diff }) });
   await api(`/api/runs/${run.id}/nodes/${completed.id}/verify`, { method: "POST", body: JSON.stringify({ command: "npm test", output: "3 tests passed", exitCode: 0 }) });
   await api(`/api/runs/${run.id}/nodes/${completed.id}/complete`, { method: "POST", body: "{}" });
 }
@@ -51,7 +51,7 @@ for (const completed of [
 await api(`/api/runs/${run.id}/nodes/graph-cli/start`, { method: "POST", body: "{}" });
 await api(`/api/runs/${run.id}/nodes/graph-cli/patch`, {
   method: "POST",
-  body: JSON.stringify({ summary: "El comando ya publica mapas JSON; falta completar su verificación integral.", diff: "@@ cli commands\n+hrp graph publish <run-id> <graph.json>" }),
+  body: JSON.stringify({ summary: "El comando ya publica mapas JSON; falta completar su verificación integral.", rationale: "El CLI funciona como adaptador universal cuando no existe una integración nativa.", diff: "@@ cli commands\n+hrp graph publish <run-id> <graph.json>" }),
 });
 await api(`/api/runs/${run.id}/activity`, {
   method: "POST",
@@ -59,4 +59,3 @@ await api(`/api/runs/${run.id}/activity`, {
 });
 
 console.log(`${url}/?project=${project.id}&run=${run.id}`);
-

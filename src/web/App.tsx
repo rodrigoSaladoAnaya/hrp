@@ -186,15 +186,24 @@ function Inspector({ node, nodes, activity }: { node?: ChangeNode; nodes: Change
         </section>
       )}
 
-      <section className="inspector-intent">
-        <h3>{node.status === "pending" ? "Qué hará" : "Qué hizo"}</h3>
-        <p>{node.status === "pending" ? node.description : node.patchSummary ?? node.description}</p>
+      <section className="change-history planned-history">
+        <div className="history-heading"><h3>Qué hará</h3><span>Plan original</span></div>
+        <p className="history-summary">{node.description}</p>
+        <div className="history-rationale"><strong>Por qué se planeó</strong><p>{node.rationale}</p></div>
       </section>
 
-      <section>
-        <h3>Por qué</h3>
-        <p>{node.rationale}</p>
-      </section>
+      {node.patchSummary && (
+        <section className="change-history result-history">
+          <div className="history-heading"><h3>Qué hizo</h3><span>Resultado observado</span></div>
+          <p className="history-summary">{node.patchSummary}</p>
+          <div className="history-rationale">
+            <strong>Por qué se hizo así</strong>
+            {node.patchRationale
+              ? <p>{node.patchRationale}</p>
+              : <p className="history-missing">El agente no publicó un porqué adicional para este resultado; el motivo original permanece en el plan.</p>}
+          </div>
+        </section>
+      )}
 
       {dependencies.length > 0 && (
         <section>
@@ -388,6 +397,7 @@ export function App() {
   const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, setSelectedId), [detail?.nodes, selectedId]);
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
+  const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
 
   if (error) return <div className="fatal-error"><Icon name="warning"/><h1>HRP no pudo iniciar</h1><p>{error}</p><button onClick={() => location.reload()}>Volver a intentar</button></div>;
   if (loadingCatalog) return <><TopBar connectionState={connectionState}/><LoadingState label="Cargando proyectos"/></>;
@@ -418,7 +428,7 @@ export function App() {
                 </header>
                 {view === "map" ? (
                   detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onNodeClick={(_event, node) => setSelectedId(node.id)} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
-                    : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p></div>
+                    : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
               <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity}/>

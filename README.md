@@ -49,6 +49,7 @@ hrp graph publish "$run_id" graph.json
 hrp node start "$run_id" settings-contract
 hrp patch publish "$run_id" settings-contract \
   --summary "Se añadió el contrato de preferencias" \
+  --rationale "El contrato existente es la fuente compartida por todas las pantallas" \
   --diff-file /tmp/settings.diff
 hrp verify run "$run_id" settings-contract -- npm test
 hrp node complete "$run_id" settings-contract
@@ -80,7 +81,7 @@ hrp activity publish
 hrp state <run-id>
 ```
 
-Consulta [docs/protocol.md](docs/protocol.md) para el contrato y el formato del grafo.
+Consulta [docs/protocol.md](docs/protocol.md) para el contrato y el formato del grafo. Para conectar Codex, Claude, Gemini u otro agente, usa el manual autocontenido [docs/agent-adapter.md](docs/agent-adapter.md).
 
 ## Alcance de esta etapa
 

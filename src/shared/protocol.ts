@@ -38,6 +38,7 @@ export type ChangeNode = {
   dependencies: string[];
   diff?: string;
   patchSummary?: string;
+  patchRationale?: string;
   verification?: Verification;
   createdAt: string;
   updatedAt: string;
@@ -76,4 +77,3 @@ export type GraphInput = {
 };
 
 export const PROTOCOL_VERSION = "2.0";
-

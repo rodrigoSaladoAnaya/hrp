@@ -31,9 +31,10 @@ describe("HrpStore", () => {
     ] });
     expect(() => store.startNode(run.id, "resolve")).toThrow(/Incomplete dependencies/);
     store.startNode(run.id, "config");
-    store.publishPatch(run.id, "config", "Declared theme", "+  \"theme\": \"system\"");
+    store.publishPatch(run.id, "config", "Declared theme", "+  \"theme\": \"system\"", "The existing config is the shared source of truth");
     store.publishVerification(run.id, "config", { command: "npm test", output: "ok", exitCode: 0 });
     store.completeNode(run.id, "config");
+    expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "config")?.patchRationale).toBe("The existing config is the shared source of truth");
     expect(store.startNode(run.id, "resolve").status).toBe("running");
   });
 

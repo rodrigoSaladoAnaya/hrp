@@ -17,6 +17,7 @@
   --completed: #13704f;
   --failed: #a33a32;
   --focus: #087e96;
+  --selected-border: #2f74b5;
 }
 
 * { box-sizing: border-box; }
@@ -202,7 +203,9 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
   transition: transform 180ms cubic-bezier(.22,1,.36,1), box-shadow 180ms ease, border-color 180ms ease;
 }
 .change-node:hover { transform: translateY(-2px); box-shadow: 4px 7px 15px rgba(39,52,47,.2); }
-.change-node.is-selected { outline: 3px solid #263d36; outline-offset: 3px; }
+.change-node.is-selected { border-color: var(--selected-border); }
+.change-node.is-selected:hover { border-color: var(--selected-border); }
+.change-node.is-selected:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .change-node-running { border-color: var(--running); box-shadow: 4px 7px 16px rgba(187,107,19,.22); }
 .change-node-completed { border: 3px solid var(--completed); padding: 12px 14px 11px; }
 .change-node-failed { border: 3px solid var(--failed); padding: 12px 14px 11px; }
@@ -228,7 +231,19 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .inspector section { padding: 22px 0 20px; border-bottom: 1px solid #bdc5c0; }
 .inspector section h3 { margin: 0 0 8px; font-size: .72rem; letter-spacing: .065em; text-transform: uppercase; }
 .inspector section p { max-width: 70ch; margin: 0; color: #475550; font-size: .9rem; line-height: 1.55; }
-.inspector-intent p { color: #1e2c28 !important; font-size: 1rem !important; }
+.change-history { position: relative; }
+.history-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.history-heading span { color: #56635e; font-size: .64rem; font-weight: 750; letter-spacing: .045em; text-transform: uppercase; }
+.change-history .history-summary { color: #1e2c28; font-size: 1rem; line-height: 1.55; }
+.history-rationale { margin-top: 16px; padding-top: 13px; border-top: 1px dashed #aeb8b2; }
+.history-rationale strong { display: block; margin-bottom: 5px; color: #34433e; font-size: .7rem; letter-spacing: .045em; text-transform: uppercase; }
+.history-rationale p { font-size: .84rem !important; }
+.planned-history::before, .result-history::before { position: absolute; top: 29px; bottom: 22px; left: -20px; width: 1px; background: #7b8882; content: ""; }
+.planned-history::after, .result-history::after { position: absolute; top: 24px; left: -23px; width: 7px; height: 7px; border-radius: 50%; background: #7b8882; content: ""; }
+.result-history { background: rgba(226,238,231,.42); }
+.result-history::before { background: var(--completed); }
+.result-history::after { background: var(--completed); }
+.history-missing { color: #5a6762 !important; font-style: italic; }
 .section-title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .section-title-row span { color: #56635e; font-size: .7rem; font-variant-numeric: tabular-nums; }
 .dependency-list { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
@@ -290,6 +305,9 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .ledger-empty .icon, .map-empty .icon { width: 36px; height: 36px; margin-bottom: 14px; color: #5d6d66; }
 .ledger-empty h2, .map-empty h2 { margin: 0 0 7px; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.4rem; font-weight: 700; }
 .ledger-empty p, .map-empty p { max-width: 48ch; margin: 0; color: #3f4c47; font-size: .85rem; line-height: 1.5; }
+.map-empty-cta { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 18px; padding: 0 16px; border: 0; border-radius: 3px; color: #fff; background: #35443f; cursor: pointer; font-size: .82rem; font-weight: 750; }
+.map-empty-cta:hover { background: #2a3733; }
+.map-empty-cta .icon { width: 15px; height: 15px; margin: 0; color: inherit; }
 
 .full-empty { height: calc(100% - 74px); display: grid; align-content: center; justify-items: center; padding: 42px; color: #24302c; background: #d7dfda; text-align: center; }
 .app-shell .full-empty { height: auto; }

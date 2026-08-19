@@ -46,7 +46,7 @@ Los tokens canónicos están declarados en `src/web/styles.css`.
 
 La barra superior usa grafito `#26322f`; los paneles de lectura son claros y el diff emplea una superficie oscura `#16211e`. Los colores de estado no deben reutilizarse como decoración: comunican exclusivamente progreso o resultado.
 
-Las formas son contenidas: radios de 3–4 px, bordes visibles y sombras cortas. Las placas completadas y fallidas usan un borde de 3 px; las pendientes y en curso, 2 px. La selección añade un contorno independiente para no confundirse con el estado.
+Las formas son contenidas: radios de 3–4 px, bordes visibles y sombras cortas. Las placas completadas y fallidas usan un borde de 3 px; las pendientes y en curso, 2 px. La selección es independiente del estado: cambia únicamente el borde a un azul medio sobrio y conserva intactos el fondo, el contenido y la profundidad del nodo. El estado continúa comunicado por su icono y texto.
 
 ## Tipografía
 
@@ -69,11 +69,13 @@ El encabezado del mapa resume título, requerimiento y contador de operaciones t
 El inspector derecho es desplazable y mantiene fijo su encabezado. Su orden de lectura es:
 
 1. archivo, símbolo y estado;
-2. qué hará o qué hizo;
-3. por qué existe la operación;
+2. qué hará y por qué se planeó;
+3. qué hizo y por qué se hizo así, cuando existe resultado;
 4. dependencias directas;
 5. diff aplicado o estado pendiente;
 6. comando, resultado y salida de verificación.
+
+El resultado nunca sustituye al plan. Ambos permanecen visibles como una historia breve del cambio. Si un adaptador anterior no publicó el porqué del resultado, la interfaz declara esa ausencia en lugar de inferirlo.
 
 ## Nodos y estados
 
@@ -109,7 +111,7 @@ Una operación completada no debe representarse como terminada sólo por un mens
 - El progreso expone `role="progressbar"` y valores ARIA de 0 a 100.
 - Iconos puramente visuales están ocultos al árbol accesible; los estados conservan texto.
 - El color nunca es el único indicador de estado: borde, icono y etiqueta cambian juntos.
-- La selección del nodo se comunica mediante `aria-pressed`, no sólo por su contorno.
+- La selección del nodo se comunica mediante `aria-pressed`; el foco de teclado conserva su contorno azul.
 - Con `prefers-reduced-motion: reduce` se detienen la arista animada, la señal de carga y las transiciones del nodo, sin eliminar indiscriminadamente otros estilos.
 - El contraste de texto secundario y estados debe mantenerse al menos en nivel AA al modificar la paleta.
 

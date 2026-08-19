@@ -24,7 +24,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--diff-file", "--type", "--detail", "--node"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -124,7 +124,7 @@ Uso:
   hrp node discover <run-id> <node.json>
   hrp node start <run-id> <node-id>
   hrp node retry <run-id> <node-id>
-  hrp patch publish <run-id> <node-id> --summary TEXTO --diff-file PATH|-
+  hrp patch publish <run-id> <node-id> --summary TEXTO [--rationale TEXTO] --diff-file PATH|-
   hrp verify run <run-id> <node-id> -- <comando> [args...]
   hrp node complete <run-id> <node-id>
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
@@ -200,7 +200,7 @@ async function main() {
   if (group === "patch" && action === "publish") {
     const diffFile = value("--diff-file");
     const diff = diffFile === "-" ? readFileSync(0, "utf8") : readFileSync(path.resolve(diffFile), "utf8");
-    return print(await api(`/api/runs/${first}/nodes/${second}/patch`, { method: "POST", body: JSON.stringify({ summary: value("--summary"), diff }) }));
+    return print(await api(`/api/runs/${first}/nodes/${second}/patch`, { method: "POST", body: JSON.stringify({ summary: value("--summary"), rationale: value("--rationale"), diff }) }));
   }
   if (group === "verify" && action === "run") {
     const separator = argv.indexOf("--");

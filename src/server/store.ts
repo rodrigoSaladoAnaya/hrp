@@ -46,6 +46,7 @@ function nodeFromRow(row: Row): ChangeNode {
     dependencies: JSON.parse(String(row.dependencies_json)) as string[],
     diff: row.diff ? String(row.diff) : undefined,
     patchSummary: row.patch_summary ? String(row.patch_summary) : undefined,
+    patchRationale: row.patch_rationale ? String(row.patch_rationale) : undefined,
     verification,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -90,6 +91,7 @@ export class HrpStore {
         dependencies_json TEXT NOT NULL,
         diff TEXT,
         patch_summary TEXT,
+        patch_rationale TEXT,
         verification_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -107,6 +109,10 @@ export class HrpStore {
       CREATE INDEX IF NOT EXISTS runs_project_updated ON runs(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS activity_run_id ON activity(run_id, id DESC);
     `);
+    const nodeColumns = this.database.pragma("table_info(nodes)") as Row[];
+    if (!nodeColumns.some((column) => String(column.name) === "patch_rationale")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN patch_rationale TEXT");
+    }
   }
 
   close(): void {
@@ -240,13 +246,13 @@ export class HrpStore {
     return this.requireNode(runId, nodeId);
   }
 
-  publishPatch(runId: string, nodeId: string, summary: string, diff: string): ChangeNode {
+  publishPatch(runId: string, nodeId: string, summary: string, diff: string, rationale?: string): ChangeNode {
     const node = this.requireNode(runId, nodeId);
     if (node.status !== "running") throw new Error("Node must be running before publishing a patch");
     if (!diff.trim()) throw new Error("A real diff is required");
     const timestamp = now();
-    this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, updated_at = ? WHERE run_id = ? AND id = ?")
-      .run(diff, summary, timestamp, runId, nodeId);
+    this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, patch_rationale = ?, updated_at = ? WHERE run_id = ? AND id = ?")
+      .run(diff, summary, rationale?.trim() || null, timestamp, runId, nodeId);
     this.touchRun(runId, timestamp);
     this.addActivity(runId, "patch", `Diff aplicado: ${node.file} · ${node.symbol}`, summary, nodeId);
     return this.requireNode(runId, nodeId);

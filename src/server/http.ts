@@ -109,8 +109,8 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/nodes/:nodeId/patch", (request, response, next) => {
     try {
-      const input = z.object({ summary: z.string().min(1), diff: z.string().min(1) }).strict().parse(request.body);
-      const node = store.publishPatch(request.params.runId, request.params.nodeId, input.summary, input.diff);
+      const input = z.object({ summary: z.string().min(1), rationale: z.string().min(1).optional(), diff: z.string().min(1) }).strict().parse(request.body);
+      const node = store.publishPatch(request.params.runId, request.params.nodeId, input.summary, input.diff, input.rationale);
       broadcast(projectForRun(request.params.runId), request.params.runId, "patch-published");
       response.status(201).json(node);
     } catch (error) { next(error); }
