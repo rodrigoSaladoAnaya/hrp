@@ -24,7 +24,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -110,7 +110,7 @@ function readJson(file) {
 }
 
 function help() {
-  console.log(`Human Review Protocol CLI v2.0
+  console.log(`Human Review Protocol CLI v2.1
 
 Uso:
   hrp service <start|status|stop> [workspace]
@@ -122,8 +122,10 @@ Uso:
   hrp run delete <run-id> --yes
   hrp graph publish <run-id> <graph.json>
   hrp node discover <run-id> <node.json>
-  hrp node start <run-id> <node-id>
-  hrp node retry <run-id> <node-id>
+  hrp node approve <run-id> [node-id...]
+  hrp node assign <run-id> <node-id> <agente|->
+  hrp node start <run-id> <node-id> [--agent NOMBRE]
+  hrp node retry <run-id> <node-id> [--agent NOMBRE]
   hrp patch publish <run-id> <node-id> --summary TEXTO [--rationale TEXTO] --diff-file PATH|-
   hrp verify run <run-id> <node-id> -- <comando> [args...]
   hrp node complete <run-id> <node-id>
@@ -191,8 +193,18 @@ async function main() {
   if (group === "node" && action === "discover") {
     return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(readJson(second)) }));
   }
+  if (group === "node" && action === "approve") {
+    const nodeIds = args.slice(3);
+    return print(await api(`/api/runs/${first}/approve`, { method: "POST", body: JSON.stringify(nodeIds.length ? { nodeIds } : {}) }));
+  }
+  if (group === "node" && action === "assign") {
+    const assignee = args[4];
+    if (!assignee) throw new Error("Falta el agente: hrp node assign <run-id> <node-id> <agente|->");
+    return print(await api(`/api/runs/${first}/nodes/${second}/assign`, { method: "POST", body: JSON.stringify({ assignee: assignee === "-" ? null : assignee }) }));
+  }
   if (group === "node" && (action === "start" || action === "retry")) {
-    return print(await api(`/api/runs/${first}/nodes/${second}/start`, { method: "POST", body: "{}" }));
+    const agent = value("--agent");
+    return print(await api(`/api/runs/${first}/nodes/${second}/start`, { method: "POST", body: JSON.stringify(agent ? { agent } : {}) }));
   }
   if (group === "node" && action === "complete") {
     return print(await api(`/api/runs/${first}/nodes/${second}/complete`, { method: "POST", body: "{}" }));

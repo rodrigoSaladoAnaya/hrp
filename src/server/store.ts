@@ -43,6 +43,8 @@ function nodeFromRow(row: Row): ChangeNode {
     rationale: String(row.rationale),
     status: String(row.status) as NodeStatus,
     discovered: Number(row.discovered) === 1,
+    approved: Number(row.approved) === 1,
+    assignee: row.assignee ? String(row.assignee) : undefined,
     dependencies: JSON.parse(String(row.dependencies_json)) as string[],
     diff: row.diff ? String(row.diff) : undefined,
     patchSummary: row.patch_summary ? String(row.patch_summary) : undefined,
@@ -88,6 +90,8 @@ export class HrpStore {
         rationale TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed')),
         discovered INTEGER NOT NULL DEFAULT 0,
+        approved INTEGER NOT NULL DEFAULT 0,
+        assignee TEXT,
         dependencies_json TEXT NOT NULL,
         diff TEXT,
         patch_summary TEXT,
@@ -112,6 +116,14 @@ export class HrpStore {
     const nodeColumns = this.database.pragma("table_info(nodes)") as Row[];
     if (!nodeColumns.some((column) => String(column.name) === "patch_rationale")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN patch_rationale TEXT");
+    }
+    if (!nodeColumns.some((column) => String(column.name) === "approved")) {
+      // Los nodos previos al gate quedan aprobados para no bloquear ejecuciones ya observadas.
+      this.database.exec("ALTER TABLE nodes ADD COLUMN approved INTEGER NOT NULL DEFAULT 0");
+      this.database.exec("UPDATE nodes SET approved = 1");
+    }
+    if (!nodeColumns.some((column) => String(column.name) === "assignee")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN assignee TEXT");
     }
   }
 
@@ -219,6 +231,7 @@ export class HrpStore {
         file = excluded.file, symbol = excluded.symbol, title = excluded.title,
         description = excluded.description, rationale = excluded.rationale,
         discovered = excluded.discovered, dependencies_json = excluded.dependencies_json,
+        approved = CASE WHEN nodes.status = 'completed' THEN nodes.approved ELSE 0 END,
         updated_at = excluded.updated_at
     `);
     const timestamp = now();
@@ -236,13 +249,48 @@ export class HrpStore {
     return this.getNode(runId, node.id)!;
   }
 
-  startNode(runId: string, nodeId: string): ChangeNode {
+  approveNodes(runId: string, nodeIds?: string[]): ChangeNode[] {
+    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    const targets = nodeIds?.length
+      ? nodeIds.map((id) => this.requireNode(runId, id))
+      : (this.getRunDetail(runId)?.nodes ?? []).filter((node) => !node.approved);
+    const pending = targets.filter((node) => !node.approved);
+    if (!pending.length) throw new Error("No nodes are awaiting approval");
+    const timestamp = now();
+    const update = this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?");
+    for (const node of pending) update.run(timestamp, runId, node.id);
+    this.touchRun(runId, timestamp);
+    if (pending.length === 1) this.addActivity(runId, "node", `Aprobado por el humano: ${pending[0].file} · ${pending[0].symbol}`, undefined, pending[0].id);
+    else this.addActivity(runId, "graph", `Grafo aprobado por el humano · ${pending.length} operaciones`);
+    return pending.map((node) => this.requireNode(runId, node.id));
+  }
+
+  assignNode(runId: string, nodeId: string, assignee: string | null): ChangeNode {
     const node = this.requireNode(runId, nodeId);
+    if (node.status === "completed") throw new Error("Completed nodes cannot be reassigned");
+    const normalized = assignee?.trim() || null;
+    const timestamp = now();
+    this.database.prepare("UPDATE nodes SET assignee = ?, updated_at = ? WHERE run_id = ? AND id = ?").run(normalized, timestamp, runId, nodeId);
+    this.touchRun(runId, timestamp);
+    this.addActivity(runId, "node", normalized
+      ? `Asignado a ${normalized}: ${node.file} · ${node.symbol}`
+      : `Asignación retirada: ${node.file} · ${node.symbol}`, undefined, nodeId);
+    return this.requireNode(runId, nodeId);
+  }
+
+  startNode(runId: string, nodeId: string, agent?: string): ChangeNode {
+    const node = this.requireNode(runId, nodeId);
+    if (!node.approved) throw new Error(`Node awaits human approval: ${nodeId}. Ask the human to approve it in the HRP panel or with 'hrp node approve'`);
+    if (node.assignee && agent && agent !== node.assignee) {
+      throw new Error(`Node ${nodeId} is assigned to ${node.assignee}; agent ${agent} must not start it`);
+    }
     const blockers = node.dependencies.map((id) => this.getNode(runId, id)).filter((item) => item?.status !== "completed");
     if (blockers.length) throw new Error(`Incomplete dependencies: ${blockers.map((item) => item?.id).join(", ")}`);
     if (node.status === "completed") throw new Error("Completed nodes cannot be restarted");
+    const inFlight = this.database.prepare("SELECT id FROM nodes WHERE run_id = ? AND status = 'running' AND id != ?").get(runId, nodeId) as Row | undefined;
+    if (inFlight) throw new Error(`Another node is already running: ${String(inFlight.id)}. The workspace executes one node at a time`);
     this.updateNodeStatus(runId, nodeId, "running");
-    this.addActivity(runId, "node", `En curso: ${node.file} · ${node.symbol}`, node.description, nodeId);
+    this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId);
     return this.requireNode(runId, nodeId);
   }
 

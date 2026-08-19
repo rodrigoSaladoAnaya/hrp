@@ -87,10 +87,11 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
       <div className="node-route-head">
         <span className="node-file">{change.file}</span>
         {change.discovered && <span className="discovered-label">Descubierto</span>}
+        {!change.approved && <span className="approval-label">Por aprobar</span>}
       </div>
       <strong className="node-symbol">{change.symbol}</strong>
       <p>{change.title}</p>
-      <div className="node-status-row"><StatusSignal status={change.status}/></div>
+      <div className="node-status-row">{change.assignee && <span className="node-assignee" title={`Asignado a ${change.assignee}`}>{change.assignee}</span>}<StatusSignal status={change.status}/></div>
       {change.verification && <code className={`node-verify node-verify-${change.verification.passed ? "passed" : "failed"}`} title={change.verification.command}>{change.verification.command}</code>}
       <Handle type="source" position={Position.Right} className="route-handle" />
     </button>
@@ -154,7 +155,9 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, activity }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[] }) {
+function Inspector({ node, nodes, activity, runId, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; onChanged: () => void }) {
+  const [assigneeDraft, setAssigneeDraft] = useState("");
+  useEffect(() => { setAssigneeDraft(node?.assignee ?? ""); }, [node?.id, node?.assignee]);
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
@@ -166,6 +169,11 @@ function Inspector({ node, nodes, activity }: { node?: ChangeNode; nodes: Change
   }
   const dependencies = node.dependencies.map((id) => nodes.find((candidate) => candidate.id === id)).filter(Boolean) as ChangeNode[];
   const failedAttempts = activity.filter((item) => item.nodeId === node.id && item.type === "verify" && item.message.toLocaleLowerCase("es").includes("fallida")).length;
+  const post = (path: string, body: unknown) => {
+    fetch(`/api/runs/${runId}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then(() => onChanged())
+      .catch(() => undefined);
+  };
   return (
     <aside className="inspector" aria-live="polite">
       <header className="inspector-head">
@@ -175,6 +183,25 @@ function Inspector({ node, nodes, activity }: { node?: ChangeNode; nodes: Change
         </div>
         <StatusSignal status={node.status}/>
       </header>
+
+      {node.status !== "completed" && (
+        <section className="human-controls">
+          {!node.approved && (
+            <button type="button" className="approve-button" onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>Aprobar esta operación</button>
+          )}
+          <div className="assign-row">
+            <input
+              value={assigneeDraft}
+              onChange={(event) => setAssigneeDraft(event.target.value)}
+              placeholder="Sin agente asignado"
+              aria-label="Agente asignado"
+              list="hrp-agents"
+            />
+            <datalist id="hrp-agents"><option value="claude"/><option value="codex"/><option value="antigravity"/></datalist>
+            <button type="button" onClick={() => post(`/nodes/${node.id}/assign`, { assignee: assigneeDraft.trim() || null })}>Asignar</button>
+          </div>
+        </section>
+      )}
 
       {node.status === "failed" && (
         <section className="failure-guidance" role="alert">
@@ -399,6 +426,13 @@ export function App() {
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
+  const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
+
+  const approveAll = useCallback(async () => {
+    if (!runId) return;
+    await fetch(`/api/runs/${runId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    await loadDetail(runId);
+  }, [runId, loadDetail]);
 
   if (error) return <div className="fatal-error"><Icon name="warning"/><h1>HRP no pudo iniciar</h1><p>{error}</p><button onClick={() => location.reload()}>Volver a intentar</button></div>;
   if (loadingCatalog) return <><TopBar connectionState={connectionState}/><LoadingState label="Cargando proyectos"/></>;
@@ -427,12 +461,19 @@ export function App() {
                   <div><h1>{detail.run.title}</h1><p>{detail.run.requirement}</p></div>
                   <div className="stage-count"><strong>{detail.run.completedCount}/{detail.run.nodeCount}</strong><span>operaciones terminadas</span></div>
                 </header>
+                {unapprovedCount > 0 && (
+                  <div className="approval-banner" role="status">
+                    <Icon name="warning"/>
+                    <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} El agente no puede iniciarlas hasta tu visto bueno.</p>
+                    <button type="button" onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
+                  </div>
+                )}
                 {view === "map" ? (
                   detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onNodeClick={(_event, node) => setSelectedId(node.id)} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
             </main>
           )}
         </div>

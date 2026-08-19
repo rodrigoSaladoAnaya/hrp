@@ -42,7 +42,7 @@ Valores predeterminados:
 ```text
 URL:       http://127.0.0.1:4317
 Datos:     ~/.hrp-v2
-Protocolo: 2.0
+Protocolo: 2.1
 ```
 
 El servicio es local y no tiene autenticación. No debe exponerse directamente a una red pública.
@@ -176,6 +176,27 @@ Requisitos del grafo:
 - `symbol` identifica el método, componente, clave o sección lógica real;
 - `description` explica qué hará;
 - `rationale` explica por qué existe.
+
+### 4b. Esperar la aprobación humana
+
+Desde el protocolo 2.1, todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza su inicio hasta que el humano da el visto bueno, desde el panel (botón «Aprobar grafo» o la aprobación individual del inspector) o por CLI:
+
+```sh
+hrp node approve "$run_id"              # todo lo pendiente de aprobación
+hrp node approve "$run_id" nodo-a nodo-b # nodos concretos
+```
+
+Después de publicar el grafo, el adaptador debe avisar al humano y esperar la aprobación; puede sondear `hrp state` hasta que sus nodos muestren `approved: true`. Volver a publicar el grafo devuelve al gate los nodos no completados.
+
+El humano puede además repartir el trabajo asignando nodos a agentes concretos:
+
+```sh
+hrp node assign "$run_id" nodo-a codex   # '-' retira la asignación
+```
+
+Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar.
+
+Solo puede haber **un nodo en curso por ejecución**: el workspace es compartido y dos agentes editando o verificando a la vez se contaminan mutuamente. Si el inicio se rechaza por otro nodo en vuelo, espera a que ese nodo termine.
 
 ### 5. Ejecutar un nodo
 
@@ -376,7 +397,9 @@ http://127.0.0.1:4317
 | Consultar ejecución | `GET /api/runs/:runId` | — |
 | Publicar grafo | `POST /api/runs/:runId/graph` | `{ "nodes": [...] }` |
 | Descubrir nodo | `POST /api/runs/:runId/nodes` | nodo semántico |
-| Iniciar o reintentar | `POST /api/runs/:runId/nodes/:nodeId/start` | `{}` |
+| Aprobar nodos | `POST /api/runs/:runId/approve` | `{ "nodeIds?": [...] }` |
+| Asignar nodo | `POST /api/runs/:runId/nodes/:nodeId/assign` | `{ "assignee": "codex" \| null }` |
+| Iniciar o reintentar | `POST /api/runs/:runId/nodes/:nodeId/start` | `{ "agent?": "codex" }` |
 | Publicar parche | `POST /api/runs/:runId/nodes/:nodeId/patch` | `{ "summary", "rationale?", "diff" }` |
 | Publicar verificación | `POST /api/runs/:runId/nodes/:nodeId/verify` | `{ "command", "output", "exitCode" }` |
 | Completar nodo | `POST /api/runs/:runId/nodes/:nodeId/complete` | `{}` |
@@ -457,7 +480,10 @@ Antes de finalizar, consulta el estado y confirma que todos los nodos tengan dif
 
 Un adaptador para Codex, Claude, Gemini u otro agente es compatible cuando:
 
-- [ ] usa el protocolo `2.0` sin depender de conceptos internos del proveedor;
+- [ ] usa el protocolo `2.1` sin depender de conceptos internos del proveedor;
+- [ ] espera la aprobación humana después de publicar o descubrir nodos;
+- [ ] declara su identidad con `--agent` y respeta las asignaciones del humano;
+- [ ] respeta la regla de un nodo en curso por ejecución;
 - [ ] registra la carpeta canónica correcta;
 - [ ] crea una sola ejecución por requerimiento;
 - [ ] publica el grafo antes de modificar archivos;
@@ -475,4 +501,4 @@ Un adaptador para Codex, Claude, Gemini u otro agente es compatible cuando:
 
 ## Alcance actual de v2
 
-HRP v2 es automático y local. No incluye gates humanos, aprobaciones, pausa del agente, heartbeat, autenticación ni adaptadores oficiales por proveedor. Esas capacidades pueden añadirse alrededor del protocolo sin cambiar la identidad de los nodos ni la evidencia requerida.
+HRP 2.1 es local y añade el gate de aprobación humana, la asignación de nodos por agente y la ejecución serializada (un nodo en curso por ejecución). No incluye heartbeat, autenticación, identidad verificada de agentes (la declaración `--agent` es de buena fe) ni adaptadores oficiales por proveedor. Esas capacidades pueden añadirse alrededor del protocolo sin cambiar la identidad de los nodos ni la evidencia requerida.

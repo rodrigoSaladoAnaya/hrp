@@ -36,6 +36,7 @@ const nodes = [
 ];
 
 await api(`/api/runs/${run.id}/graph`, { method: "POST", body: JSON.stringify({ nodes }) });
+await api(`/api/runs/${run.id}/approve`, { method: "POST", body: "{}" });
 
 for (const completed of [
   { id: "node-contract", summary: "Se definió el contrato neutral de una operación semántica.", rationale: "Un contrato común mantiene la integración independiente del proveedor del agente.", diff: "@@ protocol contract\n+export type ChangeNodeInput = {\n+  file: string;\n+  symbol: string;\n+  rationale: string;\n+  dependencies: string[];\n+};" },

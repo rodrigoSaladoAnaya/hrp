@@ -35,6 +35,8 @@ export type ChangeNode = {
   rationale: string;
   status: NodeStatus;
   discovered: boolean;
+  approved: boolean;
+  assignee?: string;
   dependencies: string[];
   diff?: string;
   patchSummary?: string;
@@ -76,4 +78,4 @@ export type GraphInput = {
   nodes: ChangeNodeInput[];
 };
 
-export const PROTOCOL_VERSION = "2.0";
+export const PROTOCOL_VERSION = "2.1";

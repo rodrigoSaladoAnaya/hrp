@@ -99,9 +99,28 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  app.post("/api/runs/:runId/approve", (request, response, next) => {
+    try {
+      const input = z.object({ nodeIds: z.array(z.string()).min(1).optional() }).strict().parse(request.body ?? {});
+      const nodes = store.approveNodes(request.params.runId, input.nodeIds);
+      broadcast(projectForRun(request.params.runId), request.params.runId, "graph-approved");
+      response.json({ nodes });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/runs/:runId/nodes/:nodeId/assign", (request, response, next) => {
+    try {
+      const input = z.object({ assignee: z.string().min(1).nullable() }).strict().parse(request.body);
+      const node = store.assignNode(request.params.runId, request.params.nodeId, input.assignee);
+      broadcast(projectForRun(request.params.runId), request.params.runId, "node-assigned");
+      response.json(node);
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/runs/:runId/nodes/:nodeId/start", (request, response, next) => {
     try {
-      const node = store.startNode(request.params.runId, request.params.nodeId);
+      const input = z.object({ agent: z.string().min(1).optional() }).strict().parse(request.body ?? {});
+      const node = store.startNode(request.params.runId, request.params.nodeId, input.agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "node-started");
       response.json(node);
     } catch (error) { next(error); }
