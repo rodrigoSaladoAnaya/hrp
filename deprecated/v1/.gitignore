@@ -1,8 +1,8 @@
 node_modules/
 dist/
-.human-review/
+.vite/
 .guided/
-.env
-.env.*
+.human-review/
+coverage/
+*.log
 .DS_Store
-

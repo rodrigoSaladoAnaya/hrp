@@ -1,0 +1,51 @@
+{
+  "name": "human-review-protocol",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "tsx watch apps/server/src/index.ts",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "start": "tsx apps/server/src/index.ts",
+    "hrp": "node packages/cli/bin/hrp.mjs",
+    "build": "npm run typecheck && vite build --config apps/web/vite.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "demo:test": "npm test --workspace @guided/example-user-registration"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.11.3",
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.5",
+    "diff": "^8.0.2",
+    "express": "^5.2.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.19",
+    "@types/diff": "^7.0.2",
+    "@types/express": "^5.0.5",
+    "@types/node": "^20.17.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^6.2.6",
+    "vitest": "^3.2.4"
+  }
+}

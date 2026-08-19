@@ -1,264 +1,168 @@
----
-name: Human Review Cue Desk
-description: A vendor-neutral live cue sheet for intent, evidence, and selective human review.
-colors:
-  ink: "#14233b"
-  paper: "#f4f7f5"
-  paper-deep: "#e7ece9"
-  paper-bright: "#fbfcfb"
-  signal: "#b23722"
-  signal-deep: "#842717"
-  go: "#19745c"
-  hold: "#a75d00"
-  fail: "#a8323a"
-  quiet: "#637083"
-  rule: "#cad2cf"
-  focus: "#1a8fa3"
-  code-surface: "#101a2b"
-  code-raised: "#17243a"
-  review-required-bg: "#fbe8e3"
-  review-watch-bg: "#faebd4"
-  review-auto-bg: "#dff0ea"
-typography:
-  display:
-    fontFamily: "Barlow Condensed, Arial Narrow, sans-serif"
-    fontSize: "clamp(1.55rem, 2.2vw, 2.35rem)"
-    fontWeight: 700
-    lineHeight: 0.98
-    letterSpacing: "-0.02em"
-  headline:
-    fontFamily: "Barlow Condensed, Arial Narrow, sans-serif"
-    fontSize: "1.16rem"
-    fontWeight: 700
-    lineHeight: 1.05
-  title:
-    fontFamily: "Barlow Condensed, Arial Narrow, sans-serif"
-    fontSize: "0.96rem"
-    fontWeight: 700
-    lineHeight: 1.12
-  body:
-    fontFamily: "Aptos, Segoe UI, Helvetica Neue, sans-serif"
-    fontSize: "0.9375rem"
-    fontWeight: 400
-    lineHeight: 1.5
-  label:
-    fontFamily: "Aptos, Segoe UI, Helvetica Neue, sans-serif"
-    fontSize: "0.75rem"
-    fontWeight: 700
-    lineHeight: 1.25
-    letterSpacing: "0.07em"
-rounded:
-  micro: "3px"
-  panel: "4px"
-  control: "6px"
-  pill: "999px"
-spacing:
-  micro: "4px"
-  cue: "8px"
-  measure: "12px"
-  beat: "16px"
-  lane: "20px"
-  scene: "24px"
-components:
-  button-primary:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.paper-bright}"
-    rounded: "{rounded.control}"
-    padding: "8px 14px"
-    height: "42px"
-  button-approval:
-    backgroundColor: "{colors.signal}"
-    textColor: "{colors.paper-bright}"
-    rounded: "{rounded.control}"
-    padding: "9px 13px"
-    height: "44px"
-  button-secondary:
-    backgroundColor: "transparent"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.control}"
-    padding: "9px 13px"
-    height: "44px"
-  review-required:
-    backgroundColor: "{colors.review-required-bg}"
-    textColor: "{colors.signal-deep}"
-    rounded: "{rounded.control}"
-    padding: "8px"
-    height: "58px"
-  review-watch:
-    backgroundColor: "{colors.review-watch-bg}"
-    textColor: "{colors.hold}"
-    rounded: "{rounded.control}"
-    padding: "8px"
-    height: "58px"
-  review-auto:
-    backgroundColor: "{colors.review-auto-bg}"
-    textColor: "{colors.go}"
-    rounded: "{rounded.control}"
-    padding: "8px"
-    height: "58px"
----
+# Diseño de HRP v2
 
-# Design System: Human Review Cue Desk
+Este documento describe el sistema visual y de interacción vigente de Human Review Protocol v2. Es una referencia para mantener coherencia al extender la interfaz; la intención del producto y sus límites funcionales siguen definidos en `PRODUCT.md`.
 
-## Overview
+## Tesis visual
 
-**Creative North Star: "The Technical Director's Cue Sheet"**
+El grafo de ejecución es la interfaz principal. HRP evita una composición de dashboard con paneles equivalentes y presenta, en cambio, un tablero de enclavamiento ferroviario: una ruta técnica global a la izquierda y un único inspector de evidencia acoplado a la derecha.
 
-The product behaves like a working cue desk beside a developer's workspace: intent is sequenced, evidence is attributable, and selective review stays legible without borrowing the identity or interaction model of any agent vendor. Cool production paper, navy rules, and one live vermilion cue create an operational surface rather than an analytics dashboard.
+La metáfora no es decorativa. Las operaciones son placas de ruta, las dependencias son vías dirigidas y los estados son señales. El usuario debe poder responder en una sola mirada:
 
-The interface is dense but not compressed. Continuous lanes, ruled relationships, explicit labels, and compact production typography let developers scan the graph, change review policy, inspect evidence, and send targeted observations without losing causal context.
+1. qué operaciones componen el cambio;
+2. en qué orden dependen unas de otras;
+3. cuál está ejecutándose y cuáles terminaron;
+4. qué intención, código y verificación corresponden a la operación seleccionada.
 
-**Key Characteristics:**
+La dirección visual se inspira en un tablero ferroviario diurno: verde mineral, marfil, grafito, ámbar de movimiento y verde de señal completada. La interfaz debe sentirse técnica, sobria y legible, no como una consola oscura ni como una herramienta genérica de gestión.
 
-- Three continuous work lanes instead of a grid of interchangeable cards.
-- One saturated signal reserved for a pending human decision.
-- Review policy is always written as `REVISAR`, `OBSERVAR`, or `AUTO`; color is reinforcement only.
-- Evidence uses a dark code reel while intent and control remain on cool paper.
-- Motion announces a current state change and respects reduced-motion preferences.
+## Principios de composición
 
-## Colors
+- **El mapa domina.** La mayor superficie se reserva al grafo semántico; el inspector explica sólo el nodo activo.
+- **Una operación, una placa.** Un nodo representa `archivo + símbolo o sección lógica + intención`, no un archivo completo ni una fase abstracta.
+- **Intención y evidencia son distintas.** Antes de ejecutar se muestra qué hará y por qué. Después se muestra qué hizo, el diff y la verificación.
+- **Estado escrito además de color.** Todas las señales incluyen icono y etiqueta textual.
+- **Lo descubierto se declara.** Las operaciones añadidas durante la ejecución aparecen en el mismo mapa con la etiqueta `Descubierto`.
+- **La actividad es secundaria.** Inspecciones, comandos, parches y verificaciones viven en una vista cronológica aparte; no compiten con el mapa.
+- **Sin razonamiento privado.** La interfaz presenta razones operativas concisas, nunca cadena de pensamiento interna del modelo.
 
-The palette pairs cool production neutrals with semantic control colors. Production Ink carries structure and primary controls; Cool Cue Paper and its deeper and brighter layers separate working regions. Go Green marks running, completed, or successful evidence; Hold Amber marks watched or unavailable states; Failure Red is reserved for errors. Cyan Focus is an accessibility affordance, not a decorative accent.
+## Tokens visuales
 
-### Primary
+Los tokens canónicos están declarados en `src/web/styles.css`.
 
-- **Decision Vermilion:** The saturated signal used for the approval cue and its current action.
-- **Deep Decision Vermilion:** Hover and high-contrast text within the required-review family.
+| Token | Valor | Uso |
+| --- | --- | --- |
+| `--ink` | `#17201e` | Texto principal |
+| `--ink-soft` | `#53615c` | Texto secundario |
+| `--panel` | `#e6ebe7` | Superficies auxiliares |
+| `--field` | `#ccd6d0` | Campo del mapa |
+| `--paper` | `#f8f6ec` | Placas/nodos |
+| `--rule` | `#a6b1ab` | Divisores |
+| `--track` | `#3c4a46` | Dependencias y vías neutrales |
+| `--pending` | `#4f5d58` | Operación pendiente |
+| `--running` | `#8b4a08` | Operación en curso |
+| `--completed` | `#13704f` | Operación terminada |
+| `--failed` | `#a33a32` | Operación fallida |
+| `--focus` | `#087e96` | Foco de teclado |
 
-### Secondary
+La barra superior usa grafito `#26322f`; los paneles de lectura son claros y el diff emplea una superficie oscura `#16211e`. Los colores de estado no deben reutilizarse como decoración: comunican exclusivamente progreso o resultado.
 
-- **Go Green:** Progress, completion, successful verification, and live graph motion.
-- **Hold Amber:** Watched review policy and non-failing unavailable states.
-- **Failure Red:** Failed nodes, verification failures, and error ribbons.
+Las formas son contenidas: radios de 3–4 px, bordes visibles y sombras cortas. Las placas completadas y fallidas usan un borde de 3 px; las pendientes y en curso, 2 px. La selección añade un contorno independiente para no confundirse con el estado.
 
-### Neutral
+## Tipografía
 
-- **Production Ink:** Text, rules, the control rail, and the default primary button.
-- **Cool Cue Paper:** The persistent working canvas.
-- **Deep Cue Paper:** Tonal grouping for the graph canvas and policy controls.
-- **Bright Cue Paper:** Interactive surfaces and node interiors.
-- **Quiet Slate:** Secondary copy, metadata, and inactive status.
-- **Rule Gray:** One-pixel internal dividers.
-- **Code Navy / Raised Code Navy:** The evidence reel and its tabs, captions, and verification shelves.
+- **Display:** Saira Condensed 600/700, servida localmente mediante `@fontsource/saira-condensed`. Se usa en marca, encabezados y estados vacíos.
+- **Interfaz:** Aptos, Segoe UI y `system-ui` como respaldo. Se usa para navegación, explicaciones y controles.
+- **Código y datos:** `ui-monospace`, SFMono-Regular y Consolas. Se usa en archivos, símbolos, rutas, comandos, horas, verificaciones y diffs.
 
-### Named Rules
+La jerarquía privilegia densidad legible: títulos condensados, metadatos pequeños pero de alto contraste y texto explicativo con interlineado amplio. Archivos y símbolos deben conservar su carácter técnico mediante monoespaciada y truncarse visualmente sin perder su valor accesible.
 
-**The Signal Rule.** Saturated Decision Vermilion belongs only to a human action that is currently pending; never use it as decoration or as a generic brand color.
+## Layout de escritorio
 
-**The Words-First Rule.** Every state remains understandable through text. Color can accelerate recognition, but cannot carry protocol meaning alone.
+La aplicación ocupa el viewport y se organiza alrededor de una navegación persistente:
 
-## Typography
+1. **Barra operacional, 74 px.** Contiene marca, progreso de la ejecución, carpeta activa y estado de conexión SSE.
+2. **Árbol lateral, 300 px.** Muestra todos los proyectos y sus ejecuciones; prioriza trabajo en curso y luego ordena por actividad descendente.
+3. **Superficie principal.** Contiene el selector `Mapa / Actividad` y se divide entre el mapa flexible y un inspector de `minmax(370px, 31vw)`.
 
-**Display Font:** Barlow Condensed (self-hosted weights 600, 700, and 800; with Arial Narrow and sans-serif fallbacks)  
-**Body Font:** Aptos (with Segoe UI, Helvetica Neue, and sans-serif fallbacks)  
-**Label/Mono Font:** SFMono-Regular (with Consolas, Liberation Mono, and monospace fallbacks)
+El encabezado del mapa resume título, requerimiento y contador de operaciones terminadas. Debajo, React Flow presenta el grafo de izquierda a derecha, calculado con Dagre. Las dependencias usan flechas dirigidas; una arista en curso se destaca y puede animarse cuando no existe preferencia de movimiento reducido.
 
-**Character:** Narrow, assertive headings feel like cue labels on production equipment; the body stack stays familiar for prolonged operational reading. Monospace is a semantic instrument for diffs, commands, identifiers, and timestamps.
+El inspector derecho es desplazable y mantiene fijo su encabezado. Su orden de lectura es:
 
-### Hierarchy
+1. archivo, símbolo y estado;
+2. qué hará o qué hizo;
+3. por qué existe la operación;
+4. dependencias directas;
+5. diff aplicado o estado pendiente;
+6. comando, resultado y salida de verificación.
 
-- **Display** (700, responsive `clamp(1.55rem, 2.2vw, 2.35rem)`, 0.98 line-height): Selected-node titles and the strongest contextual hierarchy.
-- **Headline** (700, `1.16rem`, 1.05 line-height): Sticky lane headings.
-- **Title** (700, `0.96rem`, 1.12 line-height): Plan-node titles and compact production headings.
-- **Body** (400, `0.9375rem`, 1.5 line-height): Objectives and explanatory copy, generally constrained to 64–70 characters.
-- **Label** (700–850, `0.75rem`, up to `0.1em` tracking): Review badges, status labels, timestamps, evidence metadata, and control captions.
+## Nodos y estados
 
-### Named Rules
+Cada placa mide 272 px de ancho y al menos 148 px de alto. Su contenido estable es: archivo, etiqueta de descubrimiento opcional, símbolo, título de la operación y señal de estado.
 
-**The Operational Floor Rule.** No operational label, timestamp, state, or code line may render below `0.75rem`; narrow layouts reflow instead of shrinking type.
+| Estado | Tratamiento | Significado |
+| --- | --- | --- |
+| `pending` | Borde gris mineral, reloj, `Pendiente` | Declarada pero aún sin ejecución |
+| `running` | Borde ámbar, reloj, `En curso`; arista destacada | El agente trabaja en esa operación |
+| `completed` | Borde verde de 3 px, check, `Terminado` | Tiene diff real y verificación aprobada |
+| `failed` | Borde rojo de 3 px, alerta, `Falló` | La aplicación o verificación no concluyó correctamente |
 
-**The Semantic Mono Rule.** Use monospace only where fixed-width structure helps compare or attribute evidence.
+`Descubierto` es una procedencia, no un quinto estado. Identifica trabajo incorporado después del plan inicial y conserva cualquiera de los cuatro estados anteriores.
 
-## Layout
+Una operación completada no debe representarse como terminada sólo por un mensaje del agente: el protocolo exige diff y verificación aprobada. Si todavía no existe diff, el inspector dice explícitamente `Sin código todavía`.
 
-The desktop workspace fills the viewport beneath a control rail with a minimum height of `74px`. The main grid is intention / selected-node control / evidence at `29fr / 40fr / 31fr`, with minimum lane widths of `290px / 420px / 330px`. Lane headings are sticky, and the current approval cue is pinned directly below the middle heading so a required decision remains available while contextual content scrolls.
+## Interacción
 
-At `1050px`, the first two lanes become `42fr / 58fr` and the evidence reel spans the next row. At `720px`, all lanes become one ordered column; when action is pending, the context lane moves first. The control rail reduces to the product identity and hold control, then places live status on its own row. Evidence, policy, and decision subgrids collapse to a single column without reducing the type floor.
+- El grafo es de sólo lectura: no permite arrastrar nodos, crear conexiones ni seleccionar aristas.
+- El usuario puede desplazar y ampliar el lienzo; los controles de zoom tienen un objetivo mínimo de 44 × 44 px.
+- Cada nodo es un botón real. Click, `Tab`, `Shift+Tab`, `Enter` y espacio permiten seleccionarlo; `aria-pressed` comunica la selección.
+- Seleccionar un nodo actualiza el inspector sin navegación de página. El inspector usa una región viva moderada para anunciar el cambio.
+- `Mapa` y `Actividad` son botones de estado con `aria-pressed`. La actividad vinculada a una operación permite regresar a ese nodo y abre el mapa.
+- Los selectores de proyecto y ejecución actualizan la URL mediante `project` y `run`, por lo que una vista específica es compartible y recuperable.
+- La conexión en vivo distingue `Conectando`, `En vivo` y `Sin conexión`; el último estado ofrece `Reintentar`.
+- Un fallo recién observado selecciona automáticamente su nodo. El inspector explica que se reintenta dentro de la misma ejecución y conserva los intentos previos en Actividad.
+- Los estados de carga, vacío y error son diferentes. No debe mostrarse un vacío mientras todavía se consulta el registro.
 
-Spacing follows an `4 / 8 / 12 / 16 / 20 / 24px` operational rhythm. One-pixel rules establish alignment across lanes; internal blocks use measured padding rather than detached card gutters.
+## Accesibilidad
 
-## Elevation & Depth
+- El foco visible usa un contorno de 3 px en `--focus` con separación de 3 px.
+- Los controles interactivos principales mantienen un alto mínimo de 44 px.
+- El progreso expone `role="progressbar"` y valores ARIA de 0 a 100.
+- Iconos puramente visuales están ocultos al árbol accesible; los estados conservan texto.
+- El color nunca es el único indicador de estado: borde, icono y etiqueta cambian juntos.
+- La selección del nodo se comunica mediante `aria-pressed`, no sólo por su contorno.
+- Con `prefers-reduced-motion: reduce` se detienen la arista animada, la señal de carga y las transiciones del nodo, sin eliminar indiscriminadamente otros estilos.
+- El contraste de texto secundario y estados debe mantenerse al menos en nivel AA al modificar la paleta.
 
-The system is flat by default. Depth comes primarily from tonal paper layers, hard dividers, sticky overlap, and the dark evidence field. Shadows are structural responses: graph nodes are lightly lifted, hover moves them by `2px`, the active node receives a green-tinted lift, and the pending approval cue receives the strongest offset shadow. No ambient glow is used.
+## Responsive
 
-### Shadow Vocabulary
+### Hasta 1050 px
 
-- **Node Rest** (`3px 5px 12px rgba(20,35,59,.13)`): Gives graph nodes enough separation from the graph canvas.
-- **Node Hover** (`4px 7px 12px rgba(20,35,59,.14)`): Pairs with a `-2px` vertical lift.
-- **Node Active** (`5px 7px 18px rgba(25,116,92,.23)`): Marks the currently executing node, not the human decision.
-- **Approval Cue** (`4px 9px 20px rgba(20,35,59,.16)`): Holds the pending human decision above scrolling context.
+- El inspector crece proporcionalmente hasta 39 vw.
+- Se reduce el texto visible de telemetría.
+- Los rótulos `Proyecto` y `Ejecución` se ocultan, pero permanecen sus iconos y controles.
 
-### Named Rules
+### Hasta 760 px
 
-**The Flat-by-Default Rule.** Surfaces stay flat until selection, hover, execution, or pending review creates a real hierarchy change.
+- La página pasa de viewport fijo a desplazamiento vertical.
+- La barra superior se reorganiza en dos filas: marca/conexión y telemetría.
+- Los selectores ocupan dos columnas; `Mapa / Actividad` forma una fila completa debajo.
+- Mapa e inspector dejan de estar lado a lado. El mapa ocupa primero una altura de 62 vh con mínimo de 520 px y el inspector continúa debajo.
+- Se compactan encabezados y márgenes, no los objetivos táctiles.
+- La descripción del requerimiento se limita visualmente a dos líneas en el encabezado del mapa.
 
-## Shapes
+La anchura mínima soportada es 320 px. Los textos técnicos largos deben desplazarse, truncarse o envolver según su función; nunca deben ensanchar el viewport.
 
-The form language is ruled and compact. Work lanes and large content regions remain square; cue nodes and inline subjects use gently clipped `4px` corners; controls use `5–6px` corners. Pills (`999px`) are reserved for short categorical state such as review mode, node status, and counts. Circular geometry is limited to connection lights and graph handles.
+## Movimiento
 
-**The Category-Only Pill Rule.** A pill must encode a short category or status; never place paragraphs, primary actions, or arbitrary metadata inside one.
+El movimiento sirve sólo para indicar actividad:
 
-## Components
+- una arista animada señala la operación en curso;
+- el estado de carga pulsa una señal central;
+- el hover de una placa la eleva 2 px;
+- los cambios de progreso y placa usan transiciones breves de 180 ms.
 
-### Buttons
+No se usan animaciones de entrada, fondos decorativos en movimiento ni efectos que compitan con la lectura causal.
 
-- **Shape:** Compact controls with `6px` corners, `42–44px` minimum height, and dense `8–14px` internal padding.
-- **Primary:** Production Ink on Bright Cue Paper text for durable actions such as sending an observation.
-- **Approval:** Decision Vermilion with a deeper vermilion hover, used only inside the current approval cue.
-- **Secondary:** Transparent with a Production Ink border for rejection and neutral alternatives.
-- **Hover / Focus:** Hover changes surface tone without changing meaning. Every button receives a `3px` Cyan Focus outline with a `2px` offset on keyboard focus.
+## Límites de v2
 
-### Chips
+HRP v2 es una superficie local, de un solo usuario y completamente automática. Esta versión:
 
-- **Style:** `REVISAR`, `OBSERVAR`, and `AUTO` use text, border, pale semantic tint, and explicit uppercase labels. Node state stamps and change counts use the same pill silhouette with their own text.
-- **State:** Selected review-policy controls add an ink border and compact structural shadow; the semantic tint remains subordinate to the written label.
+- no incluye modos `REVISAR`, `OBSERVAR` o `AUTO` por nodo;
+- no detiene al agente en gates humanos;
+- no recibe aprobaciones, rechazos ni observaciones dirigidas;
+- no presenta políticas de revisión ni controles de pausa;
+- no almacena ni solicita cadena de pensamiento;
+- no depende de Codex, Claude, Gemini, skills o MCP;
+- no convierte el historial cronológico en el modelo principal de navegación.
 
-### Cards / Containers
+Esas capacidades pueden añadirse en una etapa posterior, pero no deben contaminar la claridad de esta base. Antes de incorporar gates, la prioridad es que cada operación sea granular, causal, seleccionable y verificable.
 
-- **Corner Style:** Continuous lanes stay square; cue nodes and approval subjects use `4px` corners.
-- **Background:** Paper layers separate graph, control, and interactive regions; the evidence lane switches to Code Navy.
-- **Shadow Strategy:** Only graph-node interaction and the pending approval cue receive elevation.
-- **Border:** One-pixel Production Ink rules separate lanes and primary sections; Rule Gray divides subordinate rows.
-- **Internal Padding:** Usually `12–20px`, following the shared rhythm.
+## Reglas para futuras extensiones
 
-### Inputs / Fields
-
-- **Style:** Bright Cue Paper, a Quiet Slate or Rule Gray stroke, `5–6px` corners, and body copy no smaller than `0.75rem`.
-- **Focus:** The shared `3px` Cyan Focus outline with a `2px` offset; textarea caret uses Decision Vermilion.
-- **Error / Disabled:** Errors are described in an alert ribbon; disabled controls lower opacity but retain their label.
-
-### Navigation
-
-The control rail is a persistent dark operational header, not product navigation. It keeps the neutral protocol identity, live status, pending command count, connection state, and pause/resume control visible. On mobile, secondary telemetry hides while live status wraps to a full-width row.
-
-### Cue Node
-
-The graph has two projections. **Changes** is the default and gives each semantic change a cue combining phase/change number, phase name, written review badge, operation/file count, written status, and dependency label. **Plan** preserves the coarser phase/gate view. Selection uses an outline; execution uses Go Green and a green-tinted shadow; superseded nodes become quieter. The node never implies that the protocol itself is an agent.
-
-### Approval Cue
-
-The sticky central cue is the only saturated Decision Vermilion surface. It names the decision, identifies the affected node or replan impact, and pairs the approval action with a neutral rejection action. Its visibility is the primary human-in-the-loop guarantee.
-
-### Evidence Reel
-
-The dark reel unifies agent-reported patches and independently observed workspace snapshots in one causal sequence. Patch tabs identify semantic scope; a second strip selects the exact file operation. The reel states what changed and why before showing the real per-file diff. Fixed-width code preserves whitespace, and added/removed lines use both sign gutters and color. Only explicitly mapped verification evidence attaches below its associated patch; missing coverage is written as an unavailable state.
-
-## Do's and Don'ts
-
-### Do:
-
-- **Do** preserve the vendor-neutral protocol identity in every label, empty state, and control.
-- **Do** keep the pending decision visible while any lane scrolls.
-- **Do** connect every verification, patch, workspace snapshot, and observation to its node and timestamp.
-- **Do** write review modes exactly as `REVISAR`, `OBSERVAR`, and `AUTO` and pair every state color with text.
-- **Do** maintain the `0.75rem` operational type floor and the `1050px` / `720px` responsive transitions.
-- **Do** expose empty, loading, offline, failed, paused, and superseded states in words.
-
-### Don't:
-
-- **Don't** present the protocol as an autonomous agent, provider dashboard, or owner of credentials.
-- **Don't** use saturated Decision Vermilion unless a human action is currently pending.
-- **Don't** turn every fact into a separate rounded card or float unrelated panels above the lane grid.
-- **Don't** use color as the only state indicator or rely on motion to convey meaning.
-- **Don't** animate completed history; motion belongs to the current transition.
-- **Don't** shrink metadata, code, or controls below the operational type floor on narrow screens.
+1. No introducir un panel permanente nuevo si la información puede vivir en el mapa, el inspector o la actividad.
+2. No agrupar varios símbolos de un archivo en un solo nodo por conveniencia visual.
+3. No marcar como completada una operación sin evidencia verificable.
+4. No sustituir etiquetas de estado por color o animación.
+5. No exponer logs crudos como explicación de intención.
+6. Mantener los contratos neutral al proveedor y separados de cualquier adaptador de agente.
+7. Probar cualquier cambio visual en escritorio, 1050 px, 760 px y 320 px, con teclado y movimiento reducido.

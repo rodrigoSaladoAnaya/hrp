@@ -1,51 +1,47 @@
 {
   "name": "human-review-protocol",
-  "version": "0.4.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=20"
+  "bin": {
+    "hrp": "bin/hrp.mjs"
   },
-  "workspaces": [
-    "packages/*",
-    "apps/*",
-    "examples/*"
-  ],
   "scripts": {
-    "dev": "concurrently -k -n server,web -c blue,magenta \"npm run dev:server\" \"npm run dev:web\"",
-    "dev:server": "tsx watch apps/server/src/index.ts",
-    "dev:web": "vite --config apps/web/vite.config.ts",
-    "start": "tsx apps/server/src/index.ts",
-    "hrp": "node packages/cli/bin/hrp.mjs",
-    "build": "npm run typecheck && vite build --config apps/web/vite.config.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "demo:test": "npm test --workspace @guided/example-user-registration"
+    "dev": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts --data-dir .hrp-dev --port 4317",
+    "dev:web": "vite",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "test": "vitest run --config vitest.config.ts",
+    "start": "node dist/server/server/index.js",
+    "seed:demo": "node scripts/seed-demo.mjs"
   },
   "dependencies": {
-    "@xyflow/react": "^12.11.3",
-    "better-sqlite3": "^12.11.1",
+    "@dagrejs/dagre": "^1.1.5",
+    "@fontsource/saira-condensed": "^5.3.0",
+    "@xyflow/react": "^12.9.2",
+    "better-sqlite3": "^12.4.1",
     "cors": "^2.8.5",
-    "diff": "^8.0.2",
-    "express": "^5.2.1",
+    "express": "^5.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
-    "@types/diff": "^7.0.2",
     "@types/express": "^5.0.5",
-    "@types/node": "^20.17.0",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
     "concurrently": "^9.2.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
-    "vite": "^6.2.6",
-    "vitest": "^3.2.4"
+    "vite": "^7.2.2",
+    "vitest": "^4.0.8"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
