@@ -1,4 +1,4 @@
-# Flujo de agente para HRP 2.2
+# Flujo de agente para HRP v3
 
 Usa este flujo desde la raíz del proyecto observado. Los ejemplos muestran el CLI; las herramientas MCP `hrp_*` exponen las mismas operaciones con argumentos estructurados.
 
@@ -72,6 +72,8 @@ Continúa sólo cuando el nodo tenga `approved: true` y esté sin asignar o asig
 
 Republicar el grafo devuelve a aprobación los nodos no completados. Hazlo sólo cuando cambie realmente el mapa y avisa al humano.
 
+Antes de elegir trabajo, consulta `run.baseAgent` en el estado. Si es `codex`, también te corresponden los nodos sin asignar y los delegados a `ollama`; si es otro agente, sólo te corresponden los nodos cuyo `assignee` sea `codex`.
+
 ## 4. Ejecutar un nodo
 
 Antes de editar:
@@ -123,7 +125,39 @@ No escondas trabajo imprevisto dentro del nodo activo. Publica otro nodo con `hr
 
 Si el descubrimiento exige cambiar dependencias de nodos pendientes, republica el mapa completo y explica que los nodos no completados requerirán aprobación otra vez.
 
-## 7. Reanudar y terminar
+## 7. Revisión multi-modelo
+
+La revisión depende del rol registrado en `run.baseAgent`.
+
+### Codex como agente base
+
+Los hallazgos cuyo último turno no sea del base tienen prioridad sobre trabajo nuevo:
+
+```sh
+hrp finding show <finding-id>
+```
+
+- Hallazgo válido: publica un nodo de corrección descubierto y vincúlalo con `hrp finding accept <finding-id> --resolution-node <node-id>`. La aceptación lo aprueba sin otro clic humano.
+- Hallazgo inválido: `hrp finding reject <finding-id> --author codex --body "Razón técnica verificable"`.
+- Duda que no puede resolverse con evidencia: `hrp finding escalate <finding-id>`.
+
+Al completarse todos los nodos, el servidor ejecuta la auditoría final automáticamente. Espera sus resultados con `hrp wait approval`, resuelve todo hallazgo vivo y confirma:
+
+```sh
+hrp review gate "$run_id"
+```
+
+### Codex como colaborador
+
+Si `run.baseAgent` pertenece a Claude u otro agente, completa sólo los nodos asignados a `codex`. No resuelvas hallazgos, no tomes nodos sin asignar y no ejecutes la auditoría final: informa al base cuando tu trabajo quede publicado y verificado.
+
+### Codex como revisor
+
+Si el humano entrega un paquete generado por `hrp review pack`, busca errores de integración, contratos rotos y desviaciones entre spec y diff. Registra problemas con `hrp finding add` y debate con `hrp finding reply`; no edites el workspace ni inventes hallazgos para rellenar.
+
+## 8. Control, reanudación y cierre
+
+Si `run.control` está `paused`, espera; si está `stopped`, no inicies más nodos y reporta lo completado. Nunca interpretes estos estados como fallos técnicos propios.
 
 Después de una interrupción, consulta `hrp state "$run_id" --json` o `hrp_get_state` y reconcilia el mapa con el workspace:
 
@@ -133,4 +167,4 @@ Después de una interrupción, consulta `hrp state "$run_id" --json` o `hrp_get_
 - no asumas que `En vivo` significa que otro agente sigue trabajando;
 - registra como descubierto el trabajo real que falte en el mapa.
 
-Antes de entregar, confirma que todos los nodos estén `completed`, tengan diff atribuible y verificación exitosa, y ejecuta la verificación integral apropiada del workspace.
+Antes de entregar como agente base, confirma que todos los nodos estén `completed`, tengan diff atribuible y verificación exitosa, que la auditoría automática haya terminado y que `hrp review gate` pase. Como colaborador, confirma únicamente tus nodos asignados y devuelve el control al base.

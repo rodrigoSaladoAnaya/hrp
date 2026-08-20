@@ -1,6 +1,6 @@
 interface:
   display_name: "Use HRP"
-  short_description: "Publica y ejecuta mapas de cambios en HRP"
-  default_prompt: "Usa $use-hrp para ejecutar esta tarea con un mapa granular y aprobación humana."
+  short_description: "Mapas, cambios y revisión multi-modelo en HRP"
+  default_prompt: "Usa $use-hrp para ejecutar esta tarea con mapa granular, aprobación humana y revisión multi-modelo."
 policy:
   allow_implicit_invocation: true

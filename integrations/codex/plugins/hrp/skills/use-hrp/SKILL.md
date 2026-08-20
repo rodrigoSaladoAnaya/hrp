@@ -1,11 +1,11 @@
 ---
 name: use-hrp
-description: Conecta una tarea de código con HRP 2.2 para publicar un mapa granular de cambios, esperar aprobación humana y conservar diffs y verificaciones por nodo. Úsalo cuando el usuario invoque $use-hrp o pida observar y autorizar el trabajo desde HRP; no lo uses en tareas que no solicitan HRP.
+description: Conecta una tarea de código con HRP v3 para publicar un mapa granular, ejecutar cambios aprobados y participar en la revisión multi-modelo con evidencia por nodo. Úsalo cuando el usuario invoque $use-hrp o pida trabajar, observar o revisar una ejecución HRP; no lo uses en tareas que no solicitan HRP.
 ---
 
 # Use HRP
 
-HRP es un protocolo local neutral. Esta skill traduce el ciclo de trabajo de Codex al protocolo 2.2 sin agregar archivos ni configuración al proyecto observado.
+HRP es un protocolo local neutral. Esta skill traduce el ciclo de trabajo de Codex al protocolo 3.0 sin agregar archivos ni configuración al proyecto observado.
 
 Antes de la primera operación HRP de una tarea, lee [references/agent-workflow.md](references/agent-workflow.md).
 
@@ -29,10 +29,28 @@ Antes de la primera operación HRP de una tarea, lee [references/agent-workflow.
 10. Publica explicaciones operativas breves y comprobables; nunca cadena de pensamiento privada, credenciales ni secretos.
 11. Al completar un nodo, reporta tu consumo con `--tokens N` únicamente si tu entorno expone el uso real de tokens; si no lo conoces, omite el parámetro. Nunca inventes el número.
 
+## Rol dentro de la ejecución
+
+Consulta `run.baseAgent` antes de actuar:
+
+- Si es `codex`, eres el agente base: trabajas nodos sin asignar o asignados a `codex`, administras los sugeridos para `ollama`, atiendes los hallazgos y no entregas hasta que `hrp review gate <run-id>` pase.
+- Si el base es otro agente, eres colaborador: trabaja únicamente nodos asignados a `codex`. No tomes nodos sin asignar, no administres `ollama` y no aceptes, rechaces ni escales hallazgos en nombre del base.
+- Si el usuario te entrega un paquete de revisión, eres revisor: reporta y debate hallazgos, pero nunca edites código.
+
+## Revisión v3
+
+Cuando seas el base, los hallazgos pendientes tienen prioridad sobre iniciar trabajo nuevo. Lee el hilo completo y decide con evidencia:
+
+- Si procede, publica un nodo de corrección y usa `hrp finding accept <id> --resolution-node <nodo>`; la aceptación autoriza ese nodo.
+- Si no procede, usa `hrp finding reject <id> --author codex --body RAZON` con argumento técnico verificable.
+- Usa `hrp finding escalate <id>` sólo para ambigüedades genuinas que la evidencia no resuelva.
+
+La auditoría final se lanza automáticamente al completarse el run. El base espera sus resultados, resuelve los hallazgos y confirma `hrp review gate`. Un colaborador termina cuando sus nodos asignados quedan completados y entrega el control al base.
+
 ## Pausas humanas
 
 Cuando el grafo quede esperando aprobación, la espera normal es `hrp wait approval` con tu identidad; si el entorno no permite bloquear o el timeout se agota repetidamente, entrega al usuario el título de la ejecución, su identificador y la URL del panel, y termina el turno. Al reanudarse la tarea, consulta el estado persistido antes de actuar; no vuelvas a crear la ejecución ni repitas parches ya aplicados.
 
 ## Límites de versión
 
-No uses comandos ni conceptos de HRP v1 como `plan publish`, `wait review`, `commands ack`, `REVISAR`, `OBSERVAR`, `AUTO` o replans versionados. En 2.2 el control humano es la aprobación de nodos, la asignación de agente y el mapa observable.
+No uses comandos ni conceptos de HRP v1 como `plan publish`, `wait review`, `commands ack`, `REVISAR`, `OBSERVAR`, `AUTO` o replans versionados. En v3 el control combina aprobación inicial, asignación de agentes, evidencia observable y revisión multi-modelo.
