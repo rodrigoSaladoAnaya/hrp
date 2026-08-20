@@ -176,6 +176,8 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .tree-run-count { flex: none; min-width: 21px; margin-right: 3px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #cdd5ce; font-size: .66rem; font-weight: 800; text-align: center; }
 .tree-approval-badge { flex: none; min-width: 21px; margin-right: 3px; padding: 1px 6px; border: 1px solid #d9b98a; border-radius: 999px; color: #6d4d05; background: #f7ecd7; font-size: .66rem; font-weight: 800; text-align: center; }
 .tree-run-approval { display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px solid #d9b98a; border-radius: 999px; color: #6d4d05; background: #f7ecd7; font-size: .58rem; font-weight: 800; text-align: center; text-transform: uppercase; vertical-align: 1px; }
+.tree-findings-badge { flex: none; min-width: 21px; margin-right: 3px; padding: 1px 6px; border: 1px solid #d9b98a; border-radius: 999px; color: #6d4d05; background: #fdf3de; font-size: .66rem; font-weight: 800; text-align: center; box-shadow: inset 0 0 0 1px #fff; }
+.tree-run-findings { display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px dashed #d9b98a; border-radius: 999px; color: #6d4d05; background: #fdf3de; font-size: .58rem; font-weight: 800; text-align: center; text-transform: uppercase; vertical-align: 1px; }
 .tree-delete { flex: none; width: 26px; min-height: 44px; align-self: center; border: 0; border-radius: 3px; color: #7c8983; background: transparent; cursor: pointer; font-size: .95rem; line-height: 1; }
 .tree-delete:hover { color: #fff; background: #a03c2c; }
 .tree-run-row { display: flex; align-items: stretch; }
@@ -293,6 +295,8 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .approval-banner p { min-width: 0; flex: 1; margin: 0; color: #5c451c; font-size: .82rem; }
 .approval-banner button { flex: none; min-height: 40px; padding: 0 15px; border: 0; border-radius: 3px; color: #fff; background: #35443f; cursor: pointer; font-size: .8rem; font-weight: 750; }
 .approval-banner button:hover { background: #2a3733; }
+.approval-banner button.approve-paused { border: 1px solid #8a6a1c; color: #6d4d05; background: transparent; }
+.approval-banner button.approve-paused:hover { color: #17201e; background: #f2d28b; }
 .human-controls { display: grid; gap: 9px; padding: 12px 0 14px; border-bottom: 1px solid #c6ccc5; }
 .approve-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 0 14px; border: 0; border-radius: 3px; color: #fff; background: #2d6a50; cursor: pointer; font-size: .8rem; font-weight: 750; }
 .approve-button:hover { background: #245741; }
@@ -490,6 +494,71 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
   .activity-ledger li { grid-template-columns: 14px 70px 1fr; gap: 9px; }
   .full-empty { min-height: 70vh; padding: 28px 18px; }
 }
+
+/* Revisión multi-modelo: hallazgos, hilo de debate y arbitraje humano. */
+.nav-findings-count { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border: 1px solid #d9b98a; border-radius: 999px; color: #6d4d05; background: #f7ecd7; font-size: .64rem; font-weight: 800; text-align: center; }
+.findings-banner { border-bottom-color: #c9a1e0; background: #f3e8f9; }
+.findings-banner .icon { color: #6a3a8c; }
+.findings-banner p { color: #533061; }
+
+.findings-panel { min-height: 0; overflow: auto; padding: 14px 18px 26px; }
+.findings-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.findings-head p { margin: 0; color: #4d5b56; font-size: .82rem; }
+.pack-copy { flex: none; min-height: 40px; padding: 0 15px; border: 1px solid #35443f; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .78rem; font-weight: 750; }
+.pack-copy:hover { color: #fff; background: #35443f; }
+
+.findings-empty { display: grid; place-content: center; justify-items: center; gap: 10px; min-height: 100%; padding: 30px; text-align: center; }
+.findings-empty .icon { width: 30px; height: 30px; color: #5d6a64; }
+.findings-empty h2 { margin: 0; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.3rem; }
+.findings-empty p { max-width: 52ch; margin: 0; color: #4d5b56; font-size: .84rem; line-height: 1.5; }
+.findings-empty code { padding: 1px 6px; border-radius: 3px; background: #e6eae4; font-size: .78rem; }
+
+.findings-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.finding-card { border: 1px solid #b6c0ba; border-radius: 4px; background: #fdfdfb; box-shadow: 2px 3px 9px rgba(38,50,47,.08); }
+.finding-card.status-accepted { border-color: #9dbfae; background: #f3f8f4; }
+.finding-card.status-rejected { border-color: #c3bdb4; background: #f4f3ef; opacity: .85; }
+.finding-card.needs-human { border-color: #a06cc4; box-shadow: 2px 3px 10px rgba(106,58,140,.18); }
+.finding-summary { width: 100%; display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 0; background: transparent; cursor: pointer; text-align: left; }
+.finding-summary strong { min-width: 0; flex: 1; overflow: hidden; font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
+.finding-meta { flex: none; color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .66rem; }
+
+.severity-chip { flex: none; padding: 2px 8px; border-radius: 999px; font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.severity-critical { border: 1px solid #c0392b; color: #8c1f14; background: #f9e2de; }
+.severity-major { border: 1px solid #d9b98a; color: #6d4d05; background: #f7ecd7; }
+.severity-minor { border: 1px solid #aab5af; color: #43514c; background: #eef0ea; }
+.severity-question { border: 1px solid #8fa8c8; color: #2d4a72; background: #e3ecf7; }
+
+.finding-detail { padding: 0 13px 13px; border-top: 1px dashed #c6ccc5; }
+.finding-node-link { margin: 10px 0 2px; padding: 2px 8px; border: 1px solid #b3bdb7; border-radius: 999px; color: #3f4c47; background: #eef0ea; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
+.finding-node-link:hover { background: #dce3de; }
+
+.debate-thread { display: grid; gap: 8px; margin-top: 10px; }
+.debate-message { max-width: 88%; padding: 8px 11px; border-radius: 6px; }
+.debate-message span { display: block; margin-bottom: 3px; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.debate-message p { margin: 0; font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
+.author-reviewer { justify-self: start; border: 1px solid #cbb691; background: #faf3e3; }
+.author-reviewer span { color: #6d4d05; }
+.author-base { justify-self: end; border: 1px solid #a9c2b3; background: #edf5ee; }
+.author-base span { color: #2d6a50; }
+.author-human { justify-self: end; border: 1px solid #b49ac9; background: #f3ebf8; }
+.author-human span { color: #6a3a8c; }
+
+.finding-resolution { margin: 10px 0 0; color: #2d6a50; font-size: .78rem; }
+.finding-resolution button { padding: 1px 7px; border: 1px solid #9dbfae; border-radius: 999px; color: #2d6a50; background: #edf5ee; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
+
+.finding-actions { display: grid; gap: 8px; margin-top: 12px; }
+.finding-actions textarea { min-height: 64px; padding: 8px 10px; border: 1px solid #aab5af; border-radius: 3px; background: #fff; font: inherit; font-size: .82rem; resize: vertical; }
+.finding-actions textarea:focus-visible { outline: 2px solid var(--focus); }
+.finding-buttons { display: flex; gap: 7px; }
+.finding-buttons button { min-height: 38px; padding: 0 14px; border-radius: 3px; cursor: pointer; font-size: .76rem; font-weight: 750; }
+.finding-buttons button:first-child { border: 1px solid #35443f; color: #35443f; background: transparent; }
+.finding-buttons button:first-child:hover:not(:disabled) { color: #fff; background: #35443f; }
+.finding-buttons button:first-child:disabled { cursor: not-allowed; opacity: .5; }
+.finding-accept { border: 1px solid #2d6a50; color: #fff; background: #2d6a50; }
+.finding-accept:hover { background: #245a43; }
+.finding-error { margin: 0; padding: 7px 10px; border: 1px solid #d7a08f; border-radius: 3px; color: #8c3029; background: #f6e0d8; font-size: .78rem; }
+.finding-reject { border: 1px solid #a03c2c; color: #a03c2c; background: transparent; }
+.finding-reject:hover { color: #fff; background: #a03c2c; }
 
 @media (prefers-reduced-motion: reduce) {
   .react-flow__edge.animated path, .loading-route span:nth-child(2) { animation: none; }

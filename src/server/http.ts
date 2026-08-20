@@ -3,7 +3,8 @@ import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
-import { activityTypes, PROTOCOL_VERSION, runControls } from "../shared/protocol.js";
+import { activityTypes, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls } from "../shared/protocol.js";
+import { buildReviewPack, runAutoReview, upstreamJson } from "./review.js";
 import { HrpStore } from "./store.js";
 
 const nodeInput = z.object({
@@ -73,10 +74,10 @@ export function createApp(store: HrpStore) {
       const settings = store.getOllamaSettings();
       if (!settings.apiKey) throw new Error("Ollama no está configurado: guarda la API key desde el panel o con 'hrp ollama config --api-key ...'");
       const model = input.model ?? settings.model;
-      const upstream = await fetch(`${settings.baseUrl}/api/chat`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
-        body: JSON.stringify({
+      const upstream = await upstreamJson(
+        `${settings.baseUrl}/api/chat`,
+        { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
+        JSON.stringify({
           model,
           stream: false,
           // Trabajo mecánico delegado: determinismo antes que creatividad.
@@ -86,12 +87,12 @@ export function createApp(store: HrpStore) {
             { role: "user", content: input.prompt },
           ],
         }),
-      });
-      const body = await upstream.json().catch(() => ({})) as {
+      );
+      const body = upstream.body as {
         model?: string; message?: { content?: string }; error?: string;
         prompt_eval_count?: number; eval_count?: number;
       };
-      if (!upstream.ok) throw new Error(`Ollama respondió ${upstream.status}: ${body.error ?? upstream.statusText}`);
+      if (upstream.statusCode >= 400) throw new Error(`Ollama respondió ${upstream.statusCode}: ${body.error ?? "error upstream"}`);
       if (input.runId && store.getRun(input.runId)) {
         try {
           const tokens = body.prompt_eval_count != null || body.eval_count != null
@@ -239,6 +240,18 @@ export function createApp(store: HrpStore) {
       const input = z.object({ tokens: z.number().int().positive().optional() }).strict().parse(request.body ?? {});
       const node = store.completeNode(request.params.runId, request.params.nodeId, input.tokens);
       broadcast(projectForRun(request.params.runId), request.params.runId, "node-completed");
+      // Política v3.1: terminar el trabajo dispara la revisión sola. Corre en
+      // segundo plano (no bloquea la respuesta) y con candado por estado, así
+      // que los descubiertos que se completen después re-disparan otra pasada.
+      const run = store.getRun(request.params.runId);
+      if (run && run.nodeCount > 0 && run.completedCount === run.nodeCount) {
+        void runAutoReview(store, request.params.runId).then((result) => {
+          const audited = store.getRun(request.params.runId);
+          // Solo hay evento si hubo hallazgos: con SIN-HALLAZGOS la nota de
+          // actividad ya informa y no hay motivo para despertar a nadie.
+          if (result && result.created > 0 && audited) broadcast(audited.projectId, audited.id, "finding-created");
+        });
+      }
       response.json(node);
     } catch (error) { next(error); }
   });
@@ -251,6 +264,72 @@ export function createApp(store: HrpStore) {
       const activity = store.addActivity(request.params.runId, input.type, input.message, input.detail, input.nodeId);
       broadcast(projectForRun(request.params.runId), request.params.runId, "activity-published");
       response.status(201).json(activity);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/runs/:runId/findings", (request, response, next) => {
+    try {
+      response.json({ findings: store.listFindings(request.params.runId) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/runs/:runId/findings", (request, response, next) => {
+    try {
+      const input = z.object({
+        reviewer: z.string().min(1),
+        severity: z.enum(findingSeverities),
+        title: z.string().min(1),
+        body: z.string().min(1),
+        nodeId: z.string().min(1).optional(),
+      }).strict().parse(request.body);
+      const finding = store.createFinding(request.params.runId, input);
+      broadcast(projectForRun(request.params.runId), request.params.runId, "finding-created");
+      response.status(201).json(finding);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/findings/:findingId", (request, response, next) => {
+    try {
+      const finding = store.getFinding(request.params.findingId);
+      if (!finding) return response.status(404).json({ error: `Unknown finding: ${request.params.findingId}` });
+      response.json(finding);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/findings/:findingId/messages", (request, response, next) => {
+    try {
+      const input = z.object({ author: z.string().min(1), body: z.string().min(1) }).strict().parse(request.body);
+      const finding = store.addFindingMessage(request.params.findingId, input.author, input.body);
+      broadcast(projectForRun(finding.runId), finding.runId, "finding-updated");
+      response.status(201).json(finding);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/findings/:findingId/status", (request, response, next) => {
+    try {
+      const input = z.object({
+        status: z.enum(findingStatuses),
+        resolutionNodeId: z.string().min(1).optional(),
+      }).strict().parse(request.body);
+      const finding = store.setFindingStatus(request.params.findingId, input.status, input.resolutionNodeId);
+      broadcast(projectForRun(finding.runId), finding.runId, "finding-updated");
+      response.json(finding);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/runs/:runId/review-pack", (request, response, next) => {
+    try {
+      const nodeId = typeof request.query.nodeId === "string" ? request.query.nodeId : undefined;
+      const pack = buildReviewPack(store, request.params.runId, nodeId);
+      store.addActivity(request.params.runId, "note", `Paquete de revisión generado${nodeId ? ` · subárbol ${nodeId}` : ""}`, undefined, nodeId);
+      broadcast(projectForRun(request.params.runId), request.params.runId, "activity-published");
+      response.type("text/markdown").send(pack);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/runs/:runId/review-gate", (request, response, next) => {
+    try {
+      response.json({ pending: store.runReviewGate(request.params.runId) });
     } catch (error) { next(error); }
   });
 

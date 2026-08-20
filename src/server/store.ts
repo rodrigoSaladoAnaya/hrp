@@ -8,8 +8,14 @@ import {
   DEFAULT_OLLAMA_MODEL,
   type Activity,
   type ActivityType,
+  findingSeverities,
+  findingStatuses,
   type ChangeNode,
   type ChangeNodeInput,
+  type Finding,
+  type FindingInput,
+  type FindingMessage,
+  type FindingStatus,
   type GraphInput,
   type NodeStatus,
   type OllamaSettings,
@@ -125,8 +131,30 @@ export class HrpStore {
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS findings (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        node_id TEXT,
+        reviewer TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK(severity IN ('critical','major','minor','question')),
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('open','debating','accepted','rejected','escalated')),
+        resolution_node_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS finding_messages (
+        id TEXT PRIMARY KEY,
+        finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        author TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS runs_project_updated ON runs(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS activity_run_id ON activity(run_id, id DESC);
+      CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id, created_at);
+      CREATE INDEX IF NOT EXISTS finding_messages_finding ON finding_messages(finding_id, created_at);
     `);
     const nodeColumns = this.database.pragma("table_info(nodes)") as Row[];
     if (!nodeColumns.some((column) => String(column.name) === "patch_rationale")) {
@@ -292,7 +320,7 @@ export class HrpStore {
       detail: row.detail ? String(row.detail) : undefined,
       createdAt: String(row.created_at),
     } satisfies Activity));
-    return { run, nodes, activity };
+    return { run, nodes, activity, findings: this.listFindings(id) };
   }
 
   publishGraph(runId: string, input: GraphInput, agent?: string): ChangeNode[] {
@@ -509,6 +537,125 @@ export class HrpStore {
     return this.requireNode(runId, nodeId);
   }
 
+  private findingFromRow(row: Row): Finding {
+    const messages = (this.database.prepare("SELECT * FROM finding_messages WHERE finding_id = ? ORDER BY created_at, rowid").all(String(row.id)) as Row[]).map((message) => ({
+      id: String(message.id),
+      findingId: String(message.finding_id),
+      author: String(message.author),
+      body: String(message.body),
+      createdAt: String(message.created_at),
+    } satisfies FindingMessage));
+    return {
+      id: String(row.id),
+      runId: String(row.run_id),
+      nodeId: row.node_id ? String(row.node_id) : undefined,
+      reviewer: String(row.reviewer),
+      severity: String(row.severity) as Finding["severity"],
+      title: String(row.title),
+      body: String(row.body),
+      status: String(row.status) as FindingStatus,
+      resolutionNodeId: row.resolution_node_id ? String(row.resolution_node_id) : undefined,
+      messages,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  createFinding(runId: string, input: FindingInput): Finding {
+    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    if (!findingSeverities.includes(input.severity)) throw new Error(`Unknown severity: ${input.severity}`);
+    if (input.nodeId) this.requireNode(runId, input.nodeId);
+    const id = randomUUID();
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO findings (id, run_id, node_id, reviewer, severity, title, body, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+    `).run(id, runId, input.nodeId ?? null, input.reviewer, input.severity, input.title, input.body, timestamp, timestamp);
+    this.addActivity(runId, "note", `Hallazgo de ${input.reviewer} (${input.severity}): ${input.title}`, input.body, input.nodeId);
+    return this.requireFinding(id);
+  }
+
+  listFindings(runId: string): Finding[] {
+    return (this.database.prepare("SELECT * FROM findings WHERE run_id = ? ORDER BY created_at, rowid").all(runId) as Row[])
+      .map((row) => this.findingFromRow(row));
+  }
+
+  getFinding(id: string): Finding | undefined {
+    const row = this.database.prepare("SELECT * FROM findings WHERE id = ?").get(id) as Row | undefined;
+    return row ? this.findingFromRow(row) : undefined;
+  }
+
+  private requireFinding(id: string): Finding {
+    const finding = this.getFinding(id);
+    if (!finding) throw new Error(`Unknown finding: ${id}`);
+    return finding;
+  }
+
+  addFindingMessage(findingId: string, author: string, body: string): Finding {
+    const finding = this.requireFinding(findingId);
+    const timestamp = now();
+    this.database.prepare("INSERT INTO finding_messages (id, finding_id, author, body, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(randomUUID(), findingId, author, body, timestamp);
+    // El primer intercambio convierte el hallazgo en debate; los estados
+    // terminales y escalated no retroceden por seguir conversando.
+    const status = finding.status === "open" ? "debating" : finding.status;
+    this.database.prepare("UPDATE findings SET status = ?, updated_at = ? WHERE id = ?").run(status, timestamp, findingId);
+    this.addActivity(finding.runId, "note", `Debate (${author}): ${finding.title}`, body, finding.nodeId);
+    return this.requireFinding(findingId);
+  }
+
+  setFindingStatus(findingId: string, status: FindingStatus, resolutionNodeId?: string): Finding {
+    const finding = this.requireFinding(findingId);
+    if (!findingStatuses.includes(status)) throw new Error(`Unknown finding status: ${status}`);
+    if (resolutionNodeId) this.requireNode(finding.runId, resolutionNodeId);
+    // Sin nodo de corrección ni un solo turno que documente la resolución, la
+    // aceptación sería silenciosa: el gate la daría por resuelta sin reparación.
+    if (status === "accepted" && !resolutionNodeId && !finding.resolutionNodeId && finding.messages.length === 0) {
+      throw new Error("Accepting requires a resolution: link a correction node (--resolution-node) or reply in the thread documenting why none is needed");
+    }
+    // Aceptar la corrección ES autorizarla (política v3.1): el nodo nacido del
+    // debate no espera el clic humano; el monitor puede objetar en una segunda
+    // corrida. Los nodos ajenos al debate conservan el gate humano intacto.
+    // Todo dentro de una transacción: el hallazgo no puede quedar accepted con
+    // su nodo sin aprobar si algo falla a la mitad.
+    this.database.transaction(() => {
+      this.database.prepare("UPDATE findings SET status = ?, resolution_node_id = COALESCE(?, resolution_node_id), updated_at = ? WHERE id = ?")
+        .run(status, resolutionNodeId ?? null, now(), findingId);
+      const resolvedNodeId = resolutionNodeId ?? finding.resolutionNodeId;
+      if (status === "accepted" && resolvedNodeId) {
+        const resolutionNode = this.getNode(finding.runId, resolvedNodeId);
+        if (resolutionNode && !resolutionNode.approved) {
+          // La autoridad del base cubre solo las correcciones nacidas del
+          // debate (nodos descubiertos); un nodo del plan inicial vinculado
+          // como resolución conserva el gate humano intacto.
+          if (resolutionNode.discovered) {
+            this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?")
+              .run(now(), finding.runId, resolvedNodeId);
+            this.addActivity(finding.runId, "node", `Corrección autorizada por la aceptación del hallazgo (agente base): ${resolvedNodeId}`, finding.title, resolvedNodeId);
+          } else {
+            this.addActivity(finding.runId, "node", `La corrección vinculada pertenece al plan inicial y conserva el gate humano: ${resolvedNodeId}`, finding.title, resolvedNodeId);
+          }
+        }
+      }
+      const labels: Record<FindingStatus, string> = {
+        open: "Hallazgo reabierto",
+        debating: "Hallazgo en debate",
+        accepted: "Hallazgo aceptado",
+        rejected: "Hallazgo rechazado",
+        escalated: "Hallazgo escalado al humano",
+      };
+      const resolutionNote = resolutionNodeId ? ` · corrección: ${resolutionNodeId}` : "";
+      this.addActivity(finding.runId, "note", `${labels[status]}: ${finding.title}${resolutionNote}`, undefined, finding.nodeId);
+    })();
+    return this.requireFinding(findingId);
+  }
+
+  // Hallazgos que impiden dar por cerrado el run: vivos u olvidados sin arbitrar.
+  runReviewGate(runId: string): Finding[] {
+    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    return this.listFindings(runId).filter((finding) => ["open", "debating", "escalated"].includes(finding.status));
+  }
+
   addActivity(runId: string, type: ActivityType, message: string, detail?: string, nodeId?: string): Activity {
     const createdAt = now();
     const result = this.database.prepare("INSERT INTO activity (run_id, node_id, type, message, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -526,6 +673,9 @@ export class HrpStore {
         SUM(CASE WHEN approved = 0 THEN 1 ELSE 0 END) AS awaitingApproval
       FROM nodes WHERE run_id = ?
     `).get(String(row.id)) as Row;
+    const findingCounts = this.database.prepare(
+      "SELECT COUNT(*) AS open FROM findings WHERE run_id = ? AND status IN ('open','debating','escalated')",
+    ).get(String(row.id)) as Row;
     const total = Number(counts.total ?? 0);
     const completed = Number(counts.completed ?? 0);
     const status: NodeStatus = Number(counts.failed ?? 0) > 0 ? "failed"
@@ -538,6 +688,7 @@ export class HrpStore {
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
       nodeCount: total, completedCount: completed, awaitingApproval: Number(counts.awaitingApproval ?? 0),
+      openFindings: Number(findingCounts.open ?? 0),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),
     };
   }

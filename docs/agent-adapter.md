@@ -1,6 +1,6 @@
-# Integración de agentes con HRP v2
+# Integración de agentes con HRP v3
 
-Este documento es el contrato de integración para conectar un agente de programación —Codex, Claude, Gemini o cualquier implementación propia— con Human Review Protocol v2.
+Este documento es el contrato de integración para conectar un agente de programación —Codex, Claude, Gemini o cualquier implementación propia— con Human Review Protocol v3 (protocolo 3.0).
 
 HRP es neutral al proveedor. El agente puede publicar mediante el CLI `hrp` o mediante HTTP; no necesita MCP, una skill ni cambios dentro del proyecto observado. Las integraciones específicas de un proveedor deben limitarse a traducir su ciclo de trabajo a este protocolo.
 
@@ -369,6 +369,8 @@ hrp run stop <run-id>
 
 El servidor rechaza `node start` mientras la ejecución esté pausada o detenida, así que el control aplica a **todos** los agentes por igual (claude, codex, antigravity y ollama). El nodo que ya estaba en curso no se aborta: termina su ciclo o falla.
 
+**Aprobar en pausa.** El banner de aprobación ofrece dos caminos: «Aprobar grafo» autoriza y los agentes arrancan de inmediato, y «Aprobar en pausa» autoriza el plan dejando la ejecución pausada — el humano asigna nodos, copia las instrucciones de cada agente y abre sus sesiones con calma, y reanuda cuando todo esté conectado. Los agentes en `hrp wait approval` ven la pausa y esperan sin abandonar.
+
 Conducta esperada del agente:
 
 - **Pausada** (`Run is paused by the human…`): no es un error tuyo. Sondea `hrp state <run-id> --json` (campo `run.control`) o deja corriendo `hrp wait approval`, que sigue esperando y anuncia trabajo solo al reanudarse. Retoma exactamente donde ibas.
@@ -408,13 +410,60 @@ Antes de entregar la tarea al humano:
 hrp state "$run_id" --json
 ```
 
-Confirma que:
+Confirma —leyendo el JSON de `hrp state`, no releyendo tu trabajo— que:
 
-- todos los nodos estén `completed`;
-- cada nodo tenga diff;
-- cada nodo tenga verificación aprobada;
+- todos los nodos estén `completed`, cada uno con diff y verificación aprobada;
 - el mapa incluya los cambios descubiertos;
-- el workspace haya pasado la verificación integral apropiada.
+- el workspace haya pasado **una sola vez** la verificación ejecutable integral (tests/build del proyecto: la corre la máquina, no tu juicio);
+- `hrp review gate "$run_id"` pase (código 0): una ejecución con hallazgos vivos de la revisión no puede darse por cerrada.
+
+**El base no se re-verifica.** El cierre no incluye releer tus propios diffs ni una pasada de auto-auditoría: el mismo modelo que escribió el código tiene sus mismos puntos ciegos y esa relectura cuesta casi tanto como la autoría. La pasada final de calidad pertenece a los modelos pares (regla de diversidad: **el auditor nunca es el mismo modelo que el base** — si el base es claude, audita kimi u otro modelo; si es codex, igual). Resolver los hallazgos del debate y correr el gate son cierre administrativo, no re-verificación.
+
+## Revisión multi-modelo (protocolo v3)
+
+El objetivo de la v3 es la calidad del producto, no el ahorro de tokens: otros modelos actúan como **revisores y auditores** del trabajo del agente base, y sus hallazgos abren un debate que termina en acuerdo o en arbitraje humano. La ejecución conserva todo el ciclo v2 (grafo, gate, evidencia por nodo); la revisión se monta encima de esa evidencia.
+
+### Cuándo se revisa
+
+- **Checkpoint por flujo**: al completarse una cadena de dependencias (un flujo funcional), el base lanza por sí mismo la revisión de ese subárbol (`hrp ollama review <run-id> --node <nodo-hoja>`, o genera `hrp review pack <run-id> --node <nodo-hoja>` para que el humano lo copie a otro modelo con sesión). Revisar el flujo integrado —y no nodo por nodo— es deliberado: los errores valiosos para un segundo modelo son los de integración, y el gate por nodo duplicaría ceremonia y serializaría la ejecución.
+- **Auditoría final automática**: al quedar todos los nodos completados, el servidor lanza solo la auditoría del run completo (ver «Auditoría automática al completar»); nadie tiene que pedirla.
+- Los hallazgos **no bloquean nodos individuales**; bloquean el **cierre del run**: `hrp review gate <run-id>` sale con código 1 mientras existan hallazgos en `open`, `debating` o `escalated`.
+
+### Contrato del modelo revisor
+
+El humano convierte a cualquier modelo con sesión (Codex, Gemini, otro Claude) en revisor copiándole el paquete de `hrp review pack <run-id>` (o el botón «Copiar paquete de revisión» del panel). El paquete incluye el requisito, el grafo, los hallazgos ya reportados y, por nodo completado, la spec aprobada, el diff y la verificación. El revisor:
+
+- audita buscando **errores de integración entre nodos, contratos rotos, desviaciones entre la spec aprobada y el diff aplicado, y casos borde sin cubrir**;
+- reporta cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer SU_NOMBRE`;
+- debate las respuestas del base con `hrp finding reply <finding-id> --author SU_NOMBRE --body ...`, con argumentos técnicos y citas al diff;
+- **nunca edita código**: su salida son hallazgos y debate;
+- si no encuentra nada real, lo dice; inventar hallazgos para rellenar contamina el debate y el registro.
+
+### Contrato del agente base (autoridad v3.1)
+
+Quien autoriza los cambios del debate es el **agente base**; el humano es monitor. En concreto:
+
+- `hrp wait approval` avisa cuando hay hallazgos cuyo último turno no es del base; atenderlos tiene prioridad sobre iniciar nodos nuevos.
+- Cada hallazgo se **resuelve con autoridad propia**: si procede, el base lo acepta creando el nodo de corrección como trabajo descubierto (`hrp node discover`) y lo vincula con `hrp finding accept <id> --resolution-node NODO` — **la aceptación autoriza el nodo de corrección** (queda aprobado en el acto, sin clic humano); si no procede, lo **rechaza** con `hrp finding reject`, también frente a revisores sin sesión, dejando la razón técnica en el hilo (spec, requisito o evidencia ejecutable, nunca autoridad).
+- `hrp finding escalate` es un **recurso opcional** para dudas genuinas que el base no puede resolver con evidencia (ambigüedad del requisito, decisiones de producto); ya no es la salida obligada del desacuerdo.
+- `hrp finding reject` exige `--author` y `--body`: la razón del descarte queda en el hilo antes del cambio de estado. Un rechazo sin argumento técnico verificable es un abuso de la autoridad del base.
+- El gate humano **inicial** del grafo se mantiene: la autoridad del base cubre el ciclo de revisión, no el plan de la ejecución.
+
+### El humano como monitor: la segunda corrida
+
+El humano observa los hallazgos y sus hilos en el panel (insignias «En debate», vista Hallazgos) y puede intervenir cuando quiera — terciar en un hilo, aceptar o rechazar por encima del base. Si al revisar el resultado final objeta una resolución del base, la objeción se materializa como una **segunda corrida**: una ejecución nueva cuyo requisito cita el hallazgo o la decisión objetada y cuyos nodos aplican la corrección, pasando por el ciclo completo de evidencia y revisión.
+
+### Auditoría automática al completar
+
+Cuando todos los nodos de una ejecución quedan `completed`, el servidor lanza por sí solo la auditoría del run con el modelo de Ollama configurado (mismo contrato del revisor estricto: temperatura 0, `NECESITO`, `SIN-HALLAZGOS`, registro todo-o-nada). Un candado por estado de nodos completados evita repetirla; los nodos descubiertos que se completen después re-disparan otra pasada solo sobre el estado nuevo. Todo desenlace —hallazgos, sin hallazgos, omisión por falta de configuración o fallo— queda anotado en la Actividad. `hrp ollama review` sigue disponible para pasadas manuales o por subárbol (`--node`).
+
+### Revisor automático (Ollama Cloud)
+
+`hrp ollama review <run-id> [--node ID]` audita el paquete con el modelo configurado a temperatura 0: responde un arreglo JSON de hallazgos o el literal `SIN-HALLAZGOS`, puede pedir contexto con `NECESITO:` en lugar de suponer, y el registro es todo-o-nada (un lote malformado no registra nada). Los hallazgos quedan como `reviewer: ollama:<modelo>` y la consulta se audita en Actividad con sus tokens.
+
+### Arbitraje humano
+
+La vista **Hallazgos** del panel muestra cada hallazgo con su hilo completo (revisor, base y humano distinguibles); el humano puede terciar como `human`, **Aceptar**, o **Rechazar** dejando la razón obligatoria en el hilo. Los hallazgos escalados resaltan y generan un aviso en el run y las insignias «En debate» en el árbol de proyectos, visibles aun con los proyectos colapsados.
 
 ## Delegación a Ollama Cloud
 
@@ -535,16 +584,18 @@ ejecutar_verificacion_integral()
 
 ## Instrucción reutilizable para otro agente
 
-Puedes entregar este bloque junto con el requerimiento:
+Puedes entregar este bloque junto con el requerimiento (es la misma plantilla de doble rol que copia el panel por agente):
 
 ```text
-Integra esta tarea con Human Review Protocol v2 siguiendo docs/agent-adapter.md.
+Integra esta tarea con Human Review Protocol v3 siguiendo docs/agent-adapter.md. Tienes doble rol: ejecutor y revisor.
 
-Trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está disponible y HTTP local como alternativa. Antes de editar, registra el workspace, crea una sola ejecución y publica un grafo granular: un nodo por archivo + símbolo o sección lógica + intención, con dependencias reales.
+Como ejecutor, trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está disponible y HTTP local como alternativa. Antes de editar, registra el workspace, crea una sola ejecución y publica un grafo granular: un nodo por archivo + símbolo o sección lógica + intención, con dependencias reales.
 
 Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones y ejecuta sólo un nodo a la vez. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
 
-Antes de finalizar, consulta el estado y confirma que todos los nodos tengan diff y verificación aprobada.
+Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE` y debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...`. Como revisor nunca edites código ajeno y no inventes hallazgos: decir que no encontraste nada es una respuesta valiosa. Nunca audites tus propios nodos: el auditor no es el autor.
+
+Antes de finalizar, consulta el estado, confirma que todos los nodos tengan diff y verificación aprobada, atiende los debates que te mencionen y verifica el cierre con `hrp review gate <run-id>`.
 ```
 
 ## Checklist de compatibilidad
@@ -570,6 +621,6 @@ Un adaptador para Codex, Claude, Gemini u otro agente es compatible cuando:
 - [ ] no solicita ni almacena cadena de pensamiento;
 - [ ] termina con todos los nodos completados y una verificación integral del workspace.
 
-## Alcance actual de v2
+## Alcance actual de v3
 
-HRP 2.1 es local y añade el gate de aprobación humana, la asignación de nodos por agente y la ejecución serializada (un nodo en curso por ejecución). No incluye heartbeat, autenticación, identidad verificada de agentes (la declaración `--agent` es de buena fe) ni adaptadores oficiales por proveedor. Esas capacidades pueden añadirse alrededor del protocolo sin cambiar la identidad de los nodos ni la evidencia requerida.
+HRP 3.0 es local y añade, sobre el ciclo v2 (gate de aprobación humana, asignación de nodos por agente, ejecución serializada, delegación a Ollama Cloud), la revisión multi-modelo: hallazgos con hilo de debate entre revisor y base, arbitraje humano en el panel y `review gate` que impide cerrar una ejecución con hallazgos vivos. No incluye heartbeat, autenticación, identidad verificada de agentes (la declaración `--agent` es de buena fe) ni adaptadores oficiales por proveedor. Esas capacidades pueden añadirse alrededor del protocolo sin cambiar la identidad de los nodos ni la evidencia requerida.

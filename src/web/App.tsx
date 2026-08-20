@@ -14,7 +14,7 @@ import {
   type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import type { Activity, ChangeNode, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
+import type { Activity, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -340,7 +340,9 @@ function AgentDock({ run, nodes, workspaceRoot, ollama }: { run: RunSummary; nod
     // ollama no abre su propia sesión: la instrucción va a la sesión del modelo
     // base, que administra la delegación y revisa el resultado antes de publicar.
     ? `Como modelo base de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, trabaja los nodos asignados a "ollama" delegando la implementación: inicia cada nodo con hrp node start --agent ollama, genera el cambio con hrp ollama run --prompt-file <prompt con el contexto del nodo>, revisa y corrige el resultado como administrador, aplica el cambio, y publica su diff y su verificación antes de completarlo.`
-    : `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""} siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
+    // Doble rol (v3.2): además de ejecutar sus nodos, cada agente con sesión
+    // participa como revisor en la auditoría multi-modelo, como ya hace ollama.
+    : `Tienes doble rol en la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, siguiendo docs/agent-adapter.md. (1) Ejecutor: trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} — consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo. (2) Revisor: audita el trabajo completado por los demás agentes — obtén el contexto con hrp review pack ${run.id}, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer ${agent}, y debate las respuestas con hrp finding reply <finding-id> --author ${agent} --body ...; como revisor nunca edites código ajeno, no inventes hallazgos, y nunca audites tus propios nodos: el auditor no es el autor. Espera trabajo nuevo o debates con hrp wait approval ${run.id} --agent ${agent}, y antes de dar tu parte por terminada verifica el cierre con hrp review gate ${run.id}.`;
   const copyCommand = async (agent: string) => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
@@ -423,6 +425,144 @@ function ActivityLedger({ activity, nodes, onSelect }: { activity: Activity[]; n
   );
 }
 
+const severityCopy: Record<Finding["severity"], string> = { critical: "crítico", major: "mayor", minor: "menor", question: "duda" };
+const findingStatusCopy: Record<Finding["status"], string> = { open: "abierto", debating: "en debate", accepted: "aceptado", rejected: "rechazado", escalated: "esperando tu arbitraje" };
+const liveFindingStatuses: Finding["status"][] = ["open", "debating", "escalated"];
+
+function openFindingsTotal(project: ProjectWithRuns): number {
+  return project.runs.reduce((sum, run) => sum + run.openFindings, 0);
+}
+
+function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
+  findings: Finding[];
+  nodes: ChangeNode[];
+  runId: string;
+  onChanged: () => void;
+  onSelectNode: (id: string) => void;
+}) {
+  const [expandedId, setExpandedId] = useState<string>("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [packFeedback, setPackFeedback] = useState<"copied" | "failed">();
+  const copyPack = async () => {
+    try {
+      const response = await fetch(`/api/runs/${runId}/review-pack`);
+      if (!response.ok) throw new Error(await response.text());
+      await navigator.clipboard.writeText(await response.text());
+      setPackFeedback("copied");
+    } catch {
+      setPackFeedback("failed");
+    }
+    setTimeout(() => setPackFeedback(undefined), 2500);
+  };
+  // Un fallo del servidor no puede disfrazarse de éxito: el error se muestra en
+  // la tarjeta y el borrador se conserva para reintentar sin reescribir.
+  const post = async (findingId: string, endpoint: string, body: unknown): Promise<boolean> => {
+    const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => undefined);
+    if (!response?.ok) {
+      const detail = response ? (await response.json().catch(() => ({}))) as { error?: string } : {};
+      setActionErrors((previous) => ({ ...previous, [findingId]: detail.error ?? "El servidor no respondió; reintenta." }));
+      return false;
+    }
+    setActionErrors((previous) => ({ ...previous, [findingId]: "" }));
+    onChanged();
+    return true;
+  };
+  const intervene = async (finding: Finding) => {
+    const draft = (drafts[finding.id] ?? "").trim();
+    if (!draft) return;
+    if (await post(finding.id, `/api/findings/${finding.id}/messages`, { author: "human", body: draft })) {
+      setDrafts((previous) => ({ ...previous, [finding.id]: "" }));
+    }
+  };
+  const arbitrate = async (finding: Finding, status: "accepted" | "rejected") => {
+    if (status === "rejected") {
+      // El rechazo sin razón no es auditable: la razón queda en el hilo antes
+      // del cambio de estado, escrita por el humano.
+      const reason = (drafts[finding.id] ?? "").trim() || window.prompt("Razón del rechazo (queda en el hilo del debate):")?.trim();
+      if (!reason) return;
+      if (!await post(finding.id, `/api/findings/${finding.id}/messages`, { author: "human", body: reason })) return;
+      setDrafts((previous) => ({ ...previous, [finding.id]: "" }));
+      await post(finding.id, `/api/findings/${finding.id}/status`, { status });
+      return;
+    }
+    // Aceptar ata la corrección: el ID puede omitirse solo si la resolución ya
+    // quedó documentada en el hilo (el servidor rechaza el accept silencioso).
+    const resolution = window.prompt("ID del nodo de corrección que resuelve el hallazgo (déjalo vacío si la resolución quedó documentada en el hilo):")?.trim();
+    if (resolution === undefined) return;
+    await post(finding.id, `/api/findings/${finding.id}/status`, resolution ? { status, resolutionNodeId: resolution } : { status });
+  };
+  const copyPackButton = (
+    <button type="button" className="pack-copy" title="Copia el paquete markdown con todo el contexto del run (specs, diffs y verificaciones) para pegarlo en la sesión de otro modelo y convertirlo en revisor" onClick={() => { copyPack().catch(() => undefined); }}>
+      {packFeedback === "copied" ? "Paquete copiado" : packFeedback === "failed" ? "No se pudo copiar" : "Copiar paquete de revisión"}
+    </button>
+  );
+  if (!findings.length) {
+    return (
+      <div className="findings-empty">
+        <Icon name="check"/>
+        <h2>Sin hallazgos todavía</h2>
+        <p>Convierte a otro modelo en revisor: copia el paquete de revisión a su sesión, o lanza al revisor automático con <code>hrp ollama review {runId}</code>.</p>
+        {copyPackButton}
+      </div>
+    );
+  }
+  return (
+    <div className="findings-panel">
+      <header className="findings-head">
+        <p>{findings.filter((finding) => liveFindingStatuses.includes(finding.status)).length} vivos de {findings.length}; la ejecución no puede cerrarse con hallazgos vivos.</p>
+        {copyPackButton}
+      </header>
+      <ol className="findings-list">
+        {findings.map((finding) => {
+          const node = finding.nodeId ? nodes.find((candidate) => candidate.id === finding.nodeId) : undefined;
+          const expanded = expandedId === finding.id;
+          const terminal = finding.status === "accepted" || finding.status === "rejected";
+          return (
+            <li key={finding.id} className={`finding-card status-${finding.status} ${finding.status === "escalated" ? "needs-human" : ""}`}>
+              <button type="button" className="finding-summary" aria-expanded={expanded} onClick={() => setExpandedId(expanded ? "" : finding.id)}>
+                <span className={`severity-chip severity-${finding.severity}`}>{severityCopy[finding.severity]}</span>
+                <strong>{finding.title}</strong>
+                <span className="finding-meta">{finding.reviewer} · {findingStatusCopy[finding.status]}</span>
+              </button>
+              {expanded && (
+                <div className="finding-detail">
+                  {node && <button type="button" className="finding-node-link" onClick={() => onSelectNode(node.id)}>{node.file} · {node.symbol}</button>}
+                  <div className="debate-thread">
+                    <div className="debate-message author-reviewer"><span>{finding.reviewer}</span><p>{finding.body}</p></div>
+                    {finding.messages.map((message) => (
+                      <div key={message.id} className={`debate-message ${message.author === "human" ? "author-human" : message.author === finding.reviewer ? "author-reviewer" : "author-base"}`}>
+                        <span>{message.author === "human" ? "tú" : message.author}</span>
+                        <p>{message.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {finding.resolutionNodeId && <p className="finding-resolution">Corrección vinculada: <button type="button" onClick={() => onSelectNode(finding.resolutionNodeId!)}>{finding.resolutionNodeId}</button></p>}
+                  {!terminal && (
+                    <div className="finding-actions">
+                      <textarea
+                        placeholder={finding.status === "escalated" ? "Tu arbitraje: tercia en el debate o escribe la razón del rechazo…" : "Tercia en el debate como humano…"}
+                        value={drafts[finding.id] ?? ""}
+                        onChange={(event) => setDrafts((previous) => ({ ...previous, [finding.id]: event.target.value }))}
+                      />
+                      <div className="finding-buttons">
+                        <button type="button" onClick={() => { intervene(finding).catch(() => undefined); }} disabled={!(drafts[finding.id] ?? "").trim()}>Responder</button>
+                        <button type="button" className="finding-accept" title="Da la razón al revisor; idealmente el agente base ya vinculó (o descubrirá) un nodo de corrección" onClick={() => { arbitrate(finding, "accepted").catch(() => undefined); }}>Aceptar</button>
+                        <button type="button" className="finding-reject" title="Descarta el hallazgo; la razón que escribas queda en el hilo" onClick={() => { arbitrate(finding, "rejected").catch(() => undefined); }}>Rechazar</button>
+                      </div>
+                      {actionErrors[finding.id] && <p className="finding-error" role="alert">{actionErrors[finding.id]}</p>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 function EmptyState({ kind }: { kind: "projects" | "runs" }) {
   return (
     <main className="full-empty">
@@ -492,6 +632,14 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
                     aria-label={`${awaitingApprovals(project)} ${awaitingApprovals(project) === 1 ? "operación espera" : "operaciones esperan"} tu aprobación`}
                   >{awaitingApprovals(project)}</span>
                 )}
+                {openFindingsTotal(project) > 0 && (
+                  <span
+                    className="tree-findings-badge"
+                    role="status"
+                    title={`${openFindingsTotal(project)} ${openFindingsTotal(project) === 1 ? "hallazgo vivo de la revisión" : "hallazgos vivos de la revisión"}`}
+                    aria-label={`${openFindingsTotal(project)} ${openFindingsTotal(project) === 1 ? "hallazgo vivo de la revisión" : "hallazgos vivos de la revisión"}`}
+                  >{openFindingsTotal(project)}</span>
+                )}
                 {collapsed && runs.length > 0 && <span className="tree-run-count" aria-label={`${runs.length} ejecuciones`}>{runs.length}</span>}
                 <button type="button" className="tree-delete" aria-label={`Eliminar el proyecto ${project.name}`} title="Eliminar proyecto" onClick={() => onDeleteProject(project)}>×</button>
               </div>
@@ -502,7 +650,7 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
                       <button type="button" className={`tree-run status-${run.status} ${run.id === runId ? "is-current" : ""}`} aria-current={run.id === runId ? "page" : undefined} onClick={() => onRun(project.id, run.id)}>
                         <span className="tree-signal"/>
                         <span className="tree-run-copy">
-                          <strong>{run.title}{run.awaitingApproval > 0 && <span className="tree-run-approval" title={`${run.awaitingApproval} ${run.awaitingApproval === 1 ? "operación espera" : "operaciones esperan"} tu aprobación`}>Por aprobar</span>}</strong>
+                          <strong>{run.title}{run.awaitingApproval > 0 && <span className="tree-run-approval" title={`${run.awaitingApproval} ${run.awaitingApproval === 1 ? "operación espera" : "operaciones esperan"} tu aprobación`}>Por aprobar</span>}{run.openFindings > 0 && <span className="tree-run-findings" title={`${run.openFindings} ${run.openFindings === 1 ? "hallazgo vivo" : "hallazgos vivos"} de la revisión multi-modelo`}>En debate</span>}</strong>
                           <small>{statusCopy[run.status]} · {run.completedCount}/{run.nodeCount} · {formatter.format(new Date(run.updatedAt))}</small>
                         </span>
                       </button>
@@ -526,7 +674,7 @@ export function App() {
   const [runId, setRunId] = useState(() => new URLSearchParams(location.search).get("run") ?? "");
   const [detail, setDetail] = useState<RunDetail>();
   const [selectedId, setSelectedId] = useState<string>();
-  const [view, setView] = useState<"map" | "activity">("map");
+  const [view, setView] = useState<"map" | "activity" | "findings">("map");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [ollama, setOllama] = useState<OllamaSettingsView>();
   const [loadingCatalog, setLoadingCatalog] = useState(true);
@@ -652,8 +800,11 @@ export function App() {
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
 
-  const approveAll = useCallback(async () => {
+  // paused = aprobar sin arrancar: el plan queda autorizado pero ningún agente
+  // puede iniciar nodos hasta reanudar — tiempo para asignar y conectar agentes.
+  const approveAll = useCallback(async (paused = false) => {
     if (!runId) return;
+    if (paused) await fetch(`/api/runs/${runId}/control`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ control: "paused" }) });
     await fetch(`/api/runs/${runId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     await loadDetail(runId);
   }, [runId, loadDetail]);
@@ -679,7 +830,7 @@ export function App() {
         <div className="content-shell">
           <div className="content-toolbar">
             <div className="current-context"><Icon name="route"/><span>{detail?.run.title ?? "Sin ejecución seleccionada"}</span></div>
-            <nav aria-label="Vista principal"><button aria-pressed={view === "map"} className={view === "map" ? "active" : ""} onClick={() => setView("map")}><Icon name="route"/>Mapa</button><button aria-pressed={view === "activity"} className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}><Icon name="activity"/>Actividad</button></nav>
+            <nav aria-label="Vista principal"><button aria-pressed={view === "map"} className={view === "map" ? "active" : ""} onClick={() => setView("map")}><Icon name="route"/>Mapa</button><button aria-pressed={view === "activity"} className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}><Icon name="activity"/>Actividad</button><button aria-pressed={view === "findings"} className={view === "findings" ? "active" : ""} onClick={() => setView("findings")}><Icon name="warning"/>Hallazgos{(detail?.run.openFindings ?? 0) > 0 && <span className="nav-findings-count">{detail?.run.openFindings}</span>}</button></nav>
           </div>
           {loadingRun ? <LoadingState label="Cargando ejecución"/> : !runId || !detail ? <EmptyState kind="runs"/> : (
             <main className="workspace">
@@ -704,9 +855,19 @@ export function App() {
                     <Icon name="warning"/>
                     <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} El agente no puede iniciarlas hasta tu visto bueno.</p>
                     <button type="button" onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
+                    <button type="button" className="approve-paused" title="Autoriza el plan pero deja la ejecución en pausa: asigna nodos y conecta agentes con calma, y reanuda cuando todo esté listo" onClick={() => { approveAll(true).catch(() => undefined); }}>Aprobar en pausa</button>
                   </div>
                 )}
-                {view === "map" ? (
+                {detail.findings.some((finding) => finding.status === "escalated") && view !== "findings" && (
+                  <div className="approval-banner findings-banner" role="status">
+                    <Icon name="warning"/>
+                    <p>{detail.findings.filter((finding) => finding.status === "escalated").length === 1 ? "1 hallazgo del debate espera tu arbitraje." : `${detail.findings.filter((finding) => finding.status === "escalated").length} hallazgos del debate esperan tu arbitraje.`} Los modelos no llegaron a acuerdo.</p>
+                    <button type="button" onClick={() => setView("findings")}>Ver hallazgos</button>
+                  </div>
+                )}
+                {view === "findings" ? (
+                  <FindingsPanel findings={detail.findings} nodes={detail.nodes} runId={detail.run.id} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
+                ) : view === "map" ? (
                   detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 

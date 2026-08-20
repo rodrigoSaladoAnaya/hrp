@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--body", "--reviewer", "--author", "--resolution-node"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -51,7 +51,34 @@ async function api(endpoint, init = {}) {
 }
 
 async function ollamaChat(body) {
-  return api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
+  // El proxy de ollama puede tardar minutos legítimamente (paquetes de revisión
+  // grandes); el fetch global corta a los ~300s (headersTimeout de undici), así
+  // que esta ruta usa node:http con un tope explícito de 30 minutos.
+  const { request } = await import("node:http");
+  const payload = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const target = new URL("/api/ollama/chat", url);
+    const clientRequest = request(target, {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+      timeout: 1_800_000,
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { raw += chunk; });
+      response.on("end", () => {
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch { parsed = {}; }
+        if ((response.statusCode ?? 500) >= 400) reject(new Error(parsed.error ?? `${response.statusCode} en el proxy de ollama`));
+        else resolve(parsed);
+      });
+    });
+    clientRequest.on("timeout", () => {
+      clientRequest.destroy(new Error("La consulta a ollama superó los 30 minutos"));
+    });
+    clientRequest.on("error", (error) => reject(new Error(`HRP no responde en ${url}: ${error.message}`)));
+    clientRequest.end(payload);
+  });
 }
 
 function printOllamaResult(result) {
@@ -242,6 +269,16 @@ Uso:
   hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
   hrp ollama exec <run-id> <node-id> [--model MODELO]
   hrp ollama run --prompt-file PATH|- [--system-file PATH] [--model MODELO] [--run RUN_ID --node NODE_ID]
+  hrp ollama review <run-id> [--node ID] [--model MODELO]
+  hrp review pack <run-id> [--node ID]
+  hrp review gate <run-id>
+  hrp finding add <run-id> --title T --body B --severity critical|major|minor|question --reviewer NOMBRE [--node ID]
+  hrp finding list <run-id>
+  hrp finding show <finding-id>
+  hrp finding reply <finding-id> --author NOMBRE --body TEXTO
+  hrp finding accept <finding-id> [--resolution-node ID]
+  hrp finding reject <finding-id> --author NOMBRE --body RAZON
+  hrp finding escalate <finding-id>
   hrp state <run-id>
   hrp version
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
@@ -382,12 +419,43 @@ async function main() {
     }
     process.stderr.write("Esperando la aprobación humana en el panel...\n");
     let pausedNoted = false;
+    let consecutiveNetworkFailures = 0;
+    const maxNetworkRetries = 5;
+    const networkRetryDelayMs = 3000;
     while (Date.now() < deadline) {
-      const detail = await api(`/api/runs/${first}`);
+      let detail;
+      try {
+        detail = await api(`/api/runs/${first}`);
+        consecutiveNetworkFailures = 0;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const isNetworkFailure = message.startsWith(`HRP no responde en ${url}:`);
+        if (!isNetworkFailure) throw error;
+        if (consecutiveNetworkFailures >= maxNetworkRetries) {
+          process.stderr.write(`HRP no respondió después de ${maxNetworkRetries} reintentos; la espera termina.\n`);
+          throw error;
+        }
+        consecutiveNetworkFailures += 1;
+        process.stderr.write(`Fallo transitorio de HRP; reintento ${consecutiveNetworkFailures}/${maxNetworkRetries} en 3s: ${message}\n`);
+        await new Promise((resolve) => setTimeout(resolve, networkRetryDelayMs));
+        continue;
+      }
       if (detail.run.control === "stopped") return print("La ejecución fue detenida por el humano; no inicies más nodos y reporta tu avance.");
       if (detail.run.control === "paused" && !pausedNoted) {
         process.stderr.write("Ejecución pausada por el humano; la espera continúa hasta que la reanude...\n");
         pausedNoted = true;
+      }
+      // Un debate donde el último turno no es del base le exige respuesta antes
+      // que cualquier otro trabajo: la calidad del run depende de cerrarlo.
+      const debates = agent && detail.run.baseAgent === agent
+        ? (detail.findings ?? []).filter((finding) => {
+          if (finding.status !== "open" && finding.status !== "debating") return false;
+          const lastMessage = finding.messages[finding.messages.length - 1];
+          return !lastMessage || lastMessage.author !== agent;
+        })
+        : [];
+      if (debates.length && detail.run.control === "active") {
+        return print(`Hallazgos por atender (${debates.length}): ${debates.map((finding) => finding.id).join(", ")}. Lee cada uno con 'hrp finding show <id>' y responde con 'hrp finding reply <id> --author ${agent} --body ...'; acepta creando un nodo de corrección (hrp node discover + hrp finding accept --resolution-node ID) o rebate con argumentos técnicos; tras dos rondas sin acuerdo, 'hrp finding escalate <id>'.`);
       }
       // Los nodos asignados a ollama son trabajo del agente base: ollama no
       // abre sesión propia; el base delega, revisa y completa esos nodos.
@@ -491,6 +559,140 @@ async function main() {
       }
       return printOllamaResult(result);
     }
+    if (action === "review") {
+      // Revisor automático sin sesión: audita el pack y registra hallazgos con
+      // reviewer ollama:<modelo>. Nunca edita código ni inventa problemas.
+      if (!first) throw new Error("Uso: hrp ollama review <run-id> [--node ID] [--model MODELO]");
+      const nodeId = value("--node");
+      const query = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "";
+      const packResponse = await fetch(`${url}/api/runs/${encodeURIComponent(first)}/review-pack${query}`)
+        .catch((error) => { throw new Error(`HRP no responde en ${url}: ${error.message}`); });
+      if (!packResponse.ok) {
+        const errorBody = await packResponse.json().catch(() => ({}));
+        throw new Error(errorBody.error ?? `${packResponse.status} ${packResponse.statusText}`);
+      }
+      const pack = await packResponse.text();
+      if (pack.length > 200_000) throw new Error("El paquete de revisión excede 200KB; audita por subárboles con --node");
+      const detail = await api(`/api/runs/${encodeURIComponent(first)}`);
+      const prompt = [
+        "Eres un modelo revisor de código dentro del protocolo HRP. Audita el paquete de revisión que sigue.",
+        "Busca únicamente problemas reales y verificables en los diffs aplicados: errores de integración entre nodos, contratos rotos, desviaciones respecto a la spec aprobada y casos borde sin cubrir.",
+        "Si el paquete no incluye algo que necesitas para afirmar un problema, NO lo supongas: responde únicamente una línea que empiece con 'NECESITO: ' describiendo qué falta.",
+        `Responde ÚNICAMENTE con un arreglo JSON, sin explicaciones, sin markdown y sin fences: cada elemento es {"severity":"critical|major|minor|question","title":"...","body":"...","node":"id-del-nodo"} y "node" es opcional.`,
+        "Si no encuentras ningún problema real, responde exactamente el literal SIN-HALLAZGOS.",
+        "No inventes hallazgos para rellenar: SIN-HALLAZGOS es una respuesta válida y valiosa.",
+        "",
+        pack,
+      ].join("\n");
+      const requestBody = { prompt, runId: first };
+      if (nodeId) requestBody.nodeId = nodeId;
+      if (value("--model")) requestBody.model = value("--model");
+      const result = await ollamaChat(requestBody);
+      const answer = String(result.content ?? "").trim();
+      if (answer.startsWith("NECESITO:")) {
+        throw new Error(`El revisor necesita más contexto — ${answer.split("\n")[0]}. Audita un subárbol menor con --node o completa la evidencia de los nodos`);
+      }
+      process.stderr.write(`# ${result.model} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens\n`);
+      if (answer === "SIN-HALLAZGOS") return print("El revisor no reportó hallazgos.");
+      let parsed;
+      try { parsed = JSON.parse(answer); } catch {
+        throw new Error(`La respuesta del revisor no es un arreglo JSON ni SIN-HALLAZGOS; no se registró nada. Respuesta: ${answer.slice(0, 200)}`);
+      }
+      if (!Array.isArray(parsed)) throw new Error("La respuesta del revisor no es un arreglo; no se registró nada");
+      // Todo-o-nada: se valida el lote completo antes de registrar el primero,
+      // para no dejar hallazgos a medias si un elemento viene malformado.
+      const validSeverities = new Set(["critical", "major", "minor", "question"]);
+      const validNodes = new Set(detail.nodes.map((node) => node.id));
+      for (const item of parsed) {
+        if (!item || typeof item.title !== "string" || !item.title || typeof item.body !== "string" || !item.body || !validSeverities.has(item.severity)) {
+          throw new Error(`Hallazgo con formato inválido; no se registró nada: ${JSON.stringify(item).slice(0, 200)}`);
+        }
+      }
+      const reviewer = `ollama:${result.model}`;
+      const created = [];
+      for (const item of parsed) {
+        const payload = { reviewer, severity: item.severity, title: item.title, body: item.body };
+        if (item.node && validNodes.has(item.node)) payload.nodeId = item.node;
+        else if (item.node) payload.body += `\n(El revisor refirió el nodo "${item.node}", que no existe en el run.)`;
+        created.push(await api(`/api/runs/${encodeURIComponent(first)}/findings`, { method: "POST", body: JSON.stringify(payload) }));
+      }
+      if (json) return print(created);
+      print(`Hallazgos registrados (${created.length}):`);
+      for (const finding of created) print(`[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""}`);
+      return;
+    }
+  }
+  if (group === "finding") {
+    const describeFinding = (finding) => `[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title} (${finding.reviewer}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""}${finding.resolutionNodeId ? ` · corrección ${finding.resolutionNodeId}` : ""})`;
+    if (action === "add") {
+      if (!first) throw new Error("Uso: hrp finding add <run-id> --title T --body B --severity S --reviewer NOMBRE [--node ID]");
+      const body = { reviewer: value("--reviewer"), severity: value("--severity"), title: value("--title"), body: value("--body") };
+      if (!body.reviewer || !body.severity || !body.title || !body.body) throw new Error("Faltan datos: --reviewer, --severity (critical|major|minor|question), --title y --body son obligatorios");
+      if (value("--node")) body.nodeId = value("--node");
+      const finding = await api(`/api/runs/${encodeURIComponent(first)}/findings`, { method: "POST", body: JSON.stringify(body) });
+      return print(json ? finding : `Hallazgo registrado: ${describeFinding(finding)}`);
+    }
+    if (action === "list") {
+      if (!first) throw new Error("Uso: hrp finding list <run-id>");
+      const { findings } = await api(`/api/runs/${encodeURIComponent(first)}/findings`);
+      if (json) return print(findings);
+      return print(findings.length ? findings.map(describeFinding).join("\n") : "Sin hallazgos en esta ejecución.");
+    }
+    if (action === "show") {
+      if (!first) throw new Error("Uso: hrp finding show <finding-id>");
+      const finding = await api(`/api/findings/${encodeURIComponent(first)}`);
+      if (json) return print(finding);
+      const thread = finding.messages.map((message) => `  ${message.author} (${message.createdAt}):\n    ${message.body.split("\n").join("\n    ")}`);
+      return print([describeFinding(finding), "", finding.body, "", thread.length ? "Debate:" : "Sin respuestas todavía.", ...thread].join("\n"));
+    }
+    if (action === "reply") {
+      const author = value("--author");
+      const body = value("--body");
+      if (!first || !author || !body) throw new Error("Uso: hrp finding reply <finding-id> --author NOMBRE --body TEXTO");
+      const finding = await api(`/api/findings/${encodeURIComponent(first)}/messages`, { method: "POST", body: JSON.stringify({ author, body }) });
+      return print(json ? finding : `Respuesta registrada; el hallazgo queda en ${finding.status}.`);
+    }
+    if (action === "accept" || action === "reject" || action === "escalate") {
+      if (!first) throw new Error(`Uso: hrp finding ${action} <finding-id>`);
+      if (action === "reject") {
+        // El rechazo exige dejar la razón en el hilo: un hallazgo descartado
+        // sin argumento no es auditable.
+        const author = value("--author");
+        const reason = value("--body");
+        if (!author || !reason) throw new Error("Uso: hrp finding reject <finding-id> --author NOMBRE --body RAZON");
+        await api(`/api/findings/${encodeURIComponent(first)}/messages`, { method: "POST", body: JSON.stringify({ author, body: reason }) });
+      }
+      const status = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "escalated";
+      const payload = { status };
+      if (action === "accept" && value("--resolution-node")) payload.resolutionNodeId = value("--resolution-node");
+      const finding = await api(`/api/findings/${encodeURIComponent(first)}/status`, { method: "POST", body: JSON.stringify(payload) });
+      return print(json ? finding : `Hallazgo ${finding.status}: ${finding.title}`);
+    }
+  }
+  if (group === "review" && action === "gate") {
+    if (!first) throw new Error("Uso: hrp review gate <run-id>");
+    const { pending } = await api(`/api/runs/${encodeURIComponent(first)}/review-gate`);
+    if (!pending.length) return print("Revisión limpia: sin hallazgos vivos; la ejecución puede darse por cerrada.");
+    print(`La ejecución NO puede cerrarse: ${pending.length} ${pending.length === 1 ? "hallazgo vivo" : "hallazgos vivos"}.`);
+    for (const finding of pending) print(`[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (group === "review" && action === "pack") {
+    // El pack es markdown, no JSON: se imprime crudo para copiarlo tal cual a
+    // la sesión del modelo revisor (o canalizarlo a un archivo).
+    if (!first) throw new Error("Uso: hrp review pack <run-id> [--node ID]");
+    const nodeId = value("--node");
+    const query = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "";
+    const response = await fetch(`${url}/api/runs/${encodeURIComponent(first)}/review-pack${query}`)
+      .catch((error) => { throw new Error(`HRP no responde en ${url}: ${error.message}`); });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `${response.status} ${response.statusText}`);
+    }
+    const pack = await response.text();
+    process.stdout.write(pack.endsWith("\n") ? pack : `${pack}\n`);
+    return;
   }
   if (group === "state") return print(await api(`/api/runs/${action}`));
   if (group === "mcp") {

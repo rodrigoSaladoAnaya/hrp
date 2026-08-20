@@ -1,11 +1,11 @@
 ---
 name: hrp
-description: Integra tareas de programación con Human Review Protocol v2 (HRP), publicando evidencia observable (grafo de operaciones, diffs por nodo, verificaciones) al servicio local hrp mientras se implementa. Usa esta skill siempre que el usuario mencione HRP, "Human Review Protocol", el CLI hrp, el panel de revisión, o pida implementar/trabajar una tarea "con hrp", "usando hrp", "publicando evidencia", "con revisión humana" o invocando /hrp — aunque la tarea de fondo sea cualquier cambio de código normal.
+description: Integra tareas de programación con Human Review Protocol v3 (HRP), publicando evidencia observable (grafo de operaciones, diffs por nodo, verificaciones) al servicio local hrp mientras se implementa, y atendiendo el debate con los modelos revisores. Usa esta skill siempre que el usuario mencione HRP, "Human Review Protocol", el CLI hrp, el panel de revisión, o pida implementar/trabajar una tarea "con hrp", "usando hrp", "publicando evidencia", "con revisión humana" o invocando /hrp — aunque la tarea de fondo sea cualquier cambio de código normal.
 ---
 
-# Adaptador HRP v2 para Claude
+# Adaptador HRP v3 para Claude
 
-Traduce el ciclo de trabajo normal de programación al protocolo HRP v2: cada operación semántica se declara antes de ejecutarse, y cada cambio deja evidencia (diff + verificación) que un humano puede revisar en el panel. HRP no ejecuta nada por ti: tú haces el trabajo y publicas la evidencia con el CLI `hrp`.
+Traduce el ciclo de trabajo normal de programación al protocolo HRP v3: cada operación semántica se declara antes de ejecutarse, cada cambio deja evidencia (diff + verificación) que un humano puede revisar en el panel, y otros modelos auditan tu trabajo en un debate que tú, como agente base, estás obligado a atender. HRP no ejecuta nada por ti: tú haces el trabajo y publicas la evidencia con el CLI `hrp`.
 
 El contrato completo está en [references/agent-adapter.md](references/agent-adapter.md). Léelo si necesitas la API HTTP (cuando el CLI no esté disponible), el detalle de reanudación, o resolver un caso que este resumen no cubra.
 
@@ -195,6 +195,24 @@ hrp activity publish "$run_id" --type inspect --node <node-id> \
 
 Tipos: `run | graph | inspect | node | patch | verify | note`. No conviertas cada lectura o comando en actividad.
 
+## Revisión multi-modelo (v3.1): el debate es parte del trabajo y tú lo resuelves
+
+El objetivo de la v3 es la calidad del producto: otros modelos auditan tus nodos y tú, como agente base, **resuelves cada hallazgo con autoridad propia**. El humano es monitor: observa el debate en el panel y, si al final objeta una resolución tuya, eso se materializa como una **segunda corrida** (un run nuevo con la corrección objetada). La revisión ocurre **por flujo y al final**, nunca nodo a nodo:
+
+- **Checkpoint por flujo**: al completar una cadena de dependencias, lanza tú mismo la revisión de ese subárbol con `hrp ollama review "$run_id" --node <nodo-hoja>` (si ollama está configurado); para un revisor con sesión, genera `hrp review pack "$run_id" --node <nodo-hoja>` y pide al humano copiarlo.
+- **Auditoría final automática**: al completarse el último nodo, el servidor lanza solo la auditoría del run completo y sus hallazgos aparecen sin que nadie los pida. Tras completar el último nodo, ejecuta `hrp wait approval` para recibirlos y atenderlos antes de entregar.
+
+**Atiende y resuelve los hallazgos.** `hrp wait approval` te avisa cuando hay hallazgos cuyo último turno no es tuyo; atenderlos tiene prioridad sobre iniciar nodos nuevos:
+
+1. Lee el hilo completo: `hrp finding show <finding-id>`.
+2. Si el hallazgo procede: publica el nodo de corrección como trabajo descubierto y acéptalo vinculándolo — `hrp finding accept <id> --resolution-node <nodo>`. **La aceptación autoriza el nodo en el acto** (sin clic humano): impleméntalo de inmediato con el ciclo normal.
+3. Si no procede: recházalo tú mismo — `hrp finding reject <id> --author claude --body RAZON` — también frente a revisores sin sesión (`ollama:*`). La razón debe ser técnica y verificable (spec aprobada, requisito, evidencia ejecutable); un rechazo por autoridad, sin argumento, es abuso.
+4. `hrp finding escalate <id>` queda como recurso **opcional** para dudas genuinas que no puedes resolver con evidencia (ambigüedad del requisito, decisión de producto). Ya no es la salida del desacuerdo.
+
+El gate humano inicial del grafo sigue vigente: tu autoridad cubre el ciclo de revisión, no el plan. Nunca cierres el debate borrando o ignorando hallazgos: `hrp review gate "$run_id"` fallará mientras haya hallazgos vivos, y esa es la señal correcta.
+
+Si el humano te convierte en **revisor** de otro agente (te pega un paquete de revisión), tu contrato es el inverso: audita integración entre nodos, contratos rotos y desviaciones spec↔diff; reporta con `hrp finding add`; debate con `hrp finding reply`; nunca edites código; y si no encuentras nada real, dilo — no inventes hallazgos.
+
 ## Control humano: pausada o detenida
 
 El humano puede pausar, detener o reanudar la ejecución (panel o `hrp run pause|resume|stop`). El servidor rechaza `node start` en esos estados para todos los agentes; no es un error tuyo:
@@ -214,10 +232,13 @@ Conserva los `completed`, comprueba el workspace antes de reanudar/reintentar `r
 
 ## Antes de entregar al humano
 
-No existe `run complete`; el estado se deriva de los nodos. Consulta `hrp state "$run_id" --json` y confirma:
+No existe `run complete`; el estado se deriva de los nodos. Consulta `hrp state "$run_id" --json` y confirma **leyendo ese JSON, sin releer tu trabajo**:
 
 - todos los nodos `completed`, cada uno con diff y verificación aprobada;
 - el mapa incluye los nodos descubiertos;
-- el workspace pasó la verificación integral apropiada (tests/build del proyecto).
+- el workspace pasó **una sola vez** la verificación ejecutable integral (tests/build del proyecto — la corre la máquina, no tú);
+- la auditoría automática final corrió (revisa la Actividad), sus hallazgos quedaron resueltos por ti, y `hrp review gate "$run_id"` pasa.
+
+**Prohibido re-verificarte.** No releas tus propios diffs ni hagas una pasada de auto-auditoría al final: escribiste ese código y tienes sus mismos puntos ciegos; la pasada final de calidad es de los revisores pares (el auditor nunca es tu mismo modelo). Responder el debate y correr el gate no son re-verificación: son el cierre administrativo.
 
 Después reporta al usuario el resultado como harías normalmente, mencionando que la evidencia quedó publicada en HRP.

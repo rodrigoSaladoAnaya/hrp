@@ -32,6 +32,9 @@ export type RunSummary = {
   // Nodos que aún esperan la aprobación humana: alimenta los avisos del árbol
   // de proyectos sin obligar al panel a cargar el detalle de cada ejecución.
   awaitingApproval: number;
+  // Hallazgos vivos (open, debating o escalated): alimentan la insignia del
+  // árbol y bloquean el cierre del run hasta resolverse.
+  openFindings: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -63,6 +66,45 @@ export type ChangeNode = {
   updatedAt: string;
 };
 
+// Ciclo de revisión multi-modelo (v3): un hallazgo nace open, pasa a debating
+// cuando hay respuestas, y termina accepted (con nodo de corrección), rejected
+// (con razón en el hilo) o escalated (queda en manos del humano en el panel).
+export const findingStatuses = ["open", "debating", "accepted", "rejected", "escalated"] as const;
+export type FindingStatus = (typeof findingStatuses)[number];
+
+export const findingSeverities = ["critical", "major", "minor", "question"] as const;
+export type FindingSeverity = (typeof findingSeverities)[number];
+
+export type Finding = {
+  id: string;
+  runId: string;
+  // Sin nodeId el hallazgo es de integración: cruza varios nodos del run.
+  nodeId?: string;
+  reviewer: string;
+  severity: FindingSeverity;
+  title: string;
+  body: string;
+  status: FindingStatus;
+  // Nodo descubierto que corrige el hallazgo aceptado; pasa por el gate humano.
+  resolutionNodeId?: string;
+  messages: FindingMessage[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+// Un turno del debate; author es un nombre de agente o el literal "human".
+export type FindingMessage = {
+  id: string;
+  findingId: string;
+  author: string;
+  body: string;
+  createdAt: string;
+};
+
+export type FindingInput = Pick<Finding, "reviewer" | "severity" | "title" | "body"> & {
+  nodeId?: string;
+};
+
 export type Verification = {
   command: string;
   output: string;
@@ -85,6 +127,7 @@ export type RunDetail = {
   run: RunSummary;
   nodes: ChangeNode[];
   activity: Activity[];
+  findings: Finding[];
 };
 
 export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent" | "contextFiles"> & {
@@ -113,4 +156,4 @@ export type OllamaSettingsView = {
 export const DEFAULT_OLLAMA_MODEL = "kimi-k2.7-code";
 export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
 
-export const PROTOCOL_VERSION = "2.6";
+export const PROTOCOL_VERSION = "3.0";

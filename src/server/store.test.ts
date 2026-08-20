@@ -310,4 +310,60 @@ describe("HrpStore", () => {
     ] })).toThrow(/Dependency cycle/);
     expect(store.getRunDetail(run.id)?.nodes).toHaveLength(0);
   });
+
+  describe("findings (revisión multi-modelo)", () => {
+    function reviewFixture() {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: [
+        { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+      ] });
+      return { store, run };
+    }
+
+    it("creates findings as open and validates severity and node", () => {
+      const { store, run } = reviewFixture();
+      expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "grave" as never, title: "x", body: "y" })).toThrow(/severity/i);
+      expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "x", body: "y", nodeId: "fantasma" })).toThrow(/Unknown node/);
+      const finding = store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Contrato roto", body: "Detalle", nodeId: "uno" });
+      expect(finding.status).toBe("open");
+      expect(finding.messages).toHaveLength(0);
+      expect(store.getRunDetail(run.id)?.findings).toHaveLength(1);
+    });
+
+    it("replies promote open to debating without regressing terminal states", () => {
+      const { store, run } = reviewFixture();
+      const finding = store.createFinding(run.id, { reviewer: "codex", severity: "minor", title: "Duda", body: "Detalle" });
+      const debated = store.addFindingMessage(finding.id, "claude", "No coincido");
+      expect(debated.status).toBe("debating");
+      expect(debated.messages.map((message) => message.author)).toEqual(["claude"]);
+      store.setFindingStatus(finding.id, "rejected");
+      expect(store.addFindingMessage(finding.id, "human", "De acuerdo con el rechazo").status).toBe("rejected");
+    });
+
+    it("accept links an existing resolution node and clears the gate", () => {
+      const { store, run } = reviewFixture();
+      const finding = store.createFinding(run.id, { reviewer: "codex", severity: "critical", title: "Falla", body: "Detalle", nodeId: "uno" });
+      store.setFindingStatus(finding.id, "escalated");
+      expect(store.runReviewGate(run.id).map((pending) => pending.id)).toEqual([finding.id]);
+      expect(store.getRun(run.id)?.openFindings).toBe(1);
+      expect(() => store.setFindingStatus(finding.id, "accepted", "fantasma")).toThrow(/Unknown node/);
+      const accepted = store.setFindingStatus(finding.id, "accepted", "uno");
+      expect(accepted.resolutionNodeId).toBe("uno");
+      expect(store.runReviewGate(run.id)).toHaveLength(0);
+      expect(store.getRun(run.id)?.openFindings).toBe(0);
+    });
+
+    it("counts only live statuses in openFindings and orders thread messages", () => {
+      const { store, run } = reviewFixture();
+      const abierto = store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Abierto", body: "a" });
+      store.createFinding(run.id, { reviewer: "gemini", severity: "question", title: "Rechazado", body: "b" });
+      const rechazado = store.getRunDetail(run.id)!.findings[1];
+      store.setFindingStatus(rechazado.id, "rejected");
+      store.addFindingMessage(abierto.id, "claude", "primera");
+      store.addFindingMessage(abierto.id, "human", "segunda");
+      expect(store.getRun(run.id)?.openFindings).toBe(1);
+      expect(store.runReviewGate(run.id).map((pending) => pending.title)).toEqual(["Abierto"]);
+      expect(store.getFinding(abierto.id)?.messages.map((message) => message.body)).toEqual(["primera", "segunda"]);
+    });
+  });
 });
