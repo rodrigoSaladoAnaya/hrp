@@ -474,9 +474,12 @@ El objetivo de la v3 es la calidad del producto, no el ahorro de tokens: otros m
 
 El humano convierte en revisor a cualquier modelo con sesión —preferentemente distinto al base, o una sesión distinta del mismo modelo según la jerarquía de «Diversidad del revisor»— copiándole el paquete de `hrp review pack <run-id>` (o el botón «Copiar paquete de revisión» del panel). El paquete incluye el requisito, el grafo, los hallazgos ya reportados y, por nodo completado, la spec aprobada, el diff y la verificación. El revisor:
 
+- permanece en `hrp wait approval <run-id> --agent SU_NOMBRE` hasta recibir **Auditoría disponible**; esa señal sólo aparece cuando todos los nodos están completos y nunca le entrega nodos sin asignar del modelo base;
+- publica `phase reviewing` antes de leer el paquete y actualiza `--completed`, `--reviewed` y `--remaining` durante una auditoría larga;
 - audita buscando **errores de integración entre nodos, contratos rotos, desviaciones entre la spec aprobada y el diff aplicado, y casos borde sin cubrir**;
 - reporta cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer SU_NOMBRE`;
 - debate las respuestas del base con `hrp finding reply <finding-id> --author SU_NOMBRE --body ...`, con argumentos técnicos y citas al diff;
+- sólo publica `phase completed` cuando `--reviewed` cubre todos los nodos y `--remaining` queda vacío; después vuelve a `hrp wait approval`, porque una corrección completada puede abrir otra pasada;
 - **nunca edita código**: su salida son hallazgos y debate;
 - si no encuentra nada real, lo dice; inventar hallazgos para rellenar contamina el debate y el registro.
 
@@ -488,6 +491,7 @@ Quien autoriza los cambios del debate es el **agente base**; el humano es monito
 - Cada hallazgo se **resuelve con autoridad propia**: si procede, el base lo acepta creando el nodo de corrección como trabajo descubierto (`hrp node discover`) y lo vincula con `hrp finding accept <id> --resolution-node NODO` — **la aceptación autoriza el nodo de corrección** (queda aprobado en el acto, sin clic humano); si no procede, lo **rechaza** con `hrp finding reject`, también frente a revisores sin sesión, dejando la razón técnica en el hilo (spec, requisito o evidencia ejecutable, nunca autoridad).
 - `hrp finding escalate` es un **recurso opcional** para dudas genuinas que el base no puede resolver con evidencia (ambigüedad del requisito, decisiones de producto); ya no es la salida obligada del desacuerdo.
 - `hrp finding reject` exige `--author` y `--body`: la razón del descarte queda en el hilo antes del cambio de estado. Un rechazo sin argumento técnico verificable es un abuso de la autoridad del base.
+- La implementación completa no equivale al cierre: el base permanece en `hrp wait approval` mientras cualquier elemento de `run.auditors` siga en `waiting`, `reviewing` o `failed`. `hrp review gate` falla tanto por hallazgos vivos como por `pendingAuditors`, y sólo pasa cuando todos publicaron `completed`.
 - El gate humano **inicial** del grafo se mantiene: la autoridad del base cubre el ciclo de revisión, no el plan de la ejecución.
 
 ### El humano como monitor: la segunda corrida

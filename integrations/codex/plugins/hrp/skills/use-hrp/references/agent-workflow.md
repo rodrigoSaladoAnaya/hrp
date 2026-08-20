@@ -153,7 +153,9 @@ Si `run.baseAgent` pertenece a Claude u otro agente, completa sólo los nodos as
 
 ### Codex como revisor
 
-Si el humano entrega un paquete generado por `hrp review pack`, busca errores de integración, contratos rotos y desviaciones entre spec y diff. Registra problemas con `hrp finding add` y debate con `hrp finding reply`; no edites el workspace ni inventes hallazgos para rellenar.
+Si estás seleccionado en `run.auditors`, deja `hrp wait approval <run-id> --agent codex` activo. Al recibir **Auditoría disponible**, no reclames nodos sin asignación: publica `hrp agent status <run-id> --agent codex --phase reviewing ...`, genera `hrp review pack <run-id>` y busca errores de integración, contratos rotos y desviaciones entre spec y diff. Durante pasadas largas actualiza `--completed`, `--reviewed` y `--remaining` para que el humano vea la cobertura real.
+
+Registra problemas con `hrp finding add` y debate con `hrp finding reply`; no edites el workspace ni inventes hallazgos para rellenar. Cuando todos los nodos estén cubiertos, publica `phase completed` con todos sus IDs en `--reviewed` y sin `--remaining`. Después vuelve a `hrp wait approval`: si el base completa una corrección, HRP restablece el auditor a `waiting` y solicita otra pasada. Nunca publiques `completed` sólo porque aún no existen hallazgos.
 
 ## 8. Control, reanudación y cierre
 
@@ -167,4 +169,4 @@ Después de una interrupción, consulta `hrp state "$run_id" --json` o `hrp_get_
 - no asumas que `En vivo` significa que otro agente sigue trabajando;
 - registra como descubierto el trabajo real que falte en el mapa.
 
-Antes de entregar como agente base, confirma que todos los nodos estén `completed`, tengan diff atribuible y verificación exitosa, que la auditoría automática haya terminado y que `hrp review gate` pase. Como colaborador, confirma únicamente tus nodos asignados y devuelve el control al base.
+Antes de entregar como agente base, confirma que todos los nodos estén `completed`, tengan diff atribuible y verificación exitosa, que cada auditor seleccionado haya publicado `phase completed` y que `hrp review gate` pase sin hallazgos vivos ni `pendingAuditors`. Como colaborador, confirma únicamente tus nodos asignados y devuelve el control al base.

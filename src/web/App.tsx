@@ -18,6 +18,7 @@ import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaS
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
+type Health = { buildStale?: boolean };
 type ConnectionState = "connecting" | "connected" | "offline";
 type MapNodeData = {
   change: ChangeNode;
@@ -761,6 +762,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string>();
   const [view, setView] = useState<"map" | "activity" | "findings">("map");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
+  const [buildStale, setBuildStale] = useState(false);
   const [ollama, setOllama] = useState<OllamaSettingsView>();
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
@@ -816,8 +818,20 @@ export function App() {
     } catch { /* la configuración es opcional; el panel sigue funcionando sin ella */ }
   }, []);
 
+  const loadHealth = useCallback(async () => {
+    try {
+      const response = await fetch("/api/health");
+      if (response.ok) setBuildStale((await response.json() as Health).buildStale === true);
+    } catch { /* una interrupción de red ya queda representada por connectionState */ }
+  }, []);
+
   useEffect(() => { loadCatalog().catch((cause) => setError(String(cause))); }, [loadCatalog]);
   useEffect(() => { loadOllama().catch(() => undefined); }, [loadOllama]);
+  useEffect(() => {
+    loadHealth().catch(() => undefined);
+    const interval = window.setInterval(() => { loadHealth().catch(() => undefined); }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [loadHealth]);
 
   const project = catalog.projects.find((candidate) => candidate.id === projectId);
   useEffect(() => {
@@ -935,12 +949,12 @@ export function App() {
   }, [runId, loadDetail]);
 
   if (error) return <div className="fatal-error"><Icon name="warning"/><h1>HRP no pudo iniciar</h1><p>{error}</p><button onClick={() => location.reload()}>Volver a intentar</button></div>;
-  if (loadingCatalog) return <><TopBar connectionState={connectionState} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><LoadingState label="Cargando proyectos"/></>;
-  if (!catalog.projects.length) return <><TopBar connectionState={connectionState} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><EmptyState kind="projects"/></>;
+  if (loadingCatalog) return <><TopBar connectionState={connectionState} buildStale={buildStale} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><LoadingState label="Cargando proyectos"/></>;
+  if (!catalog.projects.length) return <><TopBar connectionState={connectionState} buildStale={buildStale} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><EmptyState kind="projects"/></>;
 
   return (
     <div className="app-shell">
-      <TopBar connectionState={connectionState} project={project} run={detail?.run} progress={progress} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/>
+      <TopBar connectionState={connectionState} buildStale={buildStale} project={project} run={detail?.run} progress={progress} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/>
       <div className="app-body">
         <ProjectTree
           projects={catalog.projects}
@@ -1141,8 +1155,9 @@ function HelpPanel() {
   );
 }
 
-function TopBar({ connectionState, project, run, progress = 0, ollama, onOllamaSaved }: { connectionState: ConnectionState; project?: Project; run?: RunSummary; progress?: number; ollama?: OllamaSettingsView; onOllamaSaved?: () => void }) {
-  const connectionCopy = connectionState === "connected" ? "En vivo" : connectionState === "offline" ? "Sin conexión" : "Conectando";
+function TopBar({ connectionState, buildStale, project, run, progress = 0, ollama, onOllamaSaved }: { connectionState: ConnectionState; buildStale: boolean; project?: Project; run?: RunSummary; progress?: number; ollama?: OllamaSettingsView; onOllamaSaved?: () => void }) {
+  const connectionCopy = buildStale ? "Reinicia HRP" : connectionState === "connected" ? "En vivo" : connectionState === "offline" ? "Sin conexión" : "Conectando";
+  const connectionClass = buildStale ? "offline" : connectionState;
   return (
     <header className="topbar">
       <div className="brand"><span className="brand-mark"><i/><i/><i/></span><div><strong>Human Review Protocol</strong><span>Mapa observable de cambios</span></div></div>
@@ -1155,7 +1170,7 @@ function TopBar({ connectionState, project, run, progress = 0, ollama, onOllamaS
         <OllamaSettingsPanel ollama={ollama} onSaved={onOllamaSaved}/>
         <HelpPanel/>
       </div>
-      <span className={`connection ${connectionState}`}><i/>{connectionCopy}{connectionState === "offline" && <button type="button" onClick={() => location.reload()}>Reintentar</button>}</span>
+      <span className={`connection ${connectionClass}`} role="status" title={buildStale ? "El build cambió. Ejecuta ./scripts/update.sh para reiniciar el servicio." : undefined}><i/>{connectionCopy}{!buildStale && connectionState === "offline" && <button type="button" onClick={() => location.reload()}>Reintentar</button>}</span>
     </header>
   );
 }

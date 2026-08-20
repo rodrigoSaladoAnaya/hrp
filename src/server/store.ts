@@ -835,6 +835,27 @@ export class HrpStore {
     return this.listFindings(runId).filter((finding) => ["open", "debating", "escalated"].includes(finding.status));
   }
 
+  // Un auditor seleccionado sólo libera el cierre cuando publica explícitamente
+  // su cobertura completa. Waiting, reviewing y failed siguen siendo bloqueos.
+  pendingAuditors(runId: string): AgentWorkState[] {
+    const detail = this.getRunDetail(runId);
+    if (!detail) throw new Error(`Unknown run: ${runId}`);
+    return detail.run.auditors.flatMap((agent) => {
+      const state = detail.agentStates.find((candidate) => candidate.agent === agent);
+      if (state?.phase === "completed") return [];
+      return [state ?? {
+        agent,
+        phase: "waiting",
+        summary: "Auditoría pendiente de iniciar",
+        completed: 0,
+        total: detail.nodes.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: detail.nodes.map((node) => node.id),
+        updatedAt: detail.run.updatedAt,
+      }];
+    });
+  }
+
   addActivity(runId: string, type: ActivityType, message: string, detail?: string, nodeId?: string): Activity {
     const createdAt = now();
     const result = this.database.prepare("INSERT INTO activity (run_id, node_id, type, message, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)")

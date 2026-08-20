@@ -158,6 +158,12 @@ Publish technical inspections or notes when relevant:
 - MCP: `hrp_publish_activity(runId, type="inspect", message="...", detail="...", nodeId="...")`
 - CLI: `hrp activity publish "$run_id" --type inspect --node nodeId --summary "..." --detail "..."`
 
-### 9. Final Verification
+### 9. Review Another Agent
 
-Check `hrp_get_state` (or `hrp state "$run_id" --json`) to confirm all nodes are `completed`, with attributable diffs and passing verifications. Run a comprehensive workspace test suite before handing off.
+When `antigravity` is selected in `run.auditors`, keep `hrp wait approval <run-id> --agent antigravity` active until it reports **Auditoría disponible**. Unassigned nodes belong to the base model; never claim or edit them as a reviewer. Publish `hrp agent status` with `phase reviewing` before reading `hrp review pack`, then update `--completed`, `--reviewed`, and `--remaining` as coverage advances.
+
+Audit integration boundaries, broken contracts, approved-spec versus diff deviations, and missing edge cases. Report real problems with `hrp finding add`, debate with `hrp finding reply`, and never edit the workspace. Publish `phase completed` only after every node is covered, then return to `hrp wait approval` because a completed correction can request another pass. Do not invent findings or coverage.
+
+### 10. Final Verification
+
+As the base model, check `hrp_get_state` (or `hrp state "$run_id" --json`) to confirm all nodes are `completed`, with attributable diffs and passing verifications. Remain in `hrp wait approval` until every selected auditor publishes `phase completed`, then require `hrp review gate` to pass without live findings or `pendingAuditors`. Run a comprehensive workspace test suite before handing off.

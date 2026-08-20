@@ -408,5 +408,31 @@ describe("HrpStore", () => {
       expect(store.runReviewGate(run.id).map((pending) => pending.title)).toEqual(["Abierto"]);
       expect(store.getFinding(abierto.id)?.messages.map((message) => message.body)).toEqual(["primera", "segunda"]);
     });
+
+    it("keeps selected auditors in the gate until they complete their coverage", () => {
+      const { store, run } = reviewFixture();
+      store.setRunAuditors(run.id, ["claude"]);
+      const progress = (phase: "reviewing" | "failed" | "completed") => store.setAgentState(run.id, {
+        agent: "claude",
+        phase,
+        summary: phase === "completed" ? "Auditoría terminada" : "Auditando el run",
+        completed: phase === "completed" ? 1 : 0,
+        total: 1,
+        reviewedNodeIds: phase === "completed" ? ["uno"] : [],
+        remainingNodeIds: phase === "completed" ? [] : ["uno"],
+      });
+
+      expect(store.pendingAuditors(run.id).map((state) => state.phase)).toEqual(["waiting"]);
+      progress("reviewing");
+      expect(store.pendingAuditors(run.id).map((state) => state.phase)).toEqual(["reviewing"]);
+      progress("failed");
+      expect(store.pendingAuditors(run.id).map((state) => state.phase)).toEqual(["failed"]);
+      progress("completed");
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+
+      store.createFinding(run.id, { reviewer: "claude", severity: "major", title: "Contrato roto", body: "Detalle" });
+      expect(store.runReviewGate(run.id)).toHaveLength(1);
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+    });
   });
 });

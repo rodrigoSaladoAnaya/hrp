@@ -222,7 +222,7 @@ El objetivo de la v3 es la calidad del producto: otros modelos auditan tus nodos
 
 El gate humano inicial del grafo sigue vigente: tu autoridad cubre el ciclo de revisión, no el plan. Nunca cierres el debate borrando o ignorando hallazgos: `hrp review gate "$run_id"` fallará mientras haya hallazgos vivos, y esa es la señal correcta.
 
-Si el humano te convierte en **revisor** de otro agente (te pega un paquete de revisión), tu contrato es el inverso: audita integración entre nodos, contratos rotos y desviaciones spec↔diff; reporta con `hrp finding add`; debate con `hrp finding reply`; nunca edites código; y si no encuentras nada real, dilo — no inventes hallazgos.
+Si el humano te convierte en **revisor** de otro agente, mantén `hrp wait approval <run-id> --agent claude` hasta recibir **Auditoría disponible**; los nodos sin asignación pertenecen al base y no debes reclamarlos. Publica `hrp agent status` con `phase reviewing` antes de obtener `hrp review pack`, y actualiza `--completed`, `--reviewed` y `--remaining` mientras auditas integración entre nodos, contratos rotos y desviaciones spec↔diff. Reporta con `hrp finding add`, debate con `hrp finding reply` y nunca edites código. Publica `phase completed` sólo al cubrir todos los nodos; después vuelve a esperar porque una corrección puede exigir otra pasada. Si no encuentras nada real, dilo — no inventes hallazgos ni marques cobertura que no realizaste.
 
 ## Control humano: pausada o detenida
 

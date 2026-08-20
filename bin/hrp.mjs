@@ -420,9 +420,17 @@ async function main() {
     const local = localVersion();
     const health = await fetch(`${url}/api/health`).then((response) => response.ok ? response.json() : undefined).catch(() => undefined);
     const service = health?.protocolVersion ?? "servicio detenido";
-    if (json) return print({ cli: local, serviceProtocol: health?.protocolVersion ?? null, url });
-    print(`CLI:      v${local}\nServicio: ${health ? `protocolo ${service} (${url})` : `detenido (${url})`}`);
-    if (health && local.split(".").slice(0, 2).join(".") !== String(service)) {
+    if (json) return print({
+      cli: local,
+      serviceProtocol: health?.protocolVersion ?? null,
+      serviceBuild: health?.buildId ?? null,
+      currentBuild: health?.currentBuildId ?? null,
+      buildStale: health?.buildStale ?? null,
+      url,
+    });
+    const build = health?.buildId ? ` · build ${health.buildId}` : "";
+    print(`CLI:      v${local}\nServicio: ${health ? `protocolo ${service}${build} (${url})` : `detenido (${url})`}`);
+    if (health?.buildStale === true) {
       print("Aviso: el build local y el servicio en ejecución difieren; reinicia con ./scripts/update.sh");
     }
     return;
@@ -436,8 +444,13 @@ async function main() {
       // "sin señal" aunque el agente aún no haya iniciado ningún nodo.
       await api(`/api/runs/${first}/agents`, { method: "POST", body: JSON.stringify({ agent }) }).catch(() => undefined);
     }
-    process.stderr.write("Esperando la aprobación humana en el panel...\n");
+    process.stderr.write("Esperando una señal accionable de HRP...\n");
     let pausedNoted = false;
+    let auditorsNoted = false;
+    let implementationNoted = false;
+    let reviewPassNoted = false;
+    let waitReason = "approval";
+    let waitingAuditors = [];
     let consecutiveNetworkFailures = 0;
     const maxNetworkRetries = 5;
     const networkRetryDelayMs = 3000;
@@ -476,14 +489,65 @@ async function main() {
       if (debates.length && detail.run.control === "active") {
         return print(`Hallazgos por atender (${debates.length}): ${debates.map((finding) => finding.id).join(", ")}. Lee cada uno con 'hrp finding show <id>' y responde con 'hrp finding reply <id> --author ${agent} --body ...'; acepta creando un nodo de corrección (hrp node discover + hrp finding accept --resolution-node ID) o rebate con argumentos técnicos; tras dos rondas sin acuerdo, 'hrp finding escalate <id>'.`);
       }
-      // Los nodos asignados a ollama son trabajo del agente base: ollama no
-      // abre sesión propia; el base delega, revisa y completa esos nodos.
-      const mine = agent ? detail.nodes.filter((node) => !node.assignee || node.assignee === agent
+      const allCompleted = detail.nodes.length > 0 && detail.nodes.every((node) => node.status === "completed");
+      const isAuditor = Boolean(agent && detail.run.auditors.includes(agent));
+      const auditorState = isAuditor
+        ? detail.agentStates.find((state) => state.agent === agent)
+        : undefined;
+      // Al terminar la implementación, una sesión revisora que estaba bloqueada
+      // recibe una instrucción accionable. No se apropia de nodos del agente base.
+      if (allCompleted && isAuditor && auditorState?.phase !== "completed") {
+        const reviewedFlag = auditorState?.reviewedNodeIds.length
+          ? ` --reviewed ${auditorState.reviewedNodeIds.join(",")}`
+          : "";
+        const remaining = auditorState?.remainingNodeIds.length
+          ? auditorState.remainingNodeIds
+          : detail.nodes.map((node) => node.id);
+        return print(`Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${first} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${auditorState?.completed ?? 0} --total ${detail.nodes.length}${reviewedFlag} --remaining ${remaining.join(",")}', obtén el contexto con 'hrp review pack ${first}', registra o debate hallazgos y al cubrir todos los nodos publica phase completed con --reviewed y --remaining vacíos.`);
+      }
+      // Los nodos sin asignación pertenecen exclusivamente al modelo base. Los
+      // asignados a ollama también los administra el base porque no abren sesión.
+      const mine = agent ? detail.nodes.filter((node) => node.assignee === agent
+        || (detail.run.baseAgent === agent && !node.assignee)
         || (node.assignee === "ollama" && detail.run.baseAgent === agent)) : detail.nodes;
       const ready = mine.filter((node) => node.approved && node.status !== "completed");
       if (ready.length && detail.run.control === "active") return print(`Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
-      if (detail.nodes.length && detail.nodes.every((node) => node.status === "completed")) return print("La ejecución ya está completa.");
+      if (isAuditor && !allCompleted) {
+        waitReason = "implementation";
+        if (!implementationNoted) {
+          process.stderr.write("Auditor conectado; esperando que el agente base complete la implementación...\n");
+          implementationNoted = true;
+        }
+      }
+      if (allCompleted && agent === detail.run.baseAgent) {
+        const pendingAuditors = detail.run.auditors.filter((auditor) => detail.agentStates
+          .find((state) => state.agent === auditor)?.phase !== "completed");
+        if (!pendingAuditors.length) return print("Implementación y auditorías terminadas; ejecuta 'hrp review gate' antes de cerrar.");
+        waitReason = "auditors";
+        waitingAuditors = pendingAuditors;
+        if (!auditorsNoted) {
+          process.stderr.write(`Implementación terminada; esperando auditores: ${pendingAuditors.join(", ")}...\n`);
+          auditorsNoted = true;
+        }
+      } else if (allCompleted && isAuditor && auditorState?.phase === "completed") {
+        waitReason = "review-pass";
+        if (!reviewPassNoted) {
+          process.stderr.write("Auditoría terminada; esperando una corrección que requiera otra pasada...\n");
+          reviewPassNoted = true;
+        }
+      } else if (allCompleted && !isAuditor) {
+        return print("La ejecución ya está completa.");
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    if (waitReason === "implementation") {
+      throw new Error(`La implementación aún no termina después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; no necesitas pedir otra aprobación humana.`);
+    }
+    if (waitReason === "auditors") {
+      throw new Error(`Siguen pendientes los auditores ${waitingAuditors.join(", ")} después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; review gate permanece bloqueado.`);
+    }
+    if (waitReason === "review-pass") {
+      throw new Error(`No hubo una nueva pasada de auditoría después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval' para seguir disponible.`);
     }
     throw new Error(`Sin aprobación después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval' o pide la aprobación al humano`);
   }
@@ -690,10 +754,18 @@ async function main() {
   }
   if (group === "review" && action === "gate") {
     if (!first) throw new Error("Uso: hrp review gate <run-id>");
-    const { pending } = await api(`/api/runs/${encodeURIComponent(first)}/review-gate`);
-    if (!pending.length) return print("Revisión limpia: sin hallazgos vivos; la ejecución puede darse por cerrada.");
-    print(`La ejecución NO puede cerrarse: ${pending.length} ${pending.length === 1 ? "hallazgo vivo" : "hallazgos vivos"}.`);
+    const gate = await api(`/api/runs/${encodeURIComponent(first)}/review-gate`);
+    const pending = gate.pending ?? [];
+    if (!Array.isArray(gate.pendingAuditors)) {
+      print("La ejecución NO puede cerrarse: el servicio HRP no expone pendingAuditors. Actualiza o reinicia el servicio y vuelve a ejecutar el gate.");
+      process.exitCode = 1;
+      return;
+    }
+    const pendingAuditors = gate.pendingAuditors;
+    if (!pending.length && !pendingAuditors.length) return print("Revisión limpia: sin hallazgos vivos y con todos los auditores terminados; la ejecución puede darse por cerrada.");
+    print(`La ejecución NO puede cerrarse: ${pending.length} ${pending.length === 1 ? "hallazgo vivo" : "hallazgos vivos"} y ${pendingAuditors.length} ${pendingAuditors.length === 1 ? "auditor pendiente" : "auditores pendientes"}.`);
     for (const finding of pending) print(`[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title}`);
+    for (const auditor of pendingAuditors) print(`[${auditor.phase}] ${auditor.agent} — ${auditor.summary}`);
     process.exitCode = 1;
     return;
   }

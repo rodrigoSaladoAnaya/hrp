@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -23,6 +26,52 @@ const nodeInput = z.object({
   contextFiles: z.array(z.string().min(1)).optional(),
 }).strict();
 
+function buildFiles(target: string): string[] {
+  if (!statSync(target).isDirectory()) return [target];
+  return readdirSync(target, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
+      const child = path.join(target, entry.name);
+      return entry.isDirectory() ? buildFiles(child) : [child];
+    });
+}
+
+function artifactBuildId(target: string) {
+  try {
+    const hash = createHash("sha256");
+    for (const file of buildFiles(target)) {
+      hash.update(path.relative(target, file));
+      hash.update("\0");
+      hash.update(readFileSync(file));
+      hash.update("\0");
+    }
+    return hash.digest("hex").slice(0, 16);
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultBuildTarget() {
+  const moduleFile = fileURLToPath(import.meta.url);
+  const marker = `${path.sep}dist${path.sep}server${path.sep}`;
+  const markerIndex = moduleFile.lastIndexOf(marker);
+  return markerIndex === -1 ? moduleFile : moduleFile.slice(0, markerIndex + `${path.sep}dist`.length);
+}
+
+export function createBuildIdentity(target = defaultBuildTarget()) {
+  const buildId = artifactBuildId(target);
+  return () => {
+    const currentBuildId = artifactBuildId(target);
+    return {
+      buildId: buildId ?? null,
+      currentBuildId: currentBuildId ?? null,
+      buildStale: Boolean(buildId && buildId !== currentBuildId),
+    };
+  };
+}
+
+const readBuildIdentity = createBuildIdentity();
+
 export function createApp(store: HrpStore) {
   const app = express();
   const events = new EventEmitter();
@@ -41,7 +90,12 @@ export function createApp(store: HrpStore) {
     return run.projectId;
   };
 
-  app.get("/api/health", (_request, response) => response.json({ ok: true, product: "hrp", protocolVersion: PROTOCOL_VERSION }));
+  app.get("/api/health", (_request, response) => response.json({
+    ok: true,
+    product: "hrp",
+    protocolVersion: PROTOCOL_VERSION,
+    ...readBuildIdentity(),
+  }));
 
   // La configuración viaja siempre enmascarada hacia los clientes; la key
   // completa solo se recibe en el PUT y queda en el almacén del servicio.
@@ -216,11 +270,28 @@ export function createApp(store: HrpStore) {
         startedAt: z.iso.datetime().optional(),
       }).strict().parse(request.body);
       const run = store.helloAgent(request.params.runId, request.params.agent);
-      const previous = store.getRunDetail(request.params.runId)?.agentStates.find((state) => state.agent === request.params.agent);
+      const detail = store.getRunDetail(request.params.runId)!;
+      const previous = detail.agentStates.find((state) => state.agent === request.params.agent);
+      const startedAt = input.startedAt ?? (input.phase === "reviewing"
+        ? (previous?.phase === "reviewing" ? previous.startedAt : undefined) ?? new Date().toISOString()
+        : input.phase === "completed" ? previous?.startedAt : undefined);
+      if (run.auditors.includes(request.params.agent) && input.phase === "completed") {
+        const expected = new Set(detail.nodes.map((node) => node.id));
+        const reviewed = new Set(input.reviewedNodeIds);
+        const completeCoverage = input.completed === expected.size
+          && input.total === expected.size
+          && input.remainingNodeIds.length === 0
+          && reviewed.size === expected.size
+          && [...expected].every((nodeId) => reviewed.has(nodeId));
+        if (!completeCoverage) throw new Error("An auditor can only complete after reviewing every current node with no remaining coverage");
+        if (!startedAt || detail.nodes.some((node) => node.updatedAt > startedAt)) {
+          throw new Error("Auditor coverage predates the latest node change; publish phase reviewing again before completion");
+        }
+      }
       const state = store.setAgentState(request.params.runId, {
         agent: request.params.agent,
         ...input,
-        startedAt: input.startedAt ?? (["executing", "reviewing"].includes(input.phase) ? previous?.startedAt ?? new Date().toISOString() : undefined),
+        startedAt,
       });
       broadcast(run.projectId, run.id, "agent-status");
       response.json(state);
@@ -284,15 +355,23 @@ export function createApp(store: HrpStore) {
       if (run && run.nodeCount > 0 && run.completedCount === run.nodeCount) {
         const detail = store.getRunDetail(request.params.runId)!;
         for (const auditor of run.auditors.filter((agent) => agent !== "ollama")) {
+          const previous = detail.agentStates.find((state) => state.agent === auditor);
+          const validNodeIds = new Set(detail.nodes.map((candidate) => candidate.id));
+          const reviewedNodeIds = (previous?.reviewedNodeIds ?? [])
+            .filter((candidateId) => candidateId !== node.id && validNodeIds.has(candidateId));
+          const reviewed = new Set(reviewedNodeIds);
+          const remainingNodeIds = detail.nodes
+            .map((candidate) => candidate.id)
+            .filter((candidateId) => !reviewed.has(candidateId));
           store.setAgentState(run.id, {
             agent: auditor,
             phase: "waiting",
-            summary: "Auditoría pendiente de iniciar",
-            detail: "Copia las instrucciones del agente para abrir su sesión de revisión.",
-            completed: 0,
+            summary: reviewedNodeIds.length ? "Nueva pasada de auditoría pendiente" : "Auditoría pendiente de iniciar",
+            detail: `Se invalidó la cobertura de ${node.id}; conserva ${reviewedNodeIds.length} operaciones ya revisadas.`,
+            completed: reviewedNodeIds.length,
             total: detail.nodes.length,
-            reviewedNodeIds: [],
-            remainingNodeIds: detail.nodes.map((candidate) => candidate.id),
+            reviewedNodeIds,
+            remainingNodeIds,
           });
         }
         void runAutoReview(store, request.params.runId, {
@@ -379,7 +458,10 @@ export function createApp(store: HrpStore) {
 
   app.get("/api/runs/:runId/review-gate", (request, response, next) => {
     try {
-      response.json({ pending: store.runReviewGate(request.params.runId) });
+      response.json({
+        pending: store.runReviewGate(request.params.runId),
+        pendingAuditors: store.pendingAuditors(request.params.runId),
+      });
     } catch (error) { next(error); }
   });
 

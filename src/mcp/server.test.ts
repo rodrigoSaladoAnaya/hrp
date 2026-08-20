@@ -101,7 +101,7 @@ describe("HrpMcpServer", () => {
     expect(initResponse?.result).toMatchObject({
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "hrp-mcp", version: "2.1.0" },
+      serverInfo: { name: "hrp-mcp", version: "3.2.0" },
     });
 
     const pingResponse = await server.handleMessage({
@@ -136,6 +136,17 @@ describe("HrpMcpServer", () => {
     expect(tools.some((tool) => tool.name === "hrp_publish_patch")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_verify_run")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_complete_node")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_retry_node")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_publish_activity")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_review_pack")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_review_gate")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_add")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_list")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_show")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_reply")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_accept")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_reject")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_escalate")).toBe(true);
   });
 
   it("executes tools/call for key HRP operations", async () => {

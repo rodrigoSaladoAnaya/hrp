@@ -1,6 +1,6 @@
 {
   "name": "hrp",
-  "version": "3.0.0+codex.20260820202849",
+  "version": "3.2.0+codex.20260820211620",
   "description": "Human Review Protocol (HRP v3) integration for Codex, including the use-hrp skill and local HRP CLI adapter.",
   "author": {
     "name": "HRP"
@@ -14,6 +14,7 @@
     "workflow"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "HRP",
     "shortDescription": "Use HRP workflows from Codex",

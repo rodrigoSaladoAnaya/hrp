@@ -45,7 +45,9 @@ Cuando seas el base, los hallazgos pendientes tienen prioridad sobre iniciar tra
 - Si no procede, usa `hrp finding reject <id> --author codex --body RAZON` con argumento técnico verificable.
 - Usa `hrp finding escalate <id>` sólo para ambigüedades genuinas que la evidencia no resuelva.
 
-La auditoría final se lanza automáticamente al completarse el run. El base espera sus resultados, resuelve los hallazgos y confirma `hrp review gate`. Un colaborador termina cuando sus nodos asignados quedan completados y entrega el control al base.
+La auditoría final se lanza automáticamente al completarse el run. El base permanece en `hrp wait approval` mientras cualquier auditor seleccionado siga en `waiting`, `reviewing` o `failed`; implementación completa no significa ejecución cerrada. Resuelve los hallazgos y confirma `hrp review gate`: el gate sólo pasa cuando no hay hallazgos vivos ni `pendingAuditors`. Un colaborador termina cuando sus nodos asignados quedan completados y entrega el control al base.
+
+Cuando Codex actúe como revisor, espera la señal **Auditoría disponible**, publica `agent status` en `reviewing` antes de leer el paquete, actualiza cobertura con `--reviewed` y `--remaining`, y publica `completed` únicamente al cubrir todos los nodos. Después vuelve a esperar: una corrección del base puede requerir otra pasada. Como revisor nunca tomes nodos sin asignación, aunque aparezcan en el run.
 
 ## Pausas humanas
 

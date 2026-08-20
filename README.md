@@ -1,4 +1,4 @@
-# Human Review Protocol v2
+# Human Review Protocol v3
 
 HRP muestra la ejecución observable de un agente de código como un grafo global de operaciones semánticas. Cada nodo representa un archivo y símbolo concreto, explica qué cambiará y por qué, conserva sus dependencias y muestra el diff real cuando termina.
 
@@ -25,13 +25,22 @@ También puedes iniciar y detener el servicio con:
 ./scripts/stop.sh
 ```
 
-Para instalar o actualizar la integración opcional de Codex:
+Para instalar o actualizar la integración completa de Codex (skill, CLI, plugin y MCP):
 
 ```sh
 ./scripts/install-codex.sh
 ```
 
-Reinicia Codex después y usa `Usa $use-hrp para esta tarea.` La skill publica mediante las herramientas MCP de HRP cuando estén disponibles y usa el CLI como alternativa; no modifica el proyecto observado.
+Comprueba el resultado:
+
+```sh
+codex plugin list
+codex mcp list
+```
+
+Debes ver `hrp@hrp-local` instalado y un servidor MCP `hrp` habilitado. Abre una tarea nueva de Codex y usa `Usa $hrp:use-hrp para esta tarea.` Las tareas que ya estaban abiertas no recargan plugins. La skill prefiere las herramientas `hrp_*` y conserva el CLI como alternativa; no instala dependencias ni archivos dentro del proyecto observado.
+
+No ejecutes `codex plugin marketplace add` contra la raíz del repositorio. El instalador registra automáticamente el marketplace válido que vive en `integrations/codex`.
 
 ## Conectar un proyecto
 

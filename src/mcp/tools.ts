@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ActivityType, ChangeNodeInput } from "../shared/protocol.js";
+import type { ActivityType, ChangeNodeInput, FindingInput, FindingStatus } from "../shared/protocol.js";
 
 function findHrpRoot(start: string): string {
   let current = start;
@@ -240,6 +240,52 @@ export class HrpMcpClient {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/activity`, {
       method: "POST",
       body: JSON.stringify(params),
+    });
+  }
+
+  async reviewPack(runId: string, nodeId?: string): Promise<string> {
+    const query = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "";
+    const response = await fetch(`${this.baseUrl}/api/runs/${encodeURIComponent(runId)}/review-pack${query}`)
+      .catch((error: Error) => {
+        throw new Error(`HRP no responde en ${this.baseUrl}: ${error.message}`);
+      });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `${response.status} ${response.statusText}`);
+    }
+    return response.text();
+  }
+
+  async reviewGate(runId: string): Promise<unknown> {
+    return this.request(`/api/runs/${encodeURIComponent(runId)}/review-gate`);
+  }
+
+  async listFindings(runId: string): Promise<unknown> {
+    return this.request(`/api/runs/${encodeURIComponent(runId)}/findings`);
+  }
+
+  async getFinding(findingId: string): Promise<unknown> {
+    return this.request(`/api/findings/${encodeURIComponent(findingId)}`);
+  }
+
+  async addFinding(runId: string, input: FindingInput): Promise<unknown> {
+    return this.request(`/api/runs/${encodeURIComponent(runId)}/findings`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async replyFinding(findingId: string, author: string, body: string): Promise<unknown> {
+    return this.request(`/api/findings/${encodeURIComponent(findingId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ author, body }),
+    });
+  }
+
+  async setFindingStatus(findingId: string, status: FindingStatus, resolutionNodeId?: string): Promise<unknown> {
+    return this.request(`/api/findings/${encodeURIComponent(findingId)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status, ...(resolutionNodeId ? { resolutionNodeId } : {}) }),
     });
   }
 }
@@ -598,6 +644,116 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
       required: ["runId", "type", "message"],
     },
   },
+  {
+    name: "hrp_review_pack",
+    description: "Genera el paquete Markdown para auditar una ejecución completa o el subárbol de un nodo.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Identificador de la ejecución." },
+        nodeId: { type: "string", description: "Nodo raíz opcional para limitar el paquete." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "hrp_review_gate",
+    description: "Consulta los hallazgos vivos y auditores pendientes que impiden cerrar una ejecución.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Identificador de la ejecución." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "hrp_finding_add",
+    description: "Registra un hallazgo de auditoría con severidad, evidencia y nodo opcional.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Identificador de la ejecución." },
+        reviewer: { type: "string", description: "Agente que registra el hallazgo." },
+        severity: { type: "string", enum: ["critical", "major", "minor", "question"] },
+        title: { type: "string", description: "Título concreto del problema." },
+        body: { type: "string", description: "Evidencia y efecto técnico del problema." },
+        nodeId: { type: "string", description: "Nodo relacionado opcional." },
+      },
+      required: ["runId", "reviewer", "severity", "title", "body"],
+    },
+  },
+  {
+    name: "hrp_finding_list",
+    description: "Lista los hallazgos de una ejecución.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Identificador de la ejecución." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "hrp_finding_show",
+    description: "Obtiene un hallazgo y su hilo completo de debate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+      },
+      required: ["findingId"],
+    },
+  },
+  {
+    name: "hrp_finding_reply",
+    description: "Añade una respuesta auditable al debate de un hallazgo.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+        author: { type: "string", description: "Agente que responde." },
+        body: { type: "string", description: "Respuesta técnica." },
+      },
+      required: ["findingId", "author", "body"],
+    },
+  },
+  {
+    name: "hrp_finding_accept",
+    description: "Acepta un hallazgo y lo vincula opcionalmente con su nodo de corrección.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+        resolutionNodeId: { type: "string", description: "Nodo que resuelve el hallazgo." },
+      },
+      required: ["findingId"],
+    },
+  },
+  {
+    name: "hrp_finding_reject",
+    description: "Rechaza un hallazgo después de publicar una razón técnica en su hilo.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+        author: { type: "string", description: "Agente que rechaza." },
+        body: { type: "string", description: "Razón técnica obligatoria." },
+      },
+      required: ["findingId", "author", "body"],
+    },
+  },
+  {
+    name: "hrp_finding_escalate",
+    description: "Escala al humano un hallazgo que los agentes no pueden resolver.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+      },
+      required: ["findingId"],
+    },
+  },
 ];
 
 export async function executeHrpTool(
@@ -690,6 +846,47 @@ export async function executeHrpTool(
         detail: typeof args.detail === "string" ? args.detail : undefined,
         nodeId: typeof args.nodeId === "string" ? args.nodeId : undefined,
       });
+
+    case "hrp_review_pack":
+      return client.reviewPack(
+        String(args.runId),
+        typeof args.nodeId === "string" ? args.nodeId : undefined,
+      );
+
+    case "hrp_review_gate":
+      return client.reviewGate(String(args.runId));
+
+    case "hrp_finding_add":
+      return client.addFinding(String(args.runId), {
+        reviewer: String(args.reviewer),
+        severity: args.severity as FindingInput["severity"],
+        title: String(args.title),
+        body: String(args.body),
+        nodeId: typeof args.nodeId === "string" ? args.nodeId : undefined,
+      });
+
+    case "hrp_finding_list":
+      return client.listFindings(String(args.runId));
+
+    case "hrp_finding_show":
+      return client.getFinding(String(args.findingId));
+
+    case "hrp_finding_reply":
+      return client.replyFinding(String(args.findingId), String(args.author), String(args.body));
+
+    case "hrp_finding_accept":
+      return client.setFindingStatus(
+        String(args.findingId),
+        "accepted",
+        typeof args.resolutionNodeId === "string" ? args.resolutionNodeId : undefined,
+      );
+
+    case "hrp_finding_reject":
+      await client.replyFinding(String(args.findingId), String(args.author), String(args.body));
+      return client.setFindingStatus(String(args.findingId), "rejected");
+
+    case "hrp_finding_escalate":
+      return client.setFindingStatus(String(args.findingId), "escalated");
 
     default:
       throw new Error(`Herramienta no reconocida: ${toolName}`);
