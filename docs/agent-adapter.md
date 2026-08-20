@@ -330,6 +330,10 @@ hrp node discover "$run_id" discovered-node.json
 
 El nuevo nodo aparecerá en el mismo mapa con la etiqueta `Descubierto`. Después sigue el ciclo normal `start → patch → verify → complete`.
 
+**Triaje del ejecutor al descubrir.** Si Ollama Cloud está configurado (`hrp ollama status`), el agente base evalúa cada descubierto antes de publicarlo: el trabajo mecánico, repetitivo o completamente especificado por su descripción lleva `"suggestedAgent": "ollama"` (HRP lo pre-asigna a `ollama` y sigue el flujo de la sección «Delegación a Ollama Cloud»); el trabajo de diseño, seguridad o con ambigüedad se publica sin sugerencia y queda asignado al modelo base. El objetivo es que el modelo avanzado se reserve para las operaciones de alto valor.
+
+**La aprobación del descubierto no detiene la ejecución.** Publica el nodo descubierto y continúa de inmediato con los nodos ya aprobados cuyas dependencias estén completas; ejecuta `hrp wait approval` únicamente cuando no quede trabajo aprobado disponible, agrupando en una sola espera todos los descubiertos pendientes.
+
 Si el descubrimiento cambia las dependencias de nodos aún pendientes, vuelve a publicar el grafo completo con las relaciones actualizadas. No cambies silenciosamente la semántica de un nodo ya terminado.
 
 ## Actividad secundaria

@@ -160,7 +160,11 @@ Si durante la implementación aparece una operación que no estaba en el grafo, 
 hrp node discover "$run_id" /ruta/temporal/discovered.json
 ```
 
-El nodo descubierto también espera la aprobación humana antes de poder iniciarse. Luego síguele el ciclo normal start → patch → verify → complete. Si el descubrimiento cambia dependencias de nodos aún pendientes, vuelve a publicar el grafo completo actualizado. Nunca cambies la semántica de un nodo ya terminado.
+**Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo: si es mecánico, repetitivo o queda completamente especificado por su descripción (renombres, boilerplate, estilos, textos, ajustes triviales), inclúyele `"suggestedAgent": "ollama"` en el JSON; si implica diseño, seguridad, integración delicada o ambigüedad, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
+
+**No detengas la implementación por un descubierto.** El nodo descubierto espera la aprobación humana antes de poder iniciarse, pero esa espera no debe frenar el flujo: publícalo y continúa de inmediato con los nodos ya aprobados cuyas dependencias estén completas. Ejecuta `hrp wait approval` solo cuando ya no te quede ningún nodo aprobado disponible, agrupando en una sola espera todos los descubiertos pendientes.
+
+Después síguele el ciclo normal start → patch → verify → complete (con la sección 3b si quedó asignado a ollama). Si el descubrimiento cambia dependencias de nodos aún pendientes, vuelve a publicar el grafo completo actualizado. Nunca cambies la semántica de un nodo ya terminado.
 
 ### 6. Actividad secundaria (con moderación)
 
