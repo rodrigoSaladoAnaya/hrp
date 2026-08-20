@@ -52,6 +52,7 @@ function nodeFromRow(row: Row): ChangeNode {
     approved: Number(row.approved) === 1,
     assignee: row.assignee ? String(row.assignee) : undefined,
     suggestedAgent: row.suggested_agent ? String(row.suggested_agent) : undefined,
+    contextFiles: row.context_json ? JSON.parse(String(row.context_json)) as string[] : undefined,
     executedBy: row.executed_by ? String(row.executed_by) : undefined,
     dependencies: JSON.parse(String(row.dependencies_json)) as string[],
     diff: row.diff ? String(row.diff) : undefined,
@@ -141,6 +142,9 @@ export class HrpStore {
     }
     if (!nodeColumns.some((column) => String(column.name) === "suggested_agent")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN suggested_agent TEXT");
+    }
+    if (!nodeColumns.some((column) => String(column.name) === "context_json")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN context_json TEXT");
     }
     if (!nodeColumns.some((column) => String(column.name) === "tokens")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN tokens INTEGER");
@@ -320,12 +324,13 @@ export class HrpStore {
     };
     for (const nodeId of dependencyGraph.keys()) visit(nodeId, []);
     const upsert = this.database.prepare(`
-      INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, discovered, suggested_agent, dependencies_json, created_at, updated_at)
-      VALUES (@id, @runId, @file, @symbol, @title, @description, @rationale, 'pending', @discovered, @suggestedAgent, @dependencies, @timestamp, @timestamp)
+      INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, discovered, suggested_agent, context_json, dependencies_json, created_at, updated_at)
+      VALUES (@id, @runId, @file, @symbol, @title, @description, @rationale, 'pending', @discovered, @suggestedAgent, @contextJson, @dependencies, @timestamp, @timestamp)
       ON CONFLICT(run_id, id) DO UPDATE SET
         file = excluded.file, symbol = excluded.symbol, title = excluded.title,
         description = excluded.description, rationale = excluded.rationale,
         discovered = excluded.discovered, suggested_agent = excluded.suggested_agent,
+        context_json = excluded.context_json,
         dependencies_json = excluded.dependencies_json,
         -- La aprobación humana solo se invalida si el contenido semántico del
         -- nodo cambió: una republicación idéntica (reintento/reanudación) la conserva.
@@ -335,6 +340,9 @@ export class HrpStore {
             AND nodes.description = excluded.description AND nodes.rationale = excluded.rationale
             AND nodes.dependencies_json = excluded.dependencies_json
             AND COALESCE(nodes.suggested_agent, '') = COALESCE(excluded.suggested_agent, '')
+            -- El contexto es parte de lo aprobado: cambiarlo altera lo que el
+            -- modelo delegado vera, asi que exige re-aprobacion.
+            AND COALESCE(nodes.context_json, '') = COALESCE(excluded.context_json, '')
           THEN nodes.approved
           ELSE 0 END,
         updated_at = excluded.updated_at
@@ -348,7 +356,9 @@ export class HrpStore {
     const timestamp = now();
     this.database.transaction((nodes: ChangeNodeInput[]) => {
       for (const node of nodes) {
-        upsert.run({ ...node, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, dependencies: JSON.stringify(node.dependencies), timestamp });
+        // contextFiles se separa del spread: el binding nombrado no admite claves sobrantes.
+        const { contextFiles, ...fields } = node;
+        upsert.run({ ...fields, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, contextJson: contextFiles?.length ? JSON.stringify(contextFiles) : null, dependencies: JSON.stringify(node.dependencies), timestamp });
         if (node.suggestedAgent) suggestAssign.run({ runId, id: node.id, suggestedAgent: node.suggestedAgent });
       }
       this.database.prepare("UPDATE runs SET graph_version = graph_version + 1, updated_at = ? WHERE id = ?").run(timestamp, runId);

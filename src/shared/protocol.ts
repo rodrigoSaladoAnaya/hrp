@@ -49,6 +49,9 @@ export type ChangeNode = {
   approved: boolean;
   assignee?: string;
   suggestedAgent?: string;
+  // Archivos de solo lectura que 'hrp ollama exec' adjunta como referencia al
+  // delegar: el humano aprueba junto con la spec qué material verá el modelo.
+  contextFiles?: string[];
   executedBy?: string;
   dependencies: string[];
   diff?: string;
@@ -84,7 +87,7 @@ export type RunDetail = {
   activity: Activity[];
 };
 
-export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent"> & {
+export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent" | "contextFiles"> & {
   discovered?: boolean;
 };
 
@@ -110,4 +113,4 @@ export type OllamaSettingsView = {
 export const DEFAULT_OLLAMA_MODEL = "kimi-k2.7-code";
 export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
 
-export const PROTOCOL_VERSION = "2.5";
+export const PROTOCOL_VERSION = "2.6";

@@ -134,7 +134,11 @@ hrp node start "$run_id" <node-id> --agent ollama
 hrp ollama exec "$run_id" <node-id> > /ruta/scratchpad/salida.txt
 ```
 
-`exec` arma el prompt automáticamente con la descripción aprobada del nodo más el contenido actual del archivo — no redactes un prompt artesanal que duplique la spec. Usa `hrp ollama run --prompt-file ... --run "$run_id" --node <node-id>` solo cuando necesites un prompt a medida (fragmentos de un archivo grande, contexto de varios archivos), siempre con `--run`/`--node` para conservar la auditoría. Ambas vías quedan registradas en la Actividad con modelo y tokens.
+`exec` arma el prompt automáticamente con la descripción aprobada del nodo, sus `contextFiles` como referencia de solo lectura y el contenido actual del archivo — no redactes un prompt artesanal que duplique la spec. Usa `hrp ollama run --prompt-file ... --run "$run_id" --node <node-id>` solo cuando necesites un prompt a medida (fragmentos de un archivo grande), siempre con `--run`/`--node` para conservar la auditoría. Ambas vías quedan registradas en la Actividad con modelo y tokens.
+
+Si `exec` falla con **«Ollama necesita más contexto — NECESITO: ...»**, el protocolo funcionó: el modelo pidió lo que le faltaba en vez de inventarlo. Enriquece la descripción o los `contextFiles` del nodo, republica el grafo (el nodo vuelve al gate de aprobación) y reintenta. Nunca completes el nodo con una salida donde el modelo haya supuesto contratos.
+
+La verificación de un nodo delegado es **ejecutable sin excepciones**: el código corre sus casos y la documentación ejecuta sus ejemplos contra el código real («se ve bien» no es verificación).
 
 Después actúas como revisor: valida la salida, corrige lo que haga falta, aplica el cambio al workspace con tus herramientas y sigue el ciclo normal (patch → verify → complete). En el `--summary` del parche distingue qué generó ollama y qué corregiste tú. `hrp ollama run` reporta por stderr los tokens de prompt/respuesta del modelo delegado: úsalo para `--tokens` al completar. Nunca completes un nodo delegado sin haber revisado y verificado su resultado; si la salida es inservible, corrígela tú mismo y anótalo en el resumen.
 
@@ -163,6 +167,8 @@ hrp node discover "$run_id" /ruta/temporal/discovered.json
 **Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo: si es mecánico, repetitivo o queda completamente especificado por su descripción (renombres, boilerplate, estilos, textos, ajustes triviales), inclúyele `"suggestedAgent": "ollama"` en el JSON; si implica diseño, seguridad, integración delicada o ambigüedad, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
 
 **Regla de la spec delegable.** Un nodo sugerido para ollama se redacta con la descripción como **spec a nivel contrato** — firma o punto de inserción exacto, invariantes («tal bloque queda igual»), casos borde y criterio de verificación — nunca pseudocódigo línea a línea. La delegación paga cuando la spec es corta y la salida larga; si describir el nodo te cuesta casi lo mismo que escribir el código, no lo sugieras para ollama: quédatelo. Esa descripción es la que el humano aprueba y la que `hrp ollama exec` enviará tal cual al modelo, así que se escribe una sola vez.
+
+**Firmas o contexto, siempre.** Si la spec delegada menciona símbolos que viven en **otros archivos** (funciones, tipos, formatos), incluye su contrato exacto en la descripción o declara esos archivos en `"contextFiles": ["ruta.ts"]` del nodo: `exec` los adjunta como referencia de solo lectura. Un modelo al que le ordenas usar algo que no puede ver no se detiene: lo inventa. El contexto es semántica aprobada — cambiarlo republica el nodo al gate del humano.
 
 **No detengas la implementación por un descubierto.** El nodo descubierto espera la aprobación humana antes de poder iniciarse, pero esa espera no debe frenar el flujo: publícalo y continúa de inmediato con los nodos ya aprobados cuyas dependencias estén completas. Ejecuta `hrp wait approval` solo cuando ya no te quede ningún nodo aprobado disponible, agrupando en una sola espera todos los descubiertos pendientes.
 

@@ -250,6 +250,24 @@ describe("HrpStore", () => {
     expect(fallback.assignee).toBe("claude");
   });
 
+  it("persists contextFiles and treats them as approved semantics", () => {
+    const { store, run } = fixture();
+    const nodes = [
+      { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Cambio uno", rationale: "Prueba", dependencies: [], contextFiles: ["contracts.ts"] },
+      { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Cambio dos", rationale: "Prueba", dependencies: [] },
+    ];
+    store.publishGraph(run.id, { nodes });
+    expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "uno")?.contextFiles).toEqual(["contracts.ts"]);
+    store.approveNodes(run.id);
+    store.publishGraph(run.id, { nodes });
+    expect(store.getRunDetail(run.id)?.nodes.every((node) => node.approved)).toBe(true);
+    // Cambiar solo el contexto altera lo que verá el modelo delegado: re-aprobación.
+    store.publishGraph(run.id, { nodes: [{ ...nodes[0], contextFiles: ["contracts.ts", "extra.ts"] }, nodes[1]] });
+    const after = store.getRunDetail(run.id)!.nodes;
+    expect(after.find((node) => node.id === "uno")?.approved).toBe(false);
+    expect(after.find((node) => node.id === "dos")?.approved).toBe(true);
+  });
+
   it("republishing an identical graph keeps human approval; a real change resets it", () => {
     const { store, run } = fixture();
     const nodes = [

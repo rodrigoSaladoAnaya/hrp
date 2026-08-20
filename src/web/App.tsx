@@ -287,6 +287,7 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollama
         <div className="history-heading"><h3>Qué hará</h3><span>Plan original</span></div>
         <p className="history-summary">{node.description}</p>
         <div className="history-rationale"><strong>Por qué se planeó</strong><p>{node.rationale}</p></div>
+        {node.contextFiles && node.contextFiles.length > 0 && (<div className="history-rationale"><strong>Contexto de referencia (solo lectura)</strong><p>{node.contextFiles.join(", ")}</p></div>)}
       </section>
 
       {node.patchSummary && (

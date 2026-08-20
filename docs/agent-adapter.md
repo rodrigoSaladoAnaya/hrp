@@ -181,6 +181,7 @@ Requisitos del grafo:
 - `description` explica qué hará;
 - `rationale` explica por qué existe;
 - `suggestedAgent` (opcional) recomienda quién debería implementarlo — por ejemplo `"ollama"` para trabajo mecánico o de bajo riesgo. HRP pre-asigna el nodo al agente sugerido si el humano no ha decidido otra cosa; la insignia «sugiere» del panel deja visible que la recomendación vino del modelo base.
+- `contextFiles` (opcional) lista archivos del workspace que `hrp ollama exec` adjuntará al prompt como **referencia de solo lectura**. Es parte de la semántica aprobada: el inspector lo muestra antes de aprobar, y cambiarlo en una republicación regresa el nodo a «por aprobar».
 
 ### 4b. Esperar la aprobación humana
 
@@ -435,6 +436,13 @@ Flujo de delegación:
 4. `hrp ollama status` muestra la configuración vigente (key enmascarada, modelo y URL base); `hrp ollama run` reporta por stderr el consumo upstream (tokens de prompt y respuesta), útil para `node complete --tokens`.
 
 Cómo audita el humano lo que corre ollama: la vista **Actividad** registra cada consulta con su modelo y tokens (y a qué nodo pertenece); la tarjeta del nodo muestra `En curso (ollama)` mientras se ejecuta y `por ollama` con su costo al terminar; y `hrp state <run-id> --json` expone `executedBy` y `tokens` por nodo. Ollama no ejecuta nada en la máquina local: cada llamada es una petición HTTP del servicio a Ollama Cloud y no existe ningún proceso local que vigilar.
+
+**Exactitud del modelo delegado.** Los modelos modestos alucinan cuando les falta información y el formato los obliga a responder completo. HRP ataca las dos causas:
+
+- **Firmas o contexto, siempre.** Todo símbolo externo que una spec delegada mencione lleva su contrato exacto en la descripción (qué recibe, qué devuelve) **o** su archivo declarado en `contextFiles`, que `exec` adjunta como secciones `REFERENCIA (solo lectura)`. Nunca pidas documentar o usar algo que el modelo no puede ver.
+- **Protocolo NECESITO.** El prompt de `exec` autoriza al modelo a responder una sola línea `NECESITO: <qué falta>` en lugar de inventar. Ante esa respuesta, `exec` falla con guía; el agente base enriquece la descripción o el `contextFiles`, republica (el nodo vuelve al gate de aprobación) y reintenta. Nunca completes un nodo con contenido que el modelo produjo inventando contratos.
+- **Determinismo.** El proxy fija `temperature: 0` en las consultas delegadas: mismo nodo y misma spec producen la misma salida, lo que hace reproducible la auditoría.
+- **Verificación ejecutable, sin excepciones.** Un nodo delegado nunca se completa con una verificación de «se ve bien»: el código ejecuta sus casos y la documentación ejecuta sus ejemplos contra el código real. La alucinación que sobreviva a la revisión del agente base debe morir en `verify`.
 
 ## Integración directa mediante HTTP
 

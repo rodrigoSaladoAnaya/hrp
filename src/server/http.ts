@@ -18,6 +18,8 @@ const nodeInput = z.object({
   // Recomendación del modelo base sobre quién debería implementar el nodo
   // (p. ej. "ollama" para trabajo mecánico); el humano decide al aprobar.
   suggestedAgent: z.string().min(1).optional(),
+  // Archivos de solo lectura que 'hrp ollama exec' adjunta como referencia al delegar.
+  contextFiles: z.array(z.string().min(1)).optional(),
 }).strict();
 
 export function createApp(store: HrpStore) {
@@ -77,6 +79,8 @@ export function createApp(store: HrpStore) {
         body: JSON.stringify({
           model,
           stream: false,
+          // Trabajo mecánico delegado: determinismo antes que creatividad.
+          options: { temperature: 0 },
           messages: [
             ...(input.system ? [{ role: "system", content: input.system }] : []),
             { role: "user", content: input.prompt },

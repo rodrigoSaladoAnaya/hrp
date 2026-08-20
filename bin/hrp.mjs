@@ -51,7 +51,10 @@ async function api(endpoint, init = {}) {
 }
 
 async function ollamaChat(body) {
-  const result = await api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
+  return api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
+}
+
+function printOllamaResult(result) {
   if (json) return print(result);
   // El desglose va a stderr para poder canalizar la respuesta limpia a un archivo.
   process.stderr.write(`# ${result.model} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens\n`);
@@ -438,7 +441,7 @@ async function main() {
       // Con contexto, la consulta queda auditada en la actividad de esa ejecución.
       if (value("--run")) body.runId = value("--run");
       if (value("--node")) body.nodeId = value("--node");
-      return ollamaChat(body);
+      return printOllamaResult(await ollamaChat(body));
     }
     if (action === "exec") {
       // La descripción del nodo (aprobada por el humano) ES la especificación:
@@ -450,8 +453,16 @@ async function main() {
       const filePath = path.resolve(process.cwd(), node.file);
       const exists = existsSync(filePath);
       const content = exists ? readFileSync(filePath, "utf8") : "";
-      if (content.length > 200_000) {
-        throw new Error(`${node.file} excede 200KB; usa 'hrp ollama run --prompt-file' con solo los fragmentos relevantes`);
+      // Contexto de referencia aprobado en el nodo: los contratos reales que
+      // el modelo modesto necesita ver para no inventar nada.
+      const references = [];
+      for (const contextFile of node.contextFiles ?? []) {
+        const contextPath = path.resolve(process.cwd(), contextFile);
+        if (!existsSync(contextPath)) throw new Error(`El archivo de contexto del nodo no existe en el workspace: ${contextFile}`);
+        references.push({ file: contextFile, content: readFileSync(contextPath, "utf8") });
+      }
+      if (content.length + references.reduce((sum, ref) => sum + ref.content.length, 0) > 200_000) {
+        throw new Error(`El archivo del nodo más su contexto exceden 200KB; usa 'hrp ollama run --prompt-file' con solo los fragmentos relevantes`);
       }
       const prompt = [
         "Eres un asistente de programación. Aplica la siguiente operación y devuelve ÚNICAMENTE el contenido completo del archivo resultante, sin explicaciones, sin markdown y sin fences de código.",
@@ -463,13 +474,22 @@ async function main() {
         `Motivo: ${node.rationale}`,
         "",
         "No cambies nada fuera de lo especificado: conserva el resto del archivo exactamente igual.",
+        "Si la especificación no define el contrato de algo que necesitas (una función, un campo, un formato), NO lo supongas ni lo inventes: responde únicamente una línea que empiece con 'NECESITO: ' describiendo qué te falta.",
+        ...references.flatMap((ref) => ["", `REFERENCIA (solo lectura, NO la modifiques): ${ref.file}`, "", ref.content.trimEnd()]),
         "",
         exists ? `Contenido actual de ${node.file}:` : `El archivo ${node.file} no existe todavía: genera su contenido completo.`,
         ...(exists ? ["", content] : []),
       ].join("\n");
       const body = { prompt, runId: first, nodeId: second };
       if (value("--model")) body.model = value("--model");
-      return ollamaChat(body);
+      const result = await ollamaChat(body);
+      const answer = String(result.content ?? "").trim();
+      if (answer.startsWith("NECESITO:")) {
+        // El modelo pidió lo que le falta en vez de inventarlo: el protocolo
+        // funcionó, pero este nodo no puede continuar con la spec actual.
+        throw new Error(`Ollama necesita más contexto para este nodo — ${answer.split("\n")[0]}. Enriquece la descripción o agrega contextFiles al nodo, republica el grafo y reintenta`);
+      }
+      return printOllamaResult(result);
     }
   }
   if (group === "state") return print(await api(`/api/runs/${action}`));
