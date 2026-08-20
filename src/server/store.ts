@@ -512,7 +512,8 @@ export class HrpStore {
       SELECT COUNT(*) AS total,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
         SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN approved = 0 THEN 1 ELSE 0 END) AS awaitingApproval
       FROM nodes WHERE run_id = ?
     `).get(String(row.id)) as Row;
     const total = Number(counts.total ?? 0);
@@ -526,7 +527,7 @@ export class HrpStore {
       graphVersion: Number(row.graph_version),
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
-      nodeCount: total, completedCount: completed,
+      nodeCount: total, completedCount: completed, awaitingApproval: Number(counts.awaitingApproval ?? 0),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),
     };
   }

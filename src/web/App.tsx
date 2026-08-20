@@ -64,15 +64,23 @@ function sortRuns(runs: RunSummary[]): RunSummary[] {
     || Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
 }
 
+function awaitingApprovals(project: ProjectWithRuns): number {
+  return project.runs.reduce((sum, run) => sum + run.awaitingApproval, 0);
+}
+
 function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   const projectTime = (project: ProjectWithRuns) => Math.max(
     Date.parse(project.lastOpenedAt),
     ...project.runs.map((run) => Date.parse(run.updatedAt)),
   );
   return [...projects].sort((left, right) => {
+    // Una aprobación pendiente significa un agente bloqueado esperando al
+    // humano: ese proyecto sube antes que los meramente activos.
+    const leftWaiting = awaitingApprovals(left) > 0 ? 1 : 0;
+    const rightWaiting = awaitingApprovals(right) > 0 ? 1 : 0;
     const leftActive = left.runs.some((run) => run.status === "running") ? 1 : 0;
     const rightActive = right.runs.some((run) => run.status === "running") ? 1 : 0;
-    return rightActive - leftActive || projectTime(right) - projectTime(left);
+    return rightWaiting - leftWaiting || rightActive - leftActive || projectTime(right) - projectTime(left);
   });
 }
 
@@ -475,6 +483,14 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
                   <span className="tree-branch"><Icon name="folder"/></span>
                   <span><strong>{project.name}</strong><small title={project.workspaceRoot}>{project.workspaceRoot}</small></span>
                 </button>
+                {awaitingApprovals(project) > 0 && (
+                  <span
+                    className="tree-approval-badge"
+                    role="status"
+                    title={`${awaitingApprovals(project)} ${awaitingApprovals(project) === 1 ? "operación espera" : "operaciones esperan"} tu aprobación`}
+                    aria-label={`${awaitingApprovals(project)} ${awaitingApprovals(project) === 1 ? "operación espera" : "operaciones esperan"} tu aprobación`}
+                  >{awaitingApprovals(project)}</span>
+                )}
                 {collapsed && runs.length > 0 && <span className="tree-run-count" aria-label={`${runs.length} ejecuciones`}>{runs.length}</span>}
                 <button type="button" className="tree-delete" aria-label={`Eliminar el proyecto ${project.name}`} title="Eliminar proyecto" onClick={() => onDeleteProject(project)}>×</button>
               </div>
@@ -484,7 +500,10 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
                     <li className="tree-run-row" key={run.id}>
                       <button type="button" className={`tree-run status-${run.status} ${run.id === runId ? "is-current" : ""}`} aria-current={run.id === runId ? "page" : undefined} onClick={() => onRun(project.id, run.id)}>
                         <span className="tree-signal"/>
-                        <span className="tree-run-copy"><strong>{run.title}</strong><small>{statusCopy[run.status]} · {run.completedCount}/{run.nodeCount} · {formatter.format(new Date(run.updatedAt))}</small></span>
+                        <span className="tree-run-copy">
+                          <strong>{run.title}{run.awaitingApproval > 0 && <span className="tree-run-approval" title={`${run.awaitingApproval} ${run.awaitingApproval === 1 ? "operación espera" : "operaciones esperan"} tu aprobación`}>Por aprobar</span>}</strong>
+                          <small>{statusCopy[run.status]} · {run.completedCount}/{run.nodeCount} · {formatter.format(new Date(run.updatedAt))}</small>
+                        </span>
                       </button>
                       <button type="button" className="tree-delete" aria-label={`Eliminar la ejecución ${run.title}`} title="Eliminar ejecución" onClick={() => onDeleteRun(run)}>×</button>
                     </li>

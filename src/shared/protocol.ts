@@ -29,6 +29,9 @@ export type RunSummary = {
   seenAgents: string[];
   nodeCount: number;
   completedCount: number;
+  // Nodos que aún esperan la aprobación humana: alimenta los avisos del árbol
+  // de proyectos sin obligar al panel a cargar el detalle de cada ejecución.
+  awaitingApproval: number;
   createdAt: string;
   updatedAt: string;
 };
