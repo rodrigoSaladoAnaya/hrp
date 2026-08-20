@@ -250,6 +250,24 @@ describe("HrpStore", () => {
     expect(fallback.assignee).toBe("claude");
   });
 
+  it("pausing and stopping block node starts for every agent until resumed", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    expect(store.getRun(run.id)?.control).toBe("active");
+    store.setRunControl(run.id, "paused");
+    expect(() => store.startNode(run.id, "uno", "claude")).toThrow(/paused by the human/);
+    expect(() => store.startNode(run.id, "uno", "ollama")).toThrow(/paused by the human/);
+    store.setRunControl(run.id, "active");
+    expect(store.startNode(run.id, "uno", "claude").status).toBe("running");
+    store.setRunControl(run.id, "stopped");
+    expect(() => store.startNode(run.id, "uno")).toThrow(/stopped by the human/);
+    expect(store.getRun(run.id)?.control).toBe("stopped");
+    expect(store.getRunDetail(run.id)?.activity.some((event) => event.message.includes("detenida por el humano"))).toBe(true);
+  });
+
   it("rejects dependency cycles before persisting the graph", () => {
     const { store, run } = fixture();
     expect(() => store.publishGraph(run.id, { nodes: [

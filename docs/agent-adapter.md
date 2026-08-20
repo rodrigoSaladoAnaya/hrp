@@ -356,6 +356,24 @@ run | graph | inspect | node | patch | verify | note
 
 No conviertas cada comando o lectura en actividad. Publica sólo evidencia que ayude a entender un cambio, una restricción o una decisión observable.
 
+## Control humano de la ejecución (pausar, detener, reanudar)
+
+El humano puede pausar, detener o reanudar una ejecución desde el panel (botones junto al encabezado del mapa) o por CLI:
+
+```sh
+hrp run pause <run-id>
+hrp run resume <run-id>
+hrp run stop <run-id>
+```
+
+El servidor rechaza `node start` mientras la ejecución esté pausada o detenida, así que el control aplica a **todos** los agentes por igual (claude, codex, antigravity y ollama). El nodo que ya estaba en curso no se aborta: termina su ciclo o falla.
+
+Conducta esperada del agente:
+
+- **Pausada** (`Run is paused by the human…`): no es un error tuyo. Sondea `hrp state <run-id> --json` (campo `run.control`) o deja corriendo `hrp wait approval`, que sigue esperando y anuncia trabajo solo al reanudarse. Retoma exactamente donde ibas.
+- **Detenida** (`Run was stopped by the human…`): cierra ordenadamente — no inicies más nodos, no deshagas trabajo completado, y reporta al humano el avance y lo que quedó pendiente. `hrp wait approval` también sale con este mensaje.
+- **Reanudada**: el flujo continúa normal; los nodos completados nunca se ven afectados por el control.
+
 ## Reanudación después de una interrupción
 
 HRP conserva proyectos, ejecuciones, nodos y actividad en SQLite. Antes de continuar una tarea interrumpida:

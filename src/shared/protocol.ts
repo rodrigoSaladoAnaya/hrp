@@ -4,6 +4,11 @@ export type NodeStatus = (typeof nodeStatuses)[number];
 export const activityTypes = ["run", "graph", "inspect", "node", "patch", "verify", "note"] as const;
 export type ActivityType = (typeof activityTypes)[number];
 
+// Control humano de la ejecución: pausada/detenida bloquean todo inicio de
+// nodo en el servidor, por lo que aplica a cualquier agente por igual.
+export const runControls = ["active", "paused", "stopped"] as const;
+export type RunControl = (typeof runControls)[number];
+
 export type Project = {
   id: string;
   name: string;
@@ -18,6 +23,7 @@ export type RunSummary = {
   title: string;
   requirement: string;
   status: NodeStatus;
+  control: RunControl;
   graphVersion: number;
   baseAgent?: string;
   seenAgents: string[];
@@ -101,4 +107,4 @@ export type OllamaSettingsView = {
 export const DEFAULT_OLLAMA_MODEL = "kimi-k2.7-code";
 export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
 
-export const PROTOCOL_VERSION = "2.4";
+export const PROTOCOL_VERSION = "2.5";

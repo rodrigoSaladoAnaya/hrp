@@ -215,6 +215,7 @@ Uso:
   hrp project remove <project-id> --yes
   hrp run create --title TEXTO --requirement TEXTO [--project ID]
   hrp run list [--project ID]
+  hrp run pause|resume|stop <run-id>
   hrp run delete <run-id> --yes
   hrp graph publish <run-id> <graph.json> [--agent NOMBRE]
   hrp node discover <run-id> <node.json>
@@ -285,6 +286,11 @@ async function main() {
   if (group === "run" && action === "list") {
     const projectId = await resolveProject(value("--project"));
     return print((await api(`/api/projects/${projectId}/runs`)).runs);
+  }
+  if (group === "run" && (action === "pause" || action === "resume" || action === "stop")) {
+    const control = action === "pause" ? "paused" : action === "resume" ? "active" : "stopped";
+    const run = await api(`/api/runs/${encodeURIComponent(first)}/control`, { method: "POST", body: JSON.stringify({ control }) });
+    return print(json ? run : `Ejecución "${run.title}": ${control === "active" ? "reanudada" : control === "paused" ? "pausada" : "detenida"}.`);
   }
   if (group === "run" && action === "delete") {
     if (!flag("--yes")) throw new Error("Confirma el borrado con --yes");
@@ -363,11 +369,17 @@ async function main() {
       await api(`/api/runs/${first}/agents`, { method: "POST", body: JSON.stringify({ agent }) }).catch(() => undefined);
     }
     process.stderr.write("Esperando la aprobación humana en el panel...\n");
+    let pausedNoted = false;
     while (Date.now() < deadline) {
       const detail = await api(`/api/runs/${first}`);
+      if (detail.run.control === "stopped") return print("La ejecución fue detenida por el humano; no inicies más nodos y reporta tu avance.");
+      if (detail.run.control === "paused" && !pausedNoted) {
+        process.stderr.write("Ejecución pausada por el humano; la espera continúa hasta que la reanude...\n");
+        pausedNoted = true;
+      }
       const mine = agent ? detail.nodes.filter((node) => !node.assignee || node.assignee === agent) : detail.nodes;
       const ready = mine.filter((node) => node.approved && node.status !== "completed");
-      if (ready.length) return print(`Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
+      if (ready.length && detail.run.control === "active") return print(`Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
       if (detail.nodes.length && detail.nodes.every((node) => node.status === "completed")) return print("La ejecución ya está completa.");
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }

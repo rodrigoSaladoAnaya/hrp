@@ -177,6 +177,13 @@ hrp activity publish "$run_id" --type inspect --node <node-id> \
 
 Tipos: `run | graph | inspect | node | patch | verify | note`. No conviertas cada lectura o comando en actividad.
 
+## Control humano: pausada o detenida
+
+El humano puede pausar, detener o reanudar la ejecución (panel o `hrp run pause|resume|stop`). El servidor rechaza `node start` en esos estados para todos los agentes; no es un error tuyo:
+
+- Rechazo por **pausa** (`Run is paused by the human…`): espera sin abandonar — sondea `hrp state <run-id> --json` (campo `run.control`) o deja corriendo `hrp wait approval`, y al reanudarse retoma exactamente donde ibas.
+- Rechazo por **detención** (`Run was stopped by the human…`): cierra ordenadamente — no inicies más nodos, conserva lo completado y reporta al humano el avance y lo pendiente.
+
 ## Reanudación
 
 Si retomas una tarea interrumpida, consulta primero el estado persistido:

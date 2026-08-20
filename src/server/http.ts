@@ -3,7 +3,7 @@ import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
-import { activityTypes, PROTOCOL_VERSION } from "../shared/protocol.js";
+import { activityTypes, PROTOCOL_VERSION, runControls } from "../shared/protocol.js";
 import { HrpStore } from "./store.js";
 
 const nodeInput = z.object({
@@ -152,6 +152,15 @@ export function createApp(store: HrpStore) {
       const node = store.addDiscoveredNode(request.params.runId, input);
       broadcast(projectForRun(request.params.runId), request.params.runId, "node-discovered");
       response.status(201).json(node);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/runs/:runId/control", (request, response, next) => {
+    try {
+      const input = z.object({ control: z.enum(runControls) }).strict().parse(request.body);
+      const run = store.setRunControl(request.params.runId, input.control);
+      broadcast(run.projectId, run.id, "run-control");
+      response.json(run);
     } catch (error) { next(error); }
   });
 

@@ -374,6 +374,24 @@ function AgentDock({ run, nodes, workspaceRoot, ollama }: { run: RunSummary; nod
   );
 }
 
+function RunControls({ run, onChanged }: { run: RunSummary; onChanged: () => void }) {
+  const setControl = async (control: "active" | "paused" | "stopped") => {
+    if (control === "stopped" && !window.confirm(`¿Detener la ejecución "${run.title}"? Ningún agente podrá iniciar más nodos hasta que la reanudes.`)) return;
+    await fetch(`/api/runs/${run.id}/control`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ control }) });
+    onChanged();
+  };
+  // Una ejecución completa y activa no necesita controles; sí los conserva si
+  // quedó pausada/detenida para poder reanudarla.
+  if (run.control === "active" && run.nodeCount > 0 && run.completedCount === run.nodeCount) return null;
+  return (
+    <div className="run-controls" role="group" aria-label="Control de la ejecución">
+      {run.control !== "active" && <button type="button" className="control-resume" onClick={() => { setControl("active").catch(() => undefined); }}>Reanudar</button>}
+      {run.control === "active" && <button type="button" className="control-pause" title="Ningún agente podrá iniciar nodos nuevos; el nodo en curso termina" onClick={() => { setControl("paused").catch(() => undefined); }}>Pausar</button>}
+      {run.control !== "stopped" && <button type="button" className="control-stop" title="Detiene la ejecución para todos los agentes" onClick={() => { setControl("stopped").catch(() => undefined); }}>Detener</button>}
+    </div>
+  );
+}
+
 function ActivityLedger({ activity, nodes, onSelect }: { activity: Activity[]; nodes: ChangeNode[]; onSelect: (id: string) => void }) {
   if (!activity.length) return <div className="ledger-empty"><Icon name="activity"/><h2>Aún no hay actividad</h2><p>Las inspecciones, operaciones, parches y verificaciones aparecerán aquí en orden causal.</p></div>;
   return (
@@ -648,8 +666,19 @@ export function App() {
               <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : "Actividad de la ejecución"}>
                 <header className="stage-head">
                   <div><h1>{detail.run.title}</h1><p>{detail.run.requirement}</p></div>
-                  <div className="stage-count"><strong>{detail.run.completedCount}/{detail.run.nodeCount}</strong><span>operaciones terminadas</span></div>
+                  <div className="stage-actions">
+                    <RunControls run={detail.run} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
+                    <div className="stage-count"><strong>{detail.run.completedCount}/{detail.run.nodeCount}</strong><span>operaciones terminadas</span></div>
+                  </div>
                 </header>
+                {detail.run.control !== "active" && (
+                  <div className={`control-banner control-banner-${detail.run.control}`} role="status">
+                    <Icon name={detail.run.control === "paused" ? "clock" : "warning"}/>
+                    <p>{detail.run.control === "paused"
+                      ? "Ejecución pausada: ningún agente puede iniciar nodos hasta que la reanudes; el nodo que estaba en curso termina su ciclo."
+                      : "Ejecución detenida: los agentes no pueden iniciar más nodos y deben cerrar ordenadamente. Puedes reanudarla cuando quieras."}</p>
+                  </div>
+                )}
                 {unapprovedCount > 0 && (
                   <div className="approval-banner" role="status">
                     <Icon name="warning"/>

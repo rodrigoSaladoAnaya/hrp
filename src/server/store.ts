@@ -15,6 +15,7 @@ import {
   type OllamaSettings,
   type OllamaSettingsView,
   type Project,
+  type RunControl,
   type RunDetail,
   type RunSummary,
   type Verification,
@@ -165,6 +166,9 @@ export class HrpStore {
     }
     if (!runColumns.some((column) => String(column.name) === "seen_agents_json")) {
       this.database.exec("ALTER TABLE runs ADD COLUMN seen_agents_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!runColumns.some((column) => String(column.name) === "control")) {
+      this.database.exec("ALTER TABLE runs ADD COLUMN control TEXT NOT NULL DEFAULT 'active'");
     }
   }
 
@@ -391,7 +395,28 @@ export class HrpStore {
     return this.requireNode(runId, nodeId);
   }
 
+  // El control es del humano: pausar/detener bloquea el inicio de nodos para
+  // todos los agentes por igual, porque todos inician a través del servidor.
+  setRunControl(runId: string, control: RunControl): RunSummary {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    if (run.control === control) return run;
+    const timestamp = now();
+    this.database.prepare("UPDATE runs SET control = ?, updated_at = ? WHERE id = ?").run(control, timestamp, runId);
+    const copy: Record<RunControl, string> = {
+      active: "Ejecución reanudada por el humano",
+      paused: "Ejecución pausada por el humano: ningún agente puede iniciar nodos hasta reanudar",
+      stopped: "Ejecución detenida por el humano: los agentes deben cerrar ordenadamente",
+    };
+    this.addActivity(runId, "run", copy[control]);
+    return this.getRun(runId)!;
+  }
+
   startNode(runId: string, nodeId: string, agent?: string): ChangeNode {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    if (run.control === "paused") throw new Error("Run is paused by the human; poll 'hrp state' and start again once it resumes");
+    if (run.control === "stopped") throw new Error("Run was stopped by the human; do not start more nodes and report your progress");
     const node = this.requireNode(runId, nodeId);
     if (!node.approved) throw new Error(`Node awaits human approval: ${nodeId}. Ask the human to approve it in the HRP panel or with 'hrp node approve'`);
     if (node.assignee && agent && agent !== node.assignee) {
@@ -488,7 +513,8 @@ export class HrpStore {
         : total > 0 && total === completed ? "completed" : "pending";
     return {
       id: String(row.id), projectId: String(row.project_id), title: String(row.title), requirement: String(row.requirement),
-      status, graphVersion: Number(row.graph_version),
+      status, control: (row.control ? String(row.control) : "active") as RunControl,
+      graphVersion: Number(row.graph_version),
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
       nodeCount: total, completedCount: completed,

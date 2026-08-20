@@ -269,6 +269,23 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .suggested-label { flex: none; color: #3d5a8a; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .suggested-note { display: flex; margin: 0; color: #3d5a8a; font-size: .76rem; line-height: 1.4; }
 .node-assignee { min-width: 0; overflow: hidden; margin-right: auto; padding: 2px 7px; border: 1px solid #b3bdb7; border-radius: 999px; color: #3f4c47; background: #eef0ea; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
+.stage-actions { display: flex; flex: none; align-items: center; gap: 16px; }
+.run-controls { display: flex; gap: 6px; }
+.run-controls button { min-height: 38px; padding: 0 13px; border-radius: 3px; cursor: pointer; font-size: .76rem; font-weight: 750; }
+.control-pause { border: 1px solid #8a6a1c; color: #6d4d05; background: transparent; }
+.control-pause:hover { color: #17201e; background: #f2d28b; }
+.control-resume { border: 1px solid #2d6a50; color: #fff; background: #2d6a50; }
+.control-resume:hover { background: #245a43; }
+.control-stop { border: 1px solid #a03c2c; color: #a03c2c; background: transparent; }
+.control-stop:hover { color: #fff; background: #a03c2c; }
+.control-banner { display: flex; align-items: center; gap: 11px; padding: 10px 16px; border-bottom: 1px solid #d9b98a; }
+.control-banner .icon { flex: none; width: 18px; height: 18px; }
+.control-banner p { min-width: 0; flex: 1; margin: 0; font-size: .82rem; }
+.control-banner-paused { background: #f7ecd7; }
+.control-banner-paused .icon, .control-banner-paused p { color: #6d4d05; }
+.control-banner-stopped { border-bottom-color: #d7a08f; background: #f6e0d8; }
+.control-banner-stopped .icon, .control-banner-stopped p { color: #8c3029; }
+
 .approval-banner { display: flex; align-items: center; gap: 11px; padding: 10px 16px; border-bottom: 1px solid #d9b98a; background: #f7ecd7; }
 .approval-banner .icon { flex: none; width: 18px; height: 18px; color: #8a4a12; }
 .approval-banner p { min-width: 0; flex: 1; margin: 0; color: #5c451c; font-size: .82rem; }
@@ -313,8 +330,10 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 
 .inspector { min-width: 0; overflow: auto; padding: 0 22px 38px; background: #f1f2ed; }
 .inspector-head { position: sticky; z-index: 3; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin: 0 -22px; padding: 18px 22px 16px; border-bottom: 1px solid #7c8882; background: rgba(241,242,237,.97); }
-.inspector-file { display: block; max-width: 38ch; overflow: hidden; margin-bottom: 5px; color: #53615c; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
-.inspector-head h2 { max-width: 20ch; margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 1.28rem; line-height: 1.18; overflow-wrap: anywhere; }
+/* El detalle muestra la ruta y el símbolo completos: aquí es donde el humano
+   audita exactamente qué se modifica, así que nada se trunca. */
+.inspector-file { display: block; margin-bottom: 5px; color: #53615c; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .72rem; line-height: 1.4; overflow-wrap: anywhere; }
+.inspector-head h2 { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 1.28rem; line-height: 1.18; overflow-wrap: anywhere; }
 .inspector section { padding: 22px 0 20px; border-bottom: 1px solid #bdc5c0; }
 .inspector section h3 { margin: 0 0 8px; font-size: .72rem; letter-spacing: .065em; text-transform: uppercase; }
 .inspector section p { max-width: 70ch; margin: 0; color: #475550; font-size: .9rem; line-height: 1.55; }
