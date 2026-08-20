@@ -327,7 +327,16 @@ export class HrpStore {
         description = excluded.description, rationale = excluded.rationale,
         discovered = excluded.discovered, suggested_agent = excluded.suggested_agent,
         dependencies_json = excluded.dependencies_json,
-        approved = CASE WHEN nodes.status = 'completed' THEN nodes.approved ELSE 0 END,
+        -- La aprobación humana solo se invalida si el contenido semántico del
+        -- nodo cambió: una republicación idéntica (reintento/reanudación) la conserva.
+        approved = CASE
+          WHEN nodes.status = 'completed' THEN nodes.approved
+          WHEN nodes.file = excluded.file AND nodes.symbol = excluded.symbol AND nodes.title = excluded.title
+            AND nodes.description = excluded.description AND nodes.rationale = excluded.rationale
+            AND nodes.dependencies_json = excluded.dependencies_json
+            AND COALESCE(nodes.suggested_agent, '') = COALESCE(excluded.suggested_agent, '')
+          THEN nodes.approved
+          ELSE 0 END,
         updated_at = excluded.updated_at
     `);
     // La sugerencia del modelo base pre-asigna el nodo solo si el humano no

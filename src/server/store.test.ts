@@ -250,6 +250,22 @@ describe("HrpStore", () => {
     expect(fallback.assignee).toBe("claude");
   });
 
+  it("republishing an identical graph keeps human approval; a real change resets it", () => {
+    const { store, run } = fixture();
+    const nodes = [
+      { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Cambio uno", rationale: "Prueba", dependencies: [] },
+      { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Cambio dos", rationale: "Prueba", dependencies: [] },
+    ];
+    store.publishGraph(run.id, { nodes });
+    store.approveNodes(run.id);
+    store.publishGraph(run.id, { nodes });
+    expect(store.getRunDetail(run.id)?.nodes.every((node) => node.approved)).toBe(true);
+    store.publishGraph(run.id, { nodes: [nodes[0], { ...nodes[1], description: "Cambio dos ajustado" }] });
+    const after = store.getRunDetail(run.id)!.nodes;
+    expect(after.find((node) => node.id === "uno")?.approved).toBe(true);
+    expect(after.find((node) => node.id === "dos")?.approved).toBe(false);
+  });
+
   it("pausing and stopping block node starts for every agent until resumed", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [

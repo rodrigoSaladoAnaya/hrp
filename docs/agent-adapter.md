@@ -422,14 +422,17 @@ HRP puede usar modelos de Ollama Cloud como ejecutores modestos bajo la administ
 Flujo de delegación:
 
 1. Al publicar el grafo, marca con `"suggestedAgent": "ollama"` los nodos mecánicos, repetitivos o de bajo riesgo. HRP los pre-asigna a `ollama` y el humano puede reasignarlos antes de aprobar.
-2. Tras la aprobación, el modelo base administra cada nodo asignado a `ollama`: lo inicia con `hrp node start <run-id> <node-id> --agent ollama`, prepara un prompt con el contexto exacto del nodo (archivo, símbolo, descripción y fragmentos de código relevantes) y genera la implementación con:
+2. Los nodos asignados a `ollama` cuentan como trabajo del **agente base** en `hrp wait approval`: la espera del base regresa en cuanto el humano los aprueba (ollama no abre sesión propia, así que nadie más los reclamará). Tras la aprobación, el modelo base administra cada uno: lo inicia con `hrp node start <run-id> <node-id> --agent ollama`, prepara un prompt con el contexto exacto del nodo (archivo, símbolo, descripción y fragmentos de código relevantes) y genera la implementación con:
 
    ```sh
-   hrp ollama run --prompt-file prompt.txt [--system-file system.txt] [--model MODELO]
+   hrp ollama run --prompt-file prompt.txt [--system-file system.txt] [--model MODELO] --run RUN_ID --node NODE_ID
    ```
 
+   Pasa siempre `--run` y `--node`: cada consulta queda registrada en la Actividad de la ejecución («Consulta a ollama (modelo) · N prompt + M respuesta tokens»), ligada al nodo.
 3. El modelo base revisa el resultado como administrador: corrige lo necesario, aplica el cambio al workspace y publica el diff, la verificación y el cierre como en cualquier nodo. En el `--summary` del parche distingue qué generó ollama y qué ajustó la revisión; `executedBy` queda como `ollama` para que el panel muestre la autoría real.
 4. `hrp ollama status` muestra la configuración vigente (key enmascarada, modelo y URL base); `hrp ollama run` reporta por stderr el consumo upstream (tokens de prompt y respuesta), útil para `node complete --tokens`.
+
+Cómo audita el humano lo que corre ollama: la vista **Actividad** registra cada consulta con su modelo y tokens (y a qué nodo pertenece); la tarjeta del nodo muestra `En curso (ollama)` mientras se ejecuta y `por ollama` con su costo al terminar; y `hrp state <run-id> --json` expone `executedBy` y `tokens` por nodo. Ollama no ejecuta nada en la máquina local: cada llamada es una petición HTTP del servicio a Ollama Cloud y no existe ningún proceso local que vigilar.
 
 ## Integración directa mediante HTTP
 

@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -229,7 +229,7 @@ Uso:
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
   hrp ollama status
   hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
-  hrp ollama run --prompt-file PATH|- [--system-file PATH] [--model MODELO]
+  hrp ollama run --prompt-file PATH|- [--system-file PATH] [--model MODELO] [--run RUN_ID --node NODE_ID]
   hrp state <run-id>
   hrp version
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
@@ -377,7 +377,10 @@ async function main() {
         process.stderr.write("Ejecución pausada por el humano; la espera continúa hasta que la reanude...\n");
         pausedNoted = true;
       }
-      const mine = agent ? detail.nodes.filter((node) => !node.assignee || node.assignee === agent) : detail.nodes;
+      // Los nodos asignados a ollama son trabajo del agente base: ollama no
+      // abre sesión propia; el base delega, revisa y completa esos nodos.
+      const mine = agent ? detail.nodes.filter((node) => !node.assignee || node.assignee === agent
+        || (node.assignee === "ollama" && detail.run.baseAgent === agent)) : detail.nodes;
       const ready = mine.filter((node) => node.approved && node.status !== "completed");
       if (ready.length && detail.run.control === "active") return print(`Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
       if (detail.nodes.length && detail.nodes.every((node) => node.status === "completed")) return print("La ejecución ya está completa.");
@@ -423,6 +426,9 @@ async function main() {
       const systemFile = value("--system-file");
       if (systemFile) body.system = readFileSync(path.resolve(systemFile), "utf8");
       if (value("--model")) body.model = value("--model");
+      // Con contexto, la consulta queda auditada en la actividad de esa ejecución.
+      if (value("--run")) body.runId = value("--run");
+      if (value("--node")) body.nodeId = value("--node");
       const result = await api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
       if (json) return print(result);
       // El desglose va a stderr para poder canalizar la respuesta limpia a un archivo.

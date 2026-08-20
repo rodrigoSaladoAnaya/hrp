@@ -63,6 +63,10 @@ export function createApp(store: HrpStore) {
         prompt: z.string().min(1),
         system: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
+        // Contexto opcional de auditoría: liga la consulta a una ejecución y
+        // nodo para que el humano vea en Actividad qué corrió ollama y cuánto costó.
+        runId: z.string().min(1).optional(),
+        nodeId: z.string().min(1).optional(),
       }).strict().parse(request.body);
       const settings = store.getOllamaSettings();
       if (!settings.apiKey) throw new Error("Ollama no está configurado: guarda la API key desde el panel o con 'hrp ollama config --api-key ...'");
@@ -84,6 +88,14 @@ export function createApp(store: HrpStore) {
         prompt_eval_count?: number; eval_count?: number;
       };
       if (!upstream.ok) throw new Error(`Ollama respondió ${upstream.status}: ${body.error ?? upstream.statusText}`);
+      if (input.runId && store.getRun(input.runId)) {
+        try {
+          const tokens = body.prompt_eval_count != null || body.eval_count != null
+            ? ` · ${body.prompt_eval_count ?? "?"} prompt + ${body.eval_count ?? "?"} respuesta tokens` : "";
+          store.addActivity(input.runId, "note", `Consulta a ollama (${body.model ?? model})${tokens}`, undefined, input.nodeId);
+          broadcast(store.getRun(input.runId)!.projectId, input.runId, "activity-published");
+        } catch { /* la auditoría nunca debe tumbar la consulta */ }
+      }
       response.json({
         model: body.model ?? model,
         content: body.message?.content ?? "",

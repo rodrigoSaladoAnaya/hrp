@@ -127,14 +127,17 @@ Si tu entorno te muestra el presupuesto de tokens restante (por ejemplo `<total_
 
 ### 3b. Nodos asignados a ollama: delega y revisa como administrador
 
-Un nodo asignado a `ollama` no espera a otra sesión: tú lo administras. El ciclo es el mismo, pero la generación del cambio se delega al modelo configurado de Ollama Cloud:
+Un nodo asignado a `ollama` no espera a otra sesión: tú lo administras, y `hrp wait approval` ya lo cuenta como trabajo tuyo (regresa en cuanto el humano lo aprueba). El ciclo es el mismo, pero la generación del cambio se delega al modelo configurado de Ollama Cloud:
 
 ```sh
 hrp node start "$run_id" <node-id> --agent ollama
 # prompt.txt: contexto exacto del nodo — archivo, símbolo, descripción,
 # fragmentos de código actuales y el formato de salida que esperas.
-hrp ollama run --prompt-file /ruta/scratchpad/prompt.txt > /ruta/scratchpad/salida.txt
+hrp ollama run --prompt-file /ruta/scratchpad/prompt.txt \
+  --run "$run_id" --node <node-id> > /ruta/scratchpad/salida.txt
 ```
+
+Pasa siempre `--run` y `--node`: cada consulta delegada queda registrada en la Actividad de la ejecución con su modelo y tokens, y así el humano puede auditar qué corrió ollama y cuánto costó.
 
 Después actúas como revisor: valida la salida, corrige lo que haga falta, aplica el cambio al workspace con tus herramientas y sigue el ciclo normal (patch → verify → complete). En el `--summary` del parche distingue qué generó ollama y qué corregiste tú. `hrp ollama run` reporta por stderr los tokens de prompt/respuesta del modelo delegado: úsalo para `--tokens` al completar. Nunca completes un nodo delegado sin haber revisado y verificado su resultado; si la salida es inservible, corrígela tú mismo y anótalo en el resumen.
 
