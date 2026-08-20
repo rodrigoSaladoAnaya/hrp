@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--body", "--reviewer", "--author", "--resolution-node"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--body", "--reviewer", "--author", "--resolution-node"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -265,6 +265,7 @@ Uso:
   hrp verify run <run-id> <node-id> -- <comando> [args...]
   hrp node complete <run-id> <node-id> [--tokens N]
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
+  hrp agent status <run-id> --agent NOMBRE --phase idle|waiting|executing|reviewing|completed|failed --summary TEXTO [--detail TEXTO] [--node ID] [--completed N --total N --reviewed ID,ID --remaining ID,ID]
   hrp ollama status
   hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
   hrp ollama exec <run-id> <node-id> [--model MODELO]
@@ -396,6 +397,24 @@ async function main() {
     return print(await api(`/api/runs/${first}/activity`, { method: "POST", body: JSON.stringify({
       type: value("--type", "note"), message: value("--summary"), detail: value("--detail"), nodeId: value("--node"),
     }) }));
+  }
+  if (group === "agent" && action === "status") {
+    const agent = value("--agent");
+    const phase = value("--phase");
+    const summary = value("--summary");
+    if (!first || !agent || !phase || !summary) throw new Error("Uso: hrp agent status <run-id> --agent NOMBRE --phase FASE --summary TEXTO");
+    const splitIds = (name) => (value(name) ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+    const body = {
+      phase,
+      summary,
+      completed: Number(value("--completed", "0")),
+      total: Number(value("--total", "0")),
+      reviewedNodeIds: splitIds("--reviewed"),
+      remainingNodeIds: splitIds("--remaining"),
+    };
+    if (value("--detail")) body.detail = value("--detail");
+    if (value("--node")) body.currentNodeId = value("--node");
+    return print(await api(`/api/runs/${encodeURIComponent(first)}/agents/${encodeURIComponent(agent)}/status`, { method: "PUT", body: JSON.stringify(body) }));
   }
   if (group === "version") {
     const local = localVersion();

@@ -1,0 +1,31 @@
+{
+  "name": "hrp",
+  "version": "3.0.0+codex.20260820202849",
+  "description": "Human Review Protocol (HRP v3) integration for Codex, including the use-hrp skill and local HRP CLI adapter.",
+  "author": {
+    "name": "HRP"
+  },
+  "homepage": "https://github.com/openai/codex",
+  "license": "Proprietary",
+  "keywords": [
+    "hrp",
+    "human review protocol",
+    "review",
+    "workflow"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "HRP",
+    "shortDescription": "Use HRP workflows from Codex",
+    "longDescription": "Adds the use-hrp skill for working with Human Review Protocol v3 runs, including graph publication, node execution, patch verification, and audit workflows.",
+    "developerName": "HRP",
+    "category": "Engineering",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Trabaja esta ejecucion HRP con use-hrp"
+    ]
+  }
+}

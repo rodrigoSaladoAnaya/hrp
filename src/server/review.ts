@@ -32,6 +32,13 @@ export function upstreamJson(target: string, headers: Record<string, string>, pa
 
 // Un fence más largo que cualquier racha de backticks del contenido: un diff
 // que incluya ``` no cierra el bloque prematuramente ni corrompe el pack.
+// ```json … ``` (o ``` … ```) alrededor de toda la respuesta: se devuelve el
+// interior. Si no hay fence envolvente, el texto vuelve intacto.
+function unwrapFence(answer: string): string {
+  const match = /^`{3,}[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n?`{3,}$/.exec(answer.trim());
+  return match ? match[1].trim() : answer;
+}
+
 function fenceFor(content: string): string {
   const longestRun = content.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
   return "`".repeat(Math.max(3, longestRun + 1));
@@ -172,7 +179,7 @@ const RETRY_AFTER_MS = 45 * 60 * 1000;
 // Auditoría automática (política v3.1): al completarse el run, el servidor pide
 // la revisión al modelo de ollama sin intervención humana ni del base. Nunca
 // propaga excepciones: todo desenlace queda como actividad del run.
-export async function runAutoReview(store: HrpStore, runId: string, options: { force?: boolean } = {}): Promise<{ created: number } | undefined> {
+export async function runAutoReview(store: HrpStore, runId: string, options: { force?: boolean; onProgress?: () => void } = {}): Promise<{ created: number } | undefined> {
   if (inFlightAudits.has(runId)) return undefined;
   inFlightAudits.add(runId);
   const finish = (marker: AutoReviewMarker) => setAutoReviewMarker(store, runId, { ...marker, done: true });
@@ -181,6 +188,29 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     const settings = store.getOllamaSettings();
     const detail = store.getRunDetail(runId);
     if (!detail) return undefined;
+    // La selección es por ejecución: configurar Ollama no lo convierte en
+    // auditor global ni dispara trabajo que el humano no eligió.
+    if (!detail.run.auditors.includes("ollama")) return undefined;
+    const coveredNodeIds = detail.nodes.filter((node) => node.status === "completed").map((node) => node.id);
+    const auditStartedAt = new Date().toISOString();
+    const publishProgress = (
+      phase: "waiting" | "reviewing" | "completed" | "failed",
+      summary: string,
+      update: { detail?: string; completed?: number; reviewedNodeIds?: string[]; remainingNodeIds?: string[] } = {},
+    ) => {
+      store.setAgentState(runId, {
+        agent: "ollama",
+        phase,
+        summary,
+        detail: update.detail,
+        completed: update.completed ?? 0,
+        total: coveredNodeIds.length,
+        reviewedNodeIds: update.reviewedNodeIds ?? [],
+        remainingNodeIds: update.remainingNodeIds ?? coveredNodeIds,
+        startedAt: auditStartedAt,
+      });
+      options.onProgress?.();
+    };
     const state = detail.nodes.filter((node) => node.status === "completed").map((node) => node.id).sort().join(",");
     const previous = autoReviewMarker(store, runId);
     if (previous && previous.state === state) {
@@ -194,33 +224,40 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     setAutoReviewMarker(store, runId, marker);
     // Una omisión no puede ser silenciosa: registra un hallazgo bloqueante de
     // reviewer "hrp" para que el gate impida cerrar el run sin auditoría real.
-    const blockingOmission = (title: string, body: string) => {
+    // Devuelve cuántos hallazgos registró para que el llamador emita el SSE: un
+    // hallazgo que bloquea el cierre debe despertar al panel y al wait del base.
+    const blockingOmission = (title: string, body: string): number => {
       const already = store.listFindings(runId).some((finding) => finding.title === title && ["open", "debating", "escalated"].includes(finding.status));
-      if (!already) store.createFinding(runId, { reviewer: "hrp", severity: "major", title, body });
+      if (already) return 0;
+      store.createFinding(runId, { reviewer: "hrp", severity: "major", title, body });
+      return 1;
     };
     if (!settings.apiKey) {
       store.addActivity(runId, "note", "Auditoría automática omitida: ollama no está configurado");
+      publishProgress("failed", "No se pudo iniciar la auditoría", { detail: "Falta configurar la API key de Ollama Cloud." });
       finish(marker);
       return undefined;
     }
     if (detail.run.baseAgent && detail.run.baseAgent === `ollama:${settings.model}`) {
       store.addActivity(runId, "note", "Auditoría automática omitida: el auditor no puede ser el mismo modelo que el base");
-      blockingOmission(
+      publishProgress("failed", "Auditor inválido", { detail: "El modelo auditor coincide con el modelo base de la ejecución." });
+      const created = blockingOmission(
         "Auditoría pendiente: el auditor no puede ser el mismo modelo que el base",
         `El agente base de esta ejecución es ${detail.run.baseAgent} y coincide con el modelo de auditoría configurado. La regla de diversidad exige otro modelo: configura uno distinto en ollama o usa un revisor con sesión (hrp review pack) y resuelve este hallazgo con esa evidencia.`,
       );
       finish(marker);
-      return undefined;
+      return { created };
     }
     const pack = buildReviewPack(store, runId);
     if (pack.length > 200_000) {
       store.addActivity(runId, "note", "Auditoría automática omitida: el paquete excede 200KB; audita por subárbol con 'hrp ollama review --node'");
-      blockingOmission(
+      publishProgress("failed", "El paquete excede el límite de Ollama", { detail: "Divide la auditoría por subárboles para cubrir el grafo completo." });
+      const created = blockingOmission(
         "Auditoría pendiente: el paquete excede 200KB",
         "La auditoría automática no puede enviar el run completo. Audita por subárboles con 'hrp ollama review <run-id> --node <nodo-hoja>' hasta cubrir el grafo y resuelve este hallazgo citando esas pasadas.",
       );
       finish(marker);
-      return undefined;
+      return { created };
     }
     const prompt = [
       "Eres un modelo revisor de código dentro del protocolo HRP. Audita el paquete de revisión que sigue.",
@@ -232,6 +269,10 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
       "",
       pack,
     ].join("\n");
+    publishProgress("reviewing", `Esperando a ${settings.model}`, {
+      detail: `Paquete enviado con ${coveredNodeIds.length} ${coveredNodeIds.length === 1 ? "operación" : "operaciones"}. HRP confirmará la cobertura cuando el modelo responda.`,
+    });
+    store.addActivity(runId, "note", `Auditoría automática iniciada (${settings.model}) · ${coveredNodeIds.length} operaciones en el paquete`);
     const upstream = await upstreamJson(
       `${settings.baseUrl}/api/chat`,
       { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
@@ -248,14 +289,27 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     const tokens = body.prompt_eval_count != null || body.eval_count != null
       ? ` · ${body.prompt_eval_count ?? "?"} prompt + ${body.eval_count ?? "?"} respuesta tokens` : "";
     store.addActivity(runId, "note", `Consulta a ollama (${model}) · auditoría automática${tokens}`);
-    const answer = String(body.message?.content ?? "").trim();
+    publishProgress("reviewing", `Procesando la respuesta de ${model}`, {
+      detail: "La respuesta llegó; HRP está validando el formato y registrando los hallazgos.",
+    });
+    // El prompt prohíbe los fences, pero la costumbre de los modelos pesa más
+    // que la instrucción: se desenvuelve el bloque antes de interpretar, sin
+    // relajar lo que se acepta como contenido.
+    const answer = unwrapFence(String(body.message?.content ?? "").trim());
     if (answer.startsWith("NECESITO:")) {
       store.addActivity(runId, "note", `Auditoría automática detenida — ${answer.split("\n")[0]}`);
+      publishProgress("failed", `${model} pidió más contexto`, { detail: answer.split("\n")[0] });
       finish(marker);
       return undefined;
     }
     if (answer === "SIN-HALLAZGOS") {
       store.addActivity(runId, "note", `Auditoría automática (${model}): sin hallazgos`);
+      publishProgress("completed", `Auditoría terminada por ${model}`, {
+        detail: "El modelo cubrió el paquete completo y no reportó problemas reales.",
+        completed: coveredNodeIds.length,
+        reviewedNodeIds: coveredNodeIds,
+        remainingNodeIds: [],
+      });
       finish(marker);
       return { created: 0 };
     }
@@ -289,12 +343,34 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
       }
       store.addActivity(runId, "note", `Auditoría automática (${model}): ${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"}`);
     })();
+    publishProgress("completed", `Auditoría terminada por ${model}`, {
+      detail: `${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"}.`,
+      completed: coveredNodeIds.length,
+      reviewedNodeIds: coveredNodeIds,
+      remainingNodeIds: [],
+    });
     finish(marker);
     return { created };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {
       store.addActivity(runId, "note", `Auditoría automática falló: ${message}`);
+      if (store.getRun(runId)?.auditors.includes("ollama")) {
+        const failedDetail = store.getRunDetail(runId);
+        const remaining = failedDetail?.nodes.filter((node) => node.status === "completed").map((node) => node.id) ?? [];
+        store.setAgentState(runId, {
+          agent: "ollama",
+          phase: "failed",
+          summary: "La auditoría automática falló",
+          detail: message,
+          completed: 0,
+          total: remaining.length,
+          reviewedNodeIds: [],
+          remainingNodeIds: remaining,
+          startedAt: marker?.startedAt,
+        });
+        options.onProgress?.();
+      }
       // Un fallo anotado es un desenlace conocido: el humano o el base pueden
       // relanzar manualmente; el rescate no debe repetirla en bucle.
       if (marker) finish(marker);

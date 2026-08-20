@@ -18,6 +18,17 @@ Un nodo del grafo es exactamente `archivo + símbolo o sección lógica + intenc
 
 Dos cambios independientes en el mismo archivo son dos nodos. Un cambio transversal de un solo símbolo es un nodo aunque toque muchas líneas. Las dependencias entre nodos expresan prerrequisitos reales, nunca secuencia decorativa.
 
+**Declara la arista cuando compartas archivo.** Si tu nodo toca el mismo archivo o símbolo que otro nodo del run, decláralo en `dependencies` aunque los cambios sean independientes: sin esa arista el grafo permite un orden que rompe los parches. Vale igual para los descubiertos, que dependen del nodo cuyo código modifican.
+
+**Publica diffs atribuibles.** El diff de un nodo contiene sólo lo que ese nodo hizo. Si otro nodo del run ya tocó ese archivo y aún no hay commit —o si otro agente trabaja en paralelo sobre él—, `git diff` contra `HEAD` te atribuye trabajo ajeno. Copia el archivo antes de editar y publica el diff contra esa copia:
+
+```sh
+cp src/server/store.ts /tmp/store.before
+# ...editar...
+diff -u /tmp/store.before src/server/store.ts \
+  --label a/src/server/store.ts --label b/src/server/store.ts > patch.diff
+```
+
 ## Qué publicar y qué no
 
 Publica explicaciones operativas breves y comprobables: qué cambia el nodo, por qué es necesario, qué diff aplicó, qué comando lo verificó, qué restricción nueva apareció.

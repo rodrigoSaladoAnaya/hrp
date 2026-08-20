@@ -27,6 +27,9 @@ export type RunSummary = {
   graphVersion: number;
   baseAgent?: string;
   seenAgents: string[];
+  // Auditores elegidos por el humano antes de autorizar el grafo. La lista se
+  // congela al comenzar para que la política de revisión no cambie a mitad.
+  auditors: string[];
   nodeCount: number;
   completedCount: number;
   // Nodos que aún esperan la aprobación humana: alimenta los avisos del árbol
@@ -123,11 +126,31 @@ export type Activity = {
   createdAt: string;
 };
 
+export const agentWorkPhases = ["idle", "waiting", "executing", "reviewing", "completed", "failed"] as const;
+export type AgentWorkPhase = (typeof agentWorkPhases)[number];
+
+// Estado observable, deliberadamente operacional: comunica qué etapa externa
+// ejecuta un agente y qué evidencia está cubierta, nunca su razonamiento privado.
+export type AgentWorkState = {
+  agent: string;
+  phase: AgentWorkPhase;
+  summary: string;
+  detail?: string;
+  currentNodeId?: string;
+  completed: number;
+  total: number;
+  reviewedNodeIds: string[];
+  remainingNodeIds: string[];
+  startedAt?: string;
+  updatedAt: string;
+};
+
 export type RunDetail = {
   run: RunSummary;
   nodes: ChangeNode[];
   activity: Activity[];
   findings: Finding[];
+  agentStates: AgentWorkState[];
 };
 
 export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent" | "contextFiles"> & {

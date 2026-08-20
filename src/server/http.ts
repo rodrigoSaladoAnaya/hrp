@@ -3,7 +3,7 @@ import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
-import { activityTypes, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls } from "../shared/protocol.js";
+import { activityTypes, agentWorkPhases, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls } from "../shared/protocol.js";
 import { buildReviewPack, runAutoReview, upstreamJson } from "./review.js";
 import { HrpStore } from "./store.js";
 
@@ -190,6 +190,43 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  app.put("/api/runs/:runId/auditors", (request, response, next) => {
+    try {
+      const input = z.object({ auditors: z.array(z.string().trim().min(1)).max(16) }).strict().parse(request.body);
+      const run = store.setRunAuditors(request.params.runId, input.auditors);
+      broadcast(run.projectId, run.id, "auditors-selected");
+      response.json(run);
+    } catch (error) { next(error); }
+  });
+
+  // Adaptador neutral para que cualquier agente publique una fase observable
+  // sin exponer cadena de pensamiento. Los nodos ejecutados ya actualizan este
+  // estado automáticamente; la ruta cubre auditorías y herramientas externas.
+  app.put("/api/runs/:runId/agents/:agent/status", (request, response, next) => {
+    try {
+      const input = z.object({
+        phase: z.enum(agentWorkPhases),
+        summary: z.string().min(1),
+        detail: z.string().optional(),
+        currentNodeId: z.string().min(1).optional(),
+        completed: z.number().int().nonnegative().default(0),
+        total: z.number().int().nonnegative().default(0),
+        reviewedNodeIds: z.array(z.string()).default([]),
+        remainingNodeIds: z.array(z.string()).default([]),
+        startedAt: z.iso.datetime().optional(),
+      }).strict().parse(request.body);
+      const run = store.helloAgent(request.params.runId, request.params.agent);
+      const previous = store.getRunDetail(request.params.runId)?.agentStates.find((state) => state.agent === request.params.agent);
+      const state = store.setAgentState(request.params.runId, {
+        agent: request.params.agent,
+        ...input,
+        startedAt: input.startedAt ?? (["executing", "reviewing"].includes(input.phase) ? previous?.startedAt ?? new Date().toISOString() : undefined),
+      });
+      broadcast(run.projectId, run.id, "agent-status");
+      response.json(state);
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/runs/:runId/approve", (request, response, next) => {
     try {
       const input = z.object({ nodeIds: z.array(z.string()).min(1).optional() }).strict().parse(request.body ?? {});
@@ -245,11 +282,24 @@ export function createApp(store: HrpStore) {
       // que los descubiertos que se completen después re-disparan otra pasada.
       const run = store.getRun(request.params.runId);
       if (run && run.nodeCount > 0 && run.completedCount === run.nodeCount) {
-        void runAutoReview(store, request.params.runId).then((result) => {
+        const detail = store.getRunDetail(request.params.runId)!;
+        for (const auditor of run.auditors.filter((agent) => agent !== "ollama")) {
+          store.setAgentState(run.id, {
+            agent: auditor,
+            phase: "waiting",
+            summary: "Auditoría pendiente de iniciar",
+            detail: "Copia las instrucciones del agente para abrir su sesión de revisión.",
+            completed: 0,
+            total: detail.nodes.length,
+            reviewedNodeIds: [],
+            remainingNodeIds: detail.nodes.map((candidate) => candidate.id),
+          });
+        }
+        void runAutoReview(store, request.params.runId, {
+          onProgress: () => broadcast(run.projectId, run.id, "agent-status"),
+        }).then((result) => {
           const audited = store.getRun(request.params.runId);
-          // Solo hay evento si hubo hallazgos: con SIN-HALLAZGOS la nota de
-          // actividad ya informa y no hay motivo para despertar a nadie.
-          if (result && result.created > 0 && audited) broadcast(audited.projectId, audited.id, "finding-created");
+          if (audited) broadcast(audited.projectId, audited.id, result && result.created > 0 ? "finding-created" : "audit-finished");
         });
       }
       response.json(node);

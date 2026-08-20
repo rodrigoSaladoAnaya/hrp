@@ -18,10 +18,53 @@ function fixture() {
   const store = new HrpStore(path.join(root, "data"));
   const project = store.attachProject(workspace);
   const run = store.createRun(project.id, "Theme", "Add a persistent theme");
+  store.setRunAuditors(run.id, ["codex"]);
   return { store, run };
 }
 
 describe("HrpStore", () => {
+  it("persists the selected auditors and locks them when the graph is approved", () => {
+    const { store, run } = fixture();
+    store.setRunAuditors(run.id, []);
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    expect(() => store.approveNodes(run.id)).toThrow(/auditor/i);
+    expect(store.setRunAuditors(run.id, ["claude", "antigravity", "claude"]).auditors).toEqual(["claude", "antigravity"]);
+    expect(store.getRunDetail(run.id)?.agentStates.map((state) => state.agent).sort()).toEqual(["antigravity", "claude"]);
+    store.approveNodes(run.id);
+    expect(() => store.setRunAuditors(run.id, ["codex"])).toThrow(/locked/i);
+  });
+
+  it("does not authorize an Ollama auditor without a configured API key", () => {
+    const { store, run } = fixture();
+    store.setRunAuditors(run.id, ["ollama"]);
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    expect(() => store.approveNodes(run.id)).toThrow(/not configured/i);
+    store.setOllamaSettings({ apiKey: "qa-key" });
+    expect(store.approveNodes(run.id)).toHaveLength(1);
+  });
+
+  it("reports observable agent work without exposing private reasoning", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [], suggestedAgent: "codex" },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+    expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex")).toMatchObject({
+      phase: "executing", currentNodeId: "change", completed: 0, total: 1,
+    });
+    store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
+    store.publishVerification(run.id, "change", { command: "npm test", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "change");
+    expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex")).toMatchObject({
+      phase: "completed", completed: 1, total: 1, remainingNodeIds: [],
+    });
+  });
+
   it("rejects attaching the filesystem root or the home directory", () => {
     const { store } = fixture();
     expect(() => store.attachProject("/")).toThrow(/filesystem root or the home directory/);

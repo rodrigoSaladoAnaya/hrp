@@ -14,7 +14,7 @@ import {
   type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import type { Activity, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
+import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -212,7 +212,7 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollamaConfigured, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; onChanged: () => void }) {
+function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollamaConfigured, canApprove, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; canApprove: boolean; onChanged: () => void }) {
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
@@ -248,7 +248,7 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollama
       {(node.status === "pending" || node.status === "failed") && (
         <section className="human-controls">
           {!node.approved && (
-            <button type="button" className="approve-button" onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>Aprobar esta operación</button>
+            <button type="button" className="approve-button" disabled={!canApprove} title={canApprove ? undefined : "Elige al menos un auditor en la columna izquierda"} onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>{canApprove ? "Aprobar esta operación" : "Elige un auditor para aprobar"}</button>
           )}
           {node.suggestedAgent && (
             <p className="suggested-note">El modelo base sugiere delegar esta operación a <strong>{node.suggestedAgent}</strong>; tú decides con el selector.</p>
@@ -331,18 +331,55 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollama
   );
 }
 
-function AgentDock({ run, nodes, workspaceRoot, ollama }: { run: RunSummary; nodes: ChangeNode[]; workspaceRoot?: string; ollama?: OllamaSettingsView }) {
+const agentPhaseCopy: Record<AgentWorkState["phase"], string> = {
+  idle: "En espera",
+  waiting: "En espera",
+  executing: "Implementando",
+  reviewing: "Auditando",
+  completed: "Terminado",
+  failed: "Falló",
+};
+
+function elapsedSince(startedAt: string | undefined, tick: number): string | undefined {
+  if (!startedAt) return undefined;
+  const seconds = Math.max(0, Math.floor((tick - Date.parse(startedAt)) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsChange }: {
+  run: RunSummary;
+  nodes: ChangeNode[];
+  agentStates: AgentWorkState[];
+  workspaceRoot?: string;
+  ollama?: OllamaSettingsView;
+  onAuditorsChange: (auditors: string[]) => Promise<void>;
+}) {
   const [copyFeedback, setCopyFeedback] = useState<{ agent: string; result: "copied" | "failed" }>();
+  const [expandedAgent, setExpandedAgent] = useState<string>();
+  const [selectionBusy, setSelectionBusy] = useState<string>();
+  const [selectionError, setSelectionError] = useState<string>();
+  const [tick, setTick] = useState(Date.now());
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
+  const hasActiveAgent = agentStates.some((state) => state.phase === "executing" || state.phase === "reviewing");
+  useEffect(() => {
+    if (!hasActiveAgent) return undefined;
+    const timer = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasActiveAgent]);
   if (!nodes.length) return null;
-  const commandFor = (agent: string) => agent === "ollama"
-    // ollama no abre su propia sesión: la instrucción va a la sesión del modelo
-    // base, que administra la delegación y revisa el resultado antes de publicar.
-    ? `Como modelo base de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, trabaja los nodos asignados a "ollama" delegando la implementación: inicia cada nodo con hrp node start --agent ollama, genera el cambio con hrp ollama run --prompt-file <prompt con el contexto del nodo>, revisa y corrige el resultado como administrador, aplica el cambio, y publica su diff y su verificación antes de completarlo.`
-    // Doble rol (v3.2): además de ejecutar sus nodos, cada agente con sesión
-    // participa como revisor en la auditoría multi-modelo, como ya hace ollama.
-    : `Tienes doble rol en la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, siguiendo docs/agent-adapter.md. (1) Ejecutor: trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} — consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo. (2) Revisor: audita el trabajo completado por los demás agentes — obtén el contexto con hrp review pack ${run.id}, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer ${agent}, y debate las respuestas con hrp finding reply <finding-id> --author ${agent} --body ...; como revisor nunca edites código ajeno, no inventes hallazgos, y nunca audites tus propios nodos: el auditor no es el autor. Espera trabajo nuevo o debates con hrp wait approval ${run.id} --agent ${agent}, y antes de dar tu parte por terminada verifica el cierre con hrp review gate ${run.id}.`;
+  const commandFor = (agent: string) => {
+    const audits = run.auditors.includes(agent);
+    if (agent === "ollama") {
+      // ollama no abre su propia sesión: la instrucción va a la sesión del modelo
+      // base, que administra la delegación y revisa el resultado antes de publicar.
+      return `Como modelo base de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, trabaja los nodos asignados a "ollama" delegando la implementación: inicia cada nodo con hrp node start --agent ollama, genera el cambio con hrp ollama run --prompt-file <prompt con el contexto del nodo>, revisa y corrige el resultado como administrador, aplica el cambio, y publica su diff y su verificación antes de completarlo.${audits ? " Ollama Cloud también está seleccionado como auditor automático; HRP iniciará esa revisión al terminar el grafo y publicará su cobertura." : ""}`;
+    }
+    const execution = `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} en la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
+    if (!audits) return execution;
+    return `${execution} También fuiste seleccionado como auditor: antes de comenzar publica hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" y actualiza la cobertura con --completed, --total, --reviewed y --remaining cuando avances; revisa únicamente el trabajo de los demás agentes con hrp review pack ${run.id}, registra problemas reales con hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer ${agent}, debate con hrp finding reply <finding-id> --author ${agent} --body ..., nunca edites código ajeno ni audites tus propios nodos, y cierra con hrp agent status ${run.id} --agent ${agent} --phase completed --summary "Auditoría terminada" seguido de hrp review gate ${run.id}.`;
+  };
   const copyCommand = async (agent: string) => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
@@ -354,30 +391,78 @@ function AgentDock({ run, nodes, workspaceRoot, ollama }: { run: RunSummary; nod
     if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
     feedbackTimer.current = setTimeout(() => setCopyFeedback(undefined), 2000);
   };
+  const selectionLocked = nodes.some((node) => node.approved);
+  const toggleAuditor = async (agent: string, selected: boolean) => {
+    const next = selected ? [...run.auditors, agent] : run.auditors.filter((candidate) => candidate !== agent);
+    setSelectionBusy(agent);
+    setSelectionError(undefined);
+    try { await onAuditorsChange(next); }
+    catch (cause) { setSelectionError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setSelectionBusy(undefined); }
+  };
+  const nodeLabel = (id: string) => {
+    const node = nodes.find((candidate) => candidate.id === id);
+    return node ? `${node.file} · ${node.symbol}` : id;
+  };
   return (
     <section className="agent-dock" aria-label="Agentes de la ejecución">
+      <header className="agent-dock-head">
+        <div><strong>Agentes</strong><span>{selectionLocked ? "Auditores fijados para esta ejecución" : "Elige quién audita antes de aprobar"}</span></div>
+        <b>{run.auditors.length} aud.</b>
+      </header>
+      {selectionError && <p className="agent-dock-error" role="alert">{selectionError}</p>}
       {supportedAgents.map((agent) => {
         const isBase = agent === run.baseAgent;
         const isOllama = agent === "ollama";
         const present = isBase || run.seenAgents.includes(agent) || (isOllama && Boolean(ollama?.configured));
         const count = nodes.filter((node) => node.status !== "completed" && (node.assignee === agent || (isBase && !node.assignee))).length;
+        const state = agentStates.find((candidate) => candidate.agent === agent);
+        const selectedAuditor = run.auditors.includes(agent);
+        const elapsed = state && (state.phase === "executing" || state.phase === "reviewing") ? elapsedSince(state.startedAt, tick) : undefined;
         const presenceLabel = isBase ? "Modelo base"
           : isOllama ? (ollama?.configured ? `Ollama Cloud · ${ollama.model}` : "Sin API key configurada")
             : present ? "Presente" : "Sin señal";
         const buttonLabel = copyFeedback?.agent === agent
-          ? copyFeedback.result === "copied" ? "Copiado" : "No se pudo copiar"
+          ? copyFeedback.result === "copied" ? "Copiado" : "Error"
           : "Copiar";
         return (
-          <div className="agent-dock-row" key={agent}>
-            <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
-            <span className="agent-dock-name" title={agent}>{agent}</span>
-            <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
-            <button
-              type="button"
-              aria-label={`Copiar instrucciones para ${agent}; ${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}
-              aria-live="polite"
-              onClick={() => { copyCommand(agent).catch(() => undefined); }}
-            >{buttonLabel}</button>
+          <div className={`agent-dock-entry phase-${state?.phase ?? "idle"}`} key={agent}>
+            <div className="agent-dock-row">
+              <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
+              <span className="agent-dock-name" title={isOllama && ollama?.configured ? `${agent} · ${ollama.model}` : agent}>{agent}{isOllama && ollama?.configured && <small>{ollama.model}</small>}</span>
+              <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
+              <button
+                type="button"
+                className="agent-copy"
+                aria-label={`Copiar instrucciones para ${agent}; ${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}
+                aria-live="polite"
+                onClick={() => { copyCommand(agent).catch(() => undefined); }}
+              >{buttonLabel}</button>
+            </div>
+            <div className="agent-dock-subrow">
+              <button type="button" className="agent-activity-row" disabled={!state} aria-expanded={expandedAgent === agent} onClick={() => setExpandedAgent((current) => current === agent ? undefined : agent)}>
+                <i aria-hidden="true"/>
+                <span>{state ? <><strong>{agentPhaseCopy[state.phase]}</strong> · {state.summary}</> : present ? "Conectado; sin actividad reportada" : "Sin actividad reportada"}</span>
+                {state && state.total > 0 && <b>{state.completed}/{state.total}</b>}
+                {elapsed && <time>{elapsed}</time>}
+              </button>
+              <label className="auditor-toggle" title={isOllama && !ollama?.configured ? "Configura Ollama Cloud antes de elegirlo" : selectionLocked ? "La selección se bloquea al aprobar el grafo" : `${selectedAuditor ? "Quitar" : "Usar"} ${agent} como auditor`}>
+                <input type="checkbox" aria-label={`Usar ${agent}${isOllama && ollama?.configured ? ` (${ollama.model})` : ""} como auditor`} checked={selectedAuditor} disabled={selectionLocked || Boolean(selectionBusy) || (isOllama && !ollama?.configured)} onChange={(event) => { toggleAuditor(agent, event.target.checked).catch(() => undefined); }}/>
+                <span>Audita</span>
+              </label>
+            </div>
+            {expandedAgent === agent && state && (
+              <div className="agent-activity-detail" role="region" aria-label={`Actividad de ${agent}`}>
+                <div className="agent-activity-summary"><strong>{state.summary}</strong>{state.detail && <p>{state.detail}</p>}</div>
+                {state.total > 0 && <div className="agent-review-progress" role="progressbar" aria-label="Cobertura confirmada" aria-valuemin={0} aria-valuemax={state.total} aria-valuenow={state.completed}><span style={{ transform: `scaleX(${state.completed / state.total})` }}/></div>}
+                {state.currentNodeId && <p className="agent-current"><span>Ahora</span>{nodeLabel(state.currentNodeId)}</p>}
+                <div className="agent-coverage">
+                  <section><h4>Qué lleva · {state.reviewedNodeIds.length}</h4>{state.reviewedNodeIds.length ? <ul>{state.reviewedNodeIds.map((id) => <li key={id}>{nodeLabel(id)}</li>)}</ul> : <p>Aún no hay cobertura confirmada.</p>}</section>
+                  <section><h4>Qué falta · {state.remainingNodeIds.length}</h4>{state.remainingNodeIds.length ? <ul>{state.remainingNodeIds.map((id) => <li key={id}>{nodeLabel(id)}</li>)}</ul> : <p>{state.total > 0 && state.completed === state.total ? "El paquete quedó cubierto." : "Cobertura todavía no reportada."}</p>}</section>
+                </div>
+                <small>Actualizado {new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(state.updatedAt))}</small>
+              </div>
+            )}
           </div>
         );
       })}
@@ -680,6 +765,7 @@ export function App() {
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
+  const [approveError, setApproveError] = useState<string>();
   const observedStatuses = useRef(new Map<string, NodeStatus>());
   const loadedRunId = useRef("");
   const flowInstance = useRef<ReactFlowInstance<Node<MapNodeData>, Edge> | null>(null);
@@ -706,6 +792,11 @@ export function App() {
       const response = await fetch(`/api/runs/${id}`);
       if (!response.ok) throw new Error("No se pudo cargar la ejecución");
       const next = await response.json() as RunDetail;
+      // El build web puede quedar listo unos minutos antes de que el humano
+      // reinicie un servicio con ejecuciones activas: tolera el contrato v3.2
+      // anterior sin romper el panel durante esa ventana de despliegue.
+      next.run.auditors ??= [];
+      next.agentStates ??= [];
       const newlyFailed = next.nodes.find((node) => node.status === "failed" && observedStatuses.current.get(`${next.run.id}:${node.id}`) !== "failed");
       for (const node of next.nodes) observedStatuses.current.set(`${next.run.id}:${node.id}`, node.status);
       loadedRunId.current = id;
@@ -763,6 +854,20 @@ export function App() {
     await loadDetail(runId);
   }, [runId, loadDetail]);
 
+  const updateAuditors = useCallback(async (auditors: string[]) => {
+    if (!runId) return;
+    const response = await fetch(`/api/runs/${runId}/auditors`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auditors }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? "No se pudo guardar la selección de auditores");
+    }
+    await loadDetail(runId);
+  }, [runId, loadDetail]);
+
   const deleteRun = useCallback(async (run: RunSummary) => {
     if (!window.confirm(`¿Eliminar la ejecución "${run.title}" con toda su evidencia? Esta acción es permanente.`)) return;
     await fetch(`/api/runs/${run.id}`, { method: "DELETE" });
@@ -799,13 +904,33 @@ export function App() {
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
+  const auditorsReady = Boolean(detail?.run.auditors.length) && (!detail?.run.auditors.includes("ollama") || Boolean(ollama?.configured));
 
   // paused = aprobar sin arrancar: el plan queda autorizado pero ningún agente
   // puede iniciar nodos hasta reanudar — tiempo para asignar y conectar agentes.
   const approveAll = useCallback(async (paused = false) => {
     if (!runId) return;
-    if (paused) await fetch(`/api/runs/${runId}/control`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ control: "paused" }) });
-    await fetch(`/api/runs/${runId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    setApproveError(undefined);
+    const failure = async (response: Response | undefined, fallback: string) => {
+      const body = response ? (await response.json().catch(() => ({}))) as { error?: string } : {};
+      setApproveError(body.error ?? fallback);
+    };
+    // La pausa va antes de aprobar y debe confirmarse: si falla, aprobar de
+    // todos modos entregaría el arranque inmediato justo cuando el humano pidió
+    // lo contrario, así que el grafo se queda sin aprobar y el fallo se ve.
+    if (paused) {
+      const pauseResponse = await fetch(`/api/runs/${runId}/control`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ control: "paused" }) }).catch(() => undefined);
+      if (!pauseResponse?.ok) {
+        await failure(pauseResponse, "No se pudo pausar la ejecución; el grafo sigue sin aprobar.");
+        return;
+      }
+    }
+    const approved = await fetch(`/api/runs/${runId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => undefined);
+    if (!approved?.ok) {
+      await failure(approved, "No se pudo aprobar el grafo.");
+      await loadDetail(runId);
+      return;
+    }
     await loadDetail(runId);
   }, [runId, loadDetail]);
 
@@ -821,7 +946,7 @@ export function App() {
           projects={catalog.projects}
           projectId={projectId}
           runId={runId}
-          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} workspaceRoot={project?.workspaceRoot} ollama={ollama}/> : undefined}
+          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} agentStates={detail.agentStates} workspaceRoot={project?.workspaceRoot} ollama={ollama} onAuditorsChange={updateAuditors}/> : undefined}
           onProject={(nextProject) => { setProjectId(nextProject.id); setRunId(sortRuns(nextProject.runs)[0]?.id ?? ""); }}
           onRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }}
           onDeleteProject={(target) => { deleteProject(target).catch(() => undefined); }}
@@ -853,9 +978,10 @@ export function App() {
                 {unapprovedCount > 0 && (
                   <div className="approval-banner" role="status">
                     <Icon name="warning"/>
-                    <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} El agente no puede iniciarlas hasta tu visto bueno.</p>
-                    <button type="button" onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
-                    <button type="button" className="approve-paused" title="Autoriza el plan pero deja la ejecución en pausa: asigna nodos y conecta agentes con calma, y reanuda cuando todo esté listo" onClick={() => { approveAll(true).catch(() => undefined); }}>Aprobar en pausa</button>
+                    <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} {detail.run.auditors.includes("ollama") && !ollama?.configured ? "Configura Ollama Cloud o elige otro auditor antes de iniciar." : detail.run.auditors.length ? `Auditarán: ${detail.run.auditors.join(", ")}.` : "Elige al menos un auditor en la columna izquierda para iniciar."}</p>
+                    <button type="button" disabled={!auditorsReady} onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
+                    <button type="button" disabled={!auditorsReady} className="approve-paused" title="Autoriza el plan pero deja la ejecución en pausa: asigna nodos y conecta agentes con calma, y reanuda cuando todo esté listo" onClick={() => { approveAll(true).catch(() => undefined); }}>Aprobar en pausa</button>
+                    {approveError && <p className="approve-error" role="alert">{approveError}</p>}
                   </div>
                 )}
                 {detail.findings.some((finding) => finding.status === "escalated") && view !== "findings" && (
@@ -872,7 +998,7 @@ export function App() {
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} canApprove={auditorsReady} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
             </main>
           )}
         </div>

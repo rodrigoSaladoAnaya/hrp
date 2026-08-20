@@ -21,7 +21,7 @@ El panel reconstruye el estado desde esos eventos. HRP no ejecuta el trabajo por
 
 ## Requisitos
 
-- HRP v2 instalado y compilado.
+- HRP v3 instalado y compilado.
 - Node.js 20 o posterior.
 - El comando `hrp` disponible en `PATH`.
 - Acceso local a `http://127.0.0.1:4317`.
@@ -42,7 +42,7 @@ Valores predeterminados:
 ```text
 URL:       http://127.0.0.1:4317
 Datos:     ~/.hrp-v2
-Protocolo: 2.3
+Protocolo: 3.0
 ```
 
 El servicio es local y no tiene autenticación. No debe exponerse directamente a una red pública.
@@ -75,6 +75,19 @@ Ejemplos incorrectos:
 Dos cambios independientes en el mismo archivo son dos nodos. Una modificación transversal de un solo símbolo es un nodo, aunque requiera varias líneas.
 
 Las dependencias expresan prerrequisitos reales. Si `HomeScreen.shareImageAsync` necesita que `expo-sharing` esté declarado, el nodo de la pantalla depende del nodo de configuración. No agregues dependencias únicamente para producir una secuencia visual.
+
+**Aristas por archivo compartido.** Si un nodo toca el mismo archivo o símbolo que otro nodo de la ejecución, declara la dependencia aunque los cambios sean conceptualmente independientes: sin esa arista el grafo autoriza un orden de aplicación que rompe los parches y falsea la causalidad que el humano lee en el mapa. Aplica igual a los nodos descubiertos, que dependen del nodo cuyo código modifican.
+
+**Diffs atribuibles.** El diff de un nodo debe contener sólo lo que ese nodo hizo. Cuando otro nodo de la ejecución ya modificó ese archivo y el trabajo aún no está confirmado en git, `git diff` contra `HEAD` devuelve un diff acumulado que le atribuye a este nodo cambios ajenos. Copia el archivo antes de editarlo y publica el diff contra esa copia:
+
+```sh
+cp src/server/store.ts /tmp/store.before        # antes de editar
+# ...editar...
+diff -u /tmp/store.before src/server/store.ts \
+  --label a/src/server/store.ts --label b/src/server/store.ts > patch.diff
+```
+
+Lo mismo vale cuando otro agente trabaja en paralelo sobre ese archivo: la copia previa delimita tu autoría.
 
 ## Información permitida
 
@@ -183,9 +196,11 @@ Requisitos del grafo:
 - `suggestedAgent` (opcional) recomienda quién debería implementarlo — por ejemplo `"ollama"` para trabajo mecánico o de bajo riesgo. HRP pre-asigna el nodo al agente sugerido si el humano no ha decidido otra cosa; la insignia «sugiere» del panel deja visible que la recomendación vino del modelo base.
 - `contextFiles` (opcional) lista archivos del workspace que `hrp ollama exec` adjuntará al prompt como **referencia de solo lectura**. Es parte de la semántica aprobada: el inspector lo muestra antes de aprobar, y cambiarlo en una republicación regresa el nodo a «por aprobar».
 
-### 4b. Esperar la aprobación humana
+### 4b. Seleccionar auditores y esperar la aprobación humana
 
-Desde el protocolo 2.1, todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza su inicio hasta que el humano da el visto bueno, desde el panel (botón «Aprobar grafo» o la aprobación individual del inspector) o por CLI:
+Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza su inicio hasta que el humano da el visto bueno. Antes de aprobar, el panel pide elegir qué modelos auditarán esa ejecución en la sección **Agentes**. La selección es propia del run —configurar Ollama no lo vuelve auditor global— y se congela al aprobar el primer nodo para conservar una política estable durante toda la ejecución.
+
+Después de elegir al menos un auditor, el humano autoriza desde el panel (botón «Aprobar grafo» o la aprobación individual del inspector) o por CLI:
 
 ```sh
 hrp node approve "$run_id"              # todo lo pendiente de aprobación
@@ -209,6 +224,22 @@ hrp node assign "$run_id" nodo-a codex   # '-' retira la asignación
 Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base). La asignación se congela mientras el nodo está en curso: el humano solo puede reasignar nodos pendientes o fallidos.
 
 Cada inicio con identidad registra la **presencia** del agente en la ejecución (`seenAgents`). El panel usa esa señal para advertir al humano cuando un nodo está asignado a un modelo que nunca se ha presentado, ofrecerle el comando que debe pegar en ese modelo, y permitirle devolver el nodo al modelo base si el asignado no responde.
+
+La presencia no equivale a actividad. HRP actualiza automáticamente el estado observable cuando un agente inicia, falla o completa un nodo. Durante una auditoría larga, el adaptador debe publicar hitos operativos —nunca cadena de pensamiento— para que el humano vea qué hace, cuánto lleva y qué falta:
+
+```sh
+hrp agent status "$run_id" \
+  --agent codex \
+  --phase reviewing \
+  --summary "Auditando contratos entre backend y CLI" \
+  --completed 2 --total 5 \
+  --reviewed nodo-a,nodo-b \
+  --remaining nodo-c,nodo-d,nodo-e
+```
+
+Fases válidas: `idle`, `waiting`, `executing`, `reviewing`, `completed` y `failed`. `summary` y `detail` describen la etapa externa o el artefacto actual; no deben revelar razonamiento privado. Al cerrar la revisión publica `phase completed` con la cobertura final.
+
+Ollama Cloud publica estos estados automáticamente. Mientras Kimi u otro modelo no haya respondido, el panel muestra el paquete enviado y mantiene sus nodos como **cobertura no confirmada**; HRP no finge avance interno que la API no expone. Cuando llega la respuesta, confirma la cobertura y registra los hallazgos o el resultado limpio.
 
 Solo puede haber **un nodo en curso por ejecución**: el workspace es compartido y dos agentes editando o verificando a la vez se contaminan mutuamente. Si el inicio se rechaza por otro nodo en vuelo, espera a que ese nodo termine.
 
@@ -417,7 +448,17 @@ Confirma —leyendo el JSON de `hrp state`, no releyendo tu trabajo— que:
 - el workspace haya pasado **una sola vez** la verificación ejecutable integral (tests/build del proyecto: la corre la máquina, no tu juicio);
 - `hrp review gate "$run_id"` pase (código 0): una ejecución con hallazgos vivos de la revisión no puede darse por cerrada.
 
-**El base no se re-verifica.** El cierre no incluye releer tus propios diffs ni una pasada de auto-auditoría: el mismo modelo que escribió el código tiene sus mismos puntos ciegos y esa relectura cuesta casi tanto como la autoría. La pasada final de calidad pertenece a los modelos pares (regla de diversidad: **el auditor nunca es el mismo modelo que el base** — si el base es claude, audita kimi u otro modelo; si es codex, igual). Resolver los hallazgos del debate y correr el gate son cierre administrativo, no re-verificación.
+**El base no se re-verifica.** El cierre no incluye releer tus propios diffs ni una pasada de auto-auditoría: el mismo modelo que escribió el código tiene sus mismos puntos ciegos y esa relectura cuesta casi tanto como la autoría. La pasada final de calidad pertenece a los revisores (ver «Diversidad del revisor»). Resolver los hallazgos del debate y correr el gate son cierre administrativo, no re-verificación.
+
+### Diversidad del revisor
+
+Lo que la v3.1 elimina es que **la misma sesión que escribió el código se audite a sí misma**: comparte los puntos ciegos de la autoría y su relectura cuesta casi tanto como escribirla. A partir de ahí, la diversidad tiene grados:
+
+1. **Preferente** — un modelo distinto al base. Aporta diversidad de modelo y de contexto; es lo que cubre la auditoría automática de Ollama Cloud.
+2. **Aceptable** — otra sesión del mismo modelo que el base. No comparte el contexto de autoría y sí detecta errores de integración y desviaciones spec↔diff, pero es un escalón más débil: quien revise así debe declararlo en el hallazgo (por ejemplo, `--reviewer claude-revisor`).
+3. **Prohibida** — la sesión autora auditando su propio trabajo, en cualquier forma.
+
+Cuando el humano sólo dispone de sesiones del modelo base, la combinación correcta es el auditor automático de ollama —que aporta la diversidad de modelo— más un revisor con sesión del nivel 2, que aporta la de contexto. Los auditores elegidos para la ejecución quedan registrados en `run.auditors`.
 
 ## Revisión multi-modelo (protocolo v3)
 
@@ -431,7 +472,7 @@ El objetivo de la v3 es la calidad del producto, no el ahorro de tokens: otros m
 
 ### Contrato del modelo revisor
 
-El humano convierte a cualquier modelo con sesión (Codex, Gemini, otro Claude) en revisor copiándole el paquete de `hrp review pack <run-id>` (o el botón «Copiar paquete de revisión» del panel). El paquete incluye el requisito, el grafo, los hallazgos ya reportados y, por nodo completado, la spec aprobada, el diff y la verificación. El revisor:
+El humano convierte en revisor a cualquier modelo con sesión —preferentemente distinto al base, o una sesión distinta del mismo modelo según la jerarquía de «Diversidad del revisor»— copiándole el paquete de `hrp review pack <run-id>` (o el botón «Copiar paquete de revisión» del panel). El paquete incluye el requisito, el grafo, los hallazgos ya reportados y, por nodo completado, la spec aprobada, el diff y la verificación. El revisor:
 
 - audita buscando **errores de integración entre nodos, contratos rotos, desviaciones entre la spec aprobada y el diff aplicado, y casos borde sin cubrir**;
 - reporta cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer SU_NOMBRE`;

@@ -6,6 +6,8 @@ import Database from "better-sqlite3";
 import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
+  type AgentWorkState,
+  type AgentWorkPhase,
   type Activity,
   type ActivityType,
   findingSeverities,
@@ -71,6 +73,22 @@ function nodeFromRow(row: Row): ChangeNode {
   };
 }
 
+function agentStateFromRow(row: Row): AgentWorkState {
+  return {
+    agent: String(row.agent),
+    phase: String(row.phase) as AgentWorkPhase,
+    summary: String(row.summary),
+    detail: row.detail ? String(row.detail) : undefined,
+    currentNodeId: row.current_node_id ? String(row.current_node_id) : undefined,
+    completed: Number(row.completed),
+    total: Number(row.total),
+    reviewedNodeIds: JSON.parse(String(row.reviewed_json)) as string[],
+    remainingNodeIds: JSON.parse(String(row.remaining_json)) as string[],
+    startedAt: row.started_at ? String(row.started_at) : undefined,
+    updatedAt: String(row.updated_at),
+  };
+}
+
 export class HrpStore {
   readonly database: Database.Database;
 
@@ -130,6 +148,21 @@ export class HrpStore {
         key TEXT PRIMARY KEY,
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS agent_states (
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        agent TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK(phase IN ('idle','waiting','executing','reviewing','completed','failed')),
+        summary TEXT NOT NULL,
+        detail TEXT,
+        current_node_id TEXT,
+        completed INTEGER NOT NULL DEFAULT 0,
+        total INTEGER NOT NULL DEFAULT 0,
+        reviewed_json TEXT NOT NULL DEFAULT '[]',
+        remaining_json TEXT NOT NULL DEFAULT '[]',
+        started_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, agent)
       );
       CREATE TABLE IF NOT EXISTS findings (
         id TEXT PRIMARY KEY,
@@ -201,6 +234,9 @@ export class HrpStore {
     }
     if (!runColumns.some((column) => String(column.name) === "control")) {
       this.database.exec("ALTER TABLE runs ADD COLUMN control TEXT NOT NULL DEFAULT 'active'");
+    }
+    if (!runColumns.some((column) => String(column.name) === "auditors_json")) {
+      this.database.exec("ALTER TABLE runs ADD COLUMN auditors_json TEXT NOT NULL DEFAULT '[]'");
     }
   }
 
@@ -320,7 +356,79 @@ export class HrpStore {
       detail: row.detail ? String(row.detail) : undefined,
       createdAt: String(row.created_at),
     } satisfies Activity));
-    return { run, nodes, activity, findings: this.listFindings(id) };
+    const agentStates = (this.database.prepare("SELECT * FROM agent_states WHERE run_id = ? ORDER BY updated_at DESC, agent").all(id) as Row[])
+      .map(agentStateFromRow);
+    return { run, nodes, activity, findings: this.listFindings(id), agentStates };
+  }
+
+  setRunAuditors(runId: string, auditors: string[]): RunSummary {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    const normalized = [...new Set(auditors.map((agent) => agent.trim()).filter(Boolean))];
+    const approved = this.database.prepare("SELECT 1 FROM nodes WHERE run_id = ? AND approved = 1 LIMIT 1").get(runId);
+    if (approved) throw new Error("Auditors are locked after graph approval; choose them before starting the execution");
+    const timestamp = now();
+    this.database.prepare("UPDATE runs SET auditors_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(normalized), timestamp, runId);
+    for (const removed of run.auditors.filter((agent) => !normalized.includes(agent))) {
+      this.database.prepare("DELETE FROM agent_states WHERE run_id = ? AND agent = ? AND summary = 'Seleccionado para auditar'")
+        .run(runId, removed);
+    }
+    const nodeIds = this.getRunDetail(runId)!.nodes.map((node) => node.id);
+    for (const agent of normalized) {
+      this.setAgentState(runId, {
+        agent,
+        phase: "waiting",
+        summary: "Seleccionado para auditar",
+        detail: "La auditoría comenzará cuando termine la implementación del grafo.",
+        completed: 0,
+        total: nodeIds.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: nodeIds,
+      });
+    }
+    this.addActivity(runId, "run", normalized.length
+      ? `Auditores elegidos: ${normalized.join(", ")}`
+      : "Auditoría desactivada para esta ejecución");
+    return this.getRun(runId)!;
+  }
+
+  setAgentState(runId: string, state: Omit<AgentWorkState, "updatedAt">): AgentWorkState {
+    const detail = this.getRunDetail(runId);
+    if (!detail) throw new Error(`Unknown run: ${runId}`);
+    if (state.completed > state.total) throw new Error("Agent progress cannot exceed its total");
+    const validNodeIds = new Set(detail.nodes.map((node) => node.id));
+    const referenced = [state.currentNodeId, ...state.reviewedNodeIds, ...state.remainingNodeIds].filter(Boolean) as string[];
+    const unknown = [...new Set(referenced.filter((id) => !validNodeIds.has(id)))];
+    if (unknown.length) throw new Error(`Agent status references unknown nodes: ${unknown.join(", ")}`);
+    const reviewed = new Set(state.reviewedNodeIds);
+    const overlap = state.remainingNodeIds.filter((id) => reviewed.has(id));
+    if (overlap.length) throw new Error(`Agent status cannot mark nodes as reviewed and remaining: ${[...new Set(overlap)].join(", ")}`);
+    const updatedAt = now();
+    this.database.prepare(`
+      INSERT INTO agent_states (
+        run_id, agent, phase, summary, detail, current_node_id, completed, total,
+        reviewed_json, remaining_json, started_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, agent) DO UPDATE SET
+        phase = excluded.phase, summary = excluded.summary, detail = excluded.detail,
+        current_node_id = excluded.current_node_id, completed = excluded.completed,
+        total = excluded.total, reviewed_json = excluded.reviewed_json,
+        remaining_json = excluded.remaining_json, started_at = excluded.started_at,
+        updated_at = excluded.updated_at
+    `).run(
+      runId, state.agent, state.phase, state.summary, state.detail ?? null,
+      state.currentNodeId ?? null, state.completed, state.total,
+      JSON.stringify(state.reviewedNodeIds), JSON.stringify(state.remainingNodeIds),
+      state.startedAt ?? null, updatedAt,
+    );
+    return { ...state, updatedAt };
+  }
+
+  private nodesForAgent(runId: string, agent: string): ChangeNode[] {
+    const detail = this.getRunDetail(runId);
+    if (!detail) return [];
+    return detail.nodes.filter((node) => node.assignee === agent || node.executedBy === agent || (agent === detail.run.baseAgent && !node.assignee));
   }
 
   publishGraph(runId: string, input: GraphInput, agent?: string): ChangeNode[] {
@@ -392,7 +500,17 @@ export class HrpStore {
       this.database.prepare("UPDATE runs SET graph_version = graph_version + 1, updated_at = ? WHERE id = ?").run(timestamp, runId);
     })(input.nodes);
     this.addActivity(runId, "graph", `Mapa actualizado · ${input.nodes.length} operaciones`, `Versión ${run.graphVersion + 1}`);
-    return this.getRunDetail(runId)!.nodes;
+    const updated = this.getRunDetail(runId)!;
+    for (const state of updated.agentStates.filter((candidate) => candidate.summary === "Seleccionado para auditar")) {
+      const { updatedAt: _updatedAt, ...observable } = state;
+      this.setAgentState(runId, {
+        ...observable,
+        total: updated.nodes.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: updated.nodes.map((node) => node.id),
+      });
+    }
+    return updated.nodes;
   }
 
   addDiscoveredNode(runId: string, node: ChangeNodeInput): ChangeNode {
@@ -409,11 +527,30 @@ export class HrpStore {
   helloAgent(runId: string, agent: string): RunSummary {
     if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
     this.registerAgent(runId, agent);
+    const existing = this.database.prepare("SELECT 1 FROM agent_states WHERE run_id = ? AND agent = ?").get(runId, agent);
+    if (!existing) {
+      const assigned = this.nodesForAgent(runId, agent);
+      const completed = assigned.filter((node) => node.status === "completed").length;
+      this.setAgentState(runId, {
+        agent,
+        phase: "waiting",
+        summary: completed === assigned.length && assigned.length > 0 ? "Implementación terminada; disponible para revisión" : "Conectado y esperando trabajo",
+        completed,
+        total: assigned.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: assigned.filter((node) => node.status !== "completed").map((node) => node.id),
+      });
+    }
     return this.getRun(runId)!;
   }
 
   approveNodes(runId: string, nodeIds?: string[]): ChangeNode[] {
-    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    if (run.auditors.length === 0) throw new Error("Choose at least one auditor before approving the graph");
+    if (run.auditors.includes("ollama") && !this.getOllamaSettings().apiKey) {
+      throw new Error("Ollama is selected as auditor but is not configured; configure its API key or choose another auditor");
+    }
     const targets = nodeIds?.length
       ? nodeIds.map((id) => this.requireNode(runId, id))
       : (this.getRunDetail(runId)?.nodes ?? []).filter((node) => !node.approved);
@@ -478,6 +615,19 @@ export class HrpStore {
     if (agent) {
       this.registerAgent(runId, agent);
       this.database.prepare("UPDATE nodes SET executed_by = ? WHERE run_id = ? AND id = ?").run(agent, runId, nodeId);
+      const assigned = this.nodesForAgent(runId, agent);
+      this.setAgentState(runId, {
+        agent,
+        phase: "executing",
+        summary: `Implementando ${node.file} · ${node.symbol}`,
+        detail: node.description,
+        currentNodeId: nodeId,
+        completed: assigned.filter((candidate) => candidate.status === "completed").length,
+        total: assigned.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: assigned.filter((candidate) => candidate.status !== "completed" && candidate.id !== nodeId).map((candidate) => candidate.id),
+        startedAt: now(),
+      });
     }
     this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId);
     return this.requireNode(runId, nodeId);
@@ -519,6 +669,21 @@ export class HrpStore {
       .run(JSON.stringify(result), result.passed ? node.status : "failed", result.observedAt, runId, nodeId);
     this.touchRun(runId, result.observedAt);
     this.addActivity(runId, "verify", `${result.passed ? "Verificación aprobada" : "Verificación fallida"}: ${verification.command}`, verification.output, nodeId);
+    if (!result.passed && node.executedBy) {
+      const assigned = this.nodesForAgent(runId, node.executedBy);
+      this.setAgentState(runId, {
+        agent: node.executedBy,
+        phase: "failed",
+        summary: `Falló la verificación de ${node.file} · ${node.symbol}`,
+        detail: verification.command,
+        currentNodeId: nodeId,
+        completed: assigned.filter((candidate) => candidate.status === "completed").length,
+        total: assigned.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: assigned.filter((candidate) => candidate.status !== "completed").map((candidate) => candidate.id),
+        startedAt: node.updatedAt,
+      });
+    }
     return this.requireNode(runId, nodeId);
   }
 
@@ -534,6 +699,20 @@ export class HrpStore {
     this.updateNodeStatus(runId, nodeId, "completed");
     const tokensNote = tokens != null ? ` · ~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens` : "";
     this.addActivity(runId, "node", `Terminado: ${node.file} · ${node.symbol}${tokensNote}`, node.patchSummary, nodeId);
+    if (node.executedBy) {
+      const assigned = this.nodesForAgent(runId, node.executedBy);
+      const completed = assigned.filter((candidate) => candidate.status === "completed").length;
+      const remaining = assigned.filter((candidate) => candidate.status !== "completed").map((candidate) => candidate.id);
+      this.setAgentState(runId, {
+        agent: node.executedBy,
+        phase: remaining.length ? "waiting" : "completed",
+        summary: remaining.length ? `Esperando la siguiente operación · ${remaining.length} pendiente${remaining.length === 1 ? "" : "s"}` : "Implementación asignada terminada",
+        completed,
+        total: assigned.length,
+        reviewedNodeIds: [],
+        remainingNodeIds: remaining,
+      });
+    }
     return this.requireNode(runId, nodeId);
   }
 
@@ -687,6 +866,7 @@ export class HrpStore {
       graphVersion: Number(row.graph_version),
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
+      auditors: row.auditors_json ? JSON.parse(String(row.auditors_json)) as string[] : [],
       nodeCount: total, completedCount: completed, awaitingApproval: Number(counts.awaitingApproval ?? 0),
       openFindings: Number(findingCounts.open ?? 0),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),
