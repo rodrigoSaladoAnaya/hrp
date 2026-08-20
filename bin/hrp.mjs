@@ -50,6 +50,14 @@ async function api(endpoint, init = {}) {
   return response.status === 204 ? undefined : response.json();
 }
 
+async function ollamaChat(body) {
+  const result = await api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
+  if (json) return print(result);
+  // El desglose va a stderr para poder canalizar la respuesta limpia a un archivo.
+  process.stderr.write(`# ${result.model} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens\n`);
+  process.stdout.write(result.content.endsWith("\n") ? result.content : `${result.content}\n`);
+}
+
 async function healthy() {
   return fetch(`${url}/api/health`).then((response) => response.ok).catch(() => false);
 }
@@ -229,6 +237,7 @@ Uso:
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
   hrp ollama status
   hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
+  hrp ollama exec <run-id> <node-id> [--model MODELO]
   hrp ollama run --prompt-file PATH|- [--system-file PATH] [--model MODELO] [--run RUN_ID --node NODE_ID]
   hrp state <run-id>
   hrp version
@@ -429,12 +438,38 @@ async function main() {
       // Con contexto, la consulta queda auditada en la actividad de esa ejecución.
       if (value("--run")) body.runId = value("--run");
       if (value("--node")) body.nodeId = value("--node");
-      const result = await api("/api/ollama/chat", { method: "POST", body: JSON.stringify(body) });
-      if (json) return print(result);
-      // El desglose va a stderr para poder canalizar la respuesta limpia a un archivo.
-      process.stderr.write(`# ${result.model} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens\n`);
-      process.stdout.write(result.content.endsWith("\n") ? result.content : `${result.content}\n`);
-      return;
+      return ollamaChat(body);
+    }
+    if (action === "exec") {
+      // La descripción del nodo (aprobada por el humano) ES la especificación:
+      // exec la reutiliza como prompt en lugar de redactar uno artesanal.
+      if (!first || !second) throw new Error("Uso: hrp ollama exec <run-id> <node-id> [--model MODELO]");
+      const detail = await api(`/api/runs/${first}`);
+      const node = detail.nodes.find((candidate) => candidate.id === second);
+      if (!node) throw new Error(`Nodo desconocido en la ejecución: ${second}`);
+      const filePath = path.resolve(process.cwd(), node.file);
+      const exists = existsSync(filePath);
+      const content = exists ? readFileSync(filePath, "utf8") : "";
+      if (content.length > 200_000) {
+        throw new Error(`${node.file} excede 200KB; usa 'hrp ollama run --prompt-file' con solo los fragmentos relevantes`);
+      }
+      const prompt = [
+        "Eres un asistente de programación. Aplica la siguiente operación y devuelve ÚNICAMENTE el contenido completo del archivo resultante, sin explicaciones, sin markdown y sin fences de código.",
+        "",
+        `Archivo: ${node.file}`,
+        `Símbolo u objetivo: ${node.symbol}`,
+        `Operación: ${node.title}`,
+        `Especificación: ${node.description}`,
+        `Motivo: ${node.rationale}`,
+        "",
+        "No cambies nada fuera de lo especificado: conserva el resto del archivo exactamente igual.",
+        "",
+        exists ? `Contenido actual de ${node.file}:` : `El archivo ${node.file} no existe todavía: genera su contenido completo.`,
+        ...(exists ? ["", content] : []),
+      ].join("\n");
+      const body = { prompt, runId: first, nodeId: second };
+      if (value("--model")) body.model = value("--model");
+      return ollamaChat(body);
     }
   }
   if (group === "state") return print(await api(`/api/runs/${action}`));

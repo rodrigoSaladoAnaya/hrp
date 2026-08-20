@@ -419,16 +419,18 @@ Confirma que:
 
 HRP puede usar modelos de Ollama Cloud como ejecutores modestos bajo la administración del modelo base: el modelo avanzado planifica, delega el trabajo mecánico y revisa el resultado antes de publicarlo. La API key y el modelo se configuran una sola vez —desde el panel web (icono de ajustes en la barra superior) o con `hrp ollama config --api-key KEY --model MODELO`— y quedan persistidos en el servicio. La key nunca regresa a los clientes: `GET /api/settings/ollama` sólo expone una vista enmascarada, y las llamadas al modelo salen del servidor vía `POST /api/ollama/chat`.
 
+**Nivel de especificidad.** Un nodo con `suggestedAgent: "ollama"` se redacta como **spec delegable a nivel contrato**: firma o punto de inserción exacto, invariantes ("tal bloque queda igual"), casos borde y criterio de verificación — nunca pseudocódigo línea a línea. La delegación paga cuando la spec es corta y la salida larga; si especificar el nodo cuesta casi lo mismo que escribir el código, el nodo no se delega: quédatelo como modelo base. La descripción del nodo es la spec que el humano aprueba y la que `hrp ollama exec` envía al modelo, así que se escribe una sola vez.
+
 Flujo de delegación:
 
 1. Al publicar el grafo, marca con `"suggestedAgent": "ollama"` los nodos mecánicos, repetitivos o de bajo riesgo. HRP los pre-asigna a `ollama` y el humano puede reasignarlos antes de aprobar.
-2. Los nodos asignados a `ollama` cuentan como trabajo del **agente base** en `hrp wait approval`: la espera del base regresa en cuanto el humano los aprueba (ollama no abre sesión propia, así que nadie más los reclamará). Tras la aprobación, el modelo base administra cada uno: lo inicia con `hrp node start <run-id> <node-id> --agent ollama`, prepara un prompt con el contexto exacto del nodo (archivo, símbolo, descripción y fragmentos de código relevantes) y genera la implementación con:
+2. Los nodos asignados a `ollama` cuentan como trabajo del **agente base** en `hrp wait approval`: la espera del base regresa en cuanto el humano los aprueba (ollama no abre sesión propia, así que nadie más los reclamará). Tras la aprobación, el modelo base administra cada uno: lo inicia con `hrp node start <run-id> <node-id> --agent ollama` y genera la implementación con:
 
    ```sh
-   hrp ollama run --prompt-file prompt.txt [--system-file system.txt] [--model MODELO] --run RUN_ID --node NODE_ID
+   hrp ollama exec RUN_ID NODE_ID [--model MODELO] > salida
    ```
 
-   Pasa siempre `--run` y `--node`: cada consulta queda registrada en la Actividad de la ejecución («Consulta a ollama (modelo) · N prompt + M respuesta tokens»), ligada al nodo.
+   `exec` arma el prompt automáticamente desde el nodo aprobado (título, especificación, motivo y símbolo) más el contenido actual del archivo, y queda auditado en la Actividad («Consulta a ollama (modelo) · N prompt + M respuesta tokens», ligada al nodo). Reserva `hrp ollama run --prompt-file prompt.txt --run RUN_ID --node NODE_ID` para prompts a medida (fragmentos de archivos grandes, contexto de varios archivos); con `run`, pasa siempre `--run` y `--node` para conservar la auditoría.
 3. El modelo base revisa el resultado como administrador: corrige lo necesario, aplica el cambio al workspace y publica el diff, la verificación y el cierre como en cualquier nodo. En el `--summary` del parche distingue qué generó ollama y qué ajustó la revisión; `executedBy` queda como `ollama` para que el panel muestre la autoría real.
 4. `hrp ollama status` muestra la configuración vigente (key enmascarada, modelo y URL base); `hrp ollama run` reporta por stderr el consumo upstream (tokens de prompt y respuesta), útil para `node complete --tokens`.
 

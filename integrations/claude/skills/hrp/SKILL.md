@@ -131,13 +131,10 @@ Un nodo asignado a `ollama` no espera a otra sesión: tú lo administras, y `hrp
 
 ```sh
 hrp node start "$run_id" <node-id> --agent ollama
-# prompt.txt: contexto exacto del nodo — archivo, símbolo, descripción,
-# fragmentos de código actuales y el formato de salida que esperas.
-hrp ollama run --prompt-file /ruta/scratchpad/prompt.txt \
-  --run "$run_id" --node <node-id> > /ruta/scratchpad/salida.txt
+hrp ollama exec "$run_id" <node-id> > /ruta/scratchpad/salida.txt
 ```
 
-Pasa siempre `--run` y `--node`: cada consulta delegada queda registrada en la Actividad de la ejecución con su modelo y tokens, y así el humano puede auditar qué corrió ollama y cuánto costó.
+`exec` arma el prompt automáticamente con la descripción aprobada del nodo más el contenido actual del archivo — no redactes un prompt artesanal que duplique la spec. Usa `hrp ollama run --prompt-file ... --run "$run_id" --node <node-id>` solo cuando necesites un prompt a medida (fragmentos de un archivo grande, contexto de varios archivos), siempre con `--run`/`--node` para conservar la auditoría. Ambas vías quedan registradas en la Actividad con modelo y tokens.
 
 Después actúas como revisor: valida la salida, corrige lo que haga falta, aplica el cambio al workspace con tus herramientas y sigue el ciclo normal (patch → verify → complete). En el `--summary` del parche distingue qué generó ollama y qué corregiste tú. `hrp ollama run` reporta por stderr los tokens de prompt/respuesta del modelo delegado: úsalo para `--tokens` al completar. Nunca completes un nodo delegado sin haber revisado y verificado su resultado; si la salida es inservible, corrígela tú mismo y anótalo en el resumen.
 
@@ -164,6 +161,8 @@ hrp node discover "$run_id" /ruta/temporal/discovered.json
 ```
 
 **Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo: si es mecánico, repetitivo o queda completamente especificado por su descripción (renombres, boilerplate, estilos, textos, ajustes triviales), inclúyele `"suggestedAgent": "ollama"` en el JSON; si implica diseño, seguridad, integración delicada o ambigüedad, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
+
+**Regla de la spec delegable.** Un nodo sugerido para ollama se redacta con la descripción como **spec a nivel contrato** — firma o punto de inserción exacto, invariantes («tal bloque queda igual»), casos borde y criterio de verificación — nunca pseudocódigo línea a línea. La delegación paga cuando la spec es corta y la salida larga; si describir el nodo te cuesta casi lo mismo que escribir el código, no lo sugieras para ollama: quédatelo. Esa descripción es la que el humano aprueba y la que `hrp ollama exec` enviará tal cual al modelo, así que se escribe una sola vez.
 
 **No detengas la implementación por un descubierto.** El nodo descubierto espera la aprobación humana antes de poder iniciarse, pero esa espera no debe frenar el flujo: publícalo y continúa de inmediato con los nodos ya aprobados cuyas dependencias estén completas. Ejecuta `hrp wait approval` solo cuando ya no te quede ningún nodo aprobado disponible, agrupando en una sola espera todos los descubiertos pendientes.
 
