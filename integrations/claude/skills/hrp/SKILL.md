@@ -76,7 +76,17 @@ Los ids: únicos, estables, solo `[A-Za-z0-9_-]`. Sin ciclos; toda dependencia d
 
 `--agent claude` te registra como **modelo base** de la ejecución: ejecutas por defecto todos los nodos sin asignación, y los nodos que descubras se te asignan automáticamente para que el proceso no espere a otro agente.
 
-Como modelo base también decides qué conviene delegar: agrega `"suggestedAgent": "ollama"` a los nodos mecánicos, repetitivos o de bajo riesgo (renombres, boilerplate, estilos, textos, migraciones triviales) cuando haya Ollama Cloud configurado (`hrp ollama status`). HRP los pre-asigna a `ollama` y el humano confirma o reasigna al aprobar. Reserva para ti los nodos de diseño, seguridad o integración delicada.
+Como modelo base también decides qué conviene delegar, con un criterio **económico**, no solo de mecanicidad. Sugiere `"suggestedAgent": "ollama"` únicamente en nodos tipo **fábrica** y solo cuando la cuenta salga positiva:
+
+```
+ahorro del nodo ≈ salida que no escribes − (spec + revisión fiel + ~1k de ceremonia)
+```
+
+- **Sí delega**: salida mecánica o de patrón con spec-contrato corta y salida estimada ≥ ~2-3k tokens (boilerplate, datos, fixtures, migraciones formulaicas), o un nodo que pertenece a una **serie de 3+ hermanos del mismo patrón**, donde la spec y la revisión se amortizan (pantallas CRUD, tests desde tabla de casos, configs por ambiente).
+- **Nunca delegues** nodos creativos, de diseño, seguridad o núcleo novedoso, **aunque puedas especificarlos**: revisarlos fielmente cuesta igual o más que escribirlos (medido: delegar un motor de juego completo consumió más tokens del modelo base que la autoría directa).
+- En caso de duda, quédatelo: el modelo más capaz ataca lo creativo; ollama fabrica lo repetitivo.
+
+HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al aprobar.
 
 ### 2b. Espera la aprobación humana (protocolo 2.1)
 
@@ -164,7 +174,7 @@ Si durante la implementación aparece una operación que no estaba en el grafo, 
 hrp node discover "$run_id" /ruta/temporal/discovered.json
 ```
 
-**Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo: si es mecánico, repetitivo o queda completamente especificado por su descripción (renombres, boilerplate, estilos, textos, ajustes triviales), inclúyele `"suggestedAgent": "ollama"` en el JSON; si implica diseño, seguridad, integración delicada o ambigüedad, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
+**Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo con el mismo criterio económico del triaje inicial: si es tipo fábrica y la cuenta sale positiva (salida ≥ ~2-3k tokens o serie de 3+ del mismo patrón), inclúyele `"suggestedAgent": "ollama"` en el JSON; si implica diseño, seguridad, integración delicada, ambigüedad o simplemente no da el umbral, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
 
 **Regla de la spec delegable.** Un nodo sugerido para ollama se redacta con la descripción como **spec a nivel contrato** — firma o punto de inserción exacto, invariantes («tal bloque queda igual»), casos borde y criterio de verificación — nunca pseudocódigo línea a línea. La delegación paga cuando la spec es corta y la salida larga; si describir el nodo te cuesta casi lo mismo que escribir el código, no lo sugieras para ollama: quédatelo. Esa descripción es la que el humano aprueba y la que `hrp ollama exec` enviará tal cual al modelo, así que se escribe una sola vez.
 
