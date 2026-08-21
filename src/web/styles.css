@@ -367,12 +367,17 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .agent-dock-head b { flex: none; color: #35544a; font-size: .64rem; font-variant-numeric: tabular-nums; }
 .agent-dock-error { margin: 0; padding: 8px 13px; color: #7e2b25; background: #f3dfdc; font-size: .68rem; line-height: 1.4; }
 .agent-dock-entry { border-bottom: 1px solid #c2cac5; }
+.agent-dock-entry.is-base-agent { background: #e8eee8; }
 .agent-dock-entry:last-child { border-bottom: 0; }
 .agent-dock-row { min-width: 0; display: grid; grid-template-columns: 9px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; min-height: 44px; padding: 4px 10px 1px 13px; }
 .agent-presence-dot { flex: none; width: 9px; height: 9px; border-radius: 999px; }
 .agent-presence-dot.agent-presence-present { background: #2d6a50; }
 .agent-presence-dot.agent-presence-absent { background: #bb6b13; }
+.agent-dock-entry.is-base-agent .agent-presence-dot { outline: 2px solid #b99132; outline-offset: 2px; }
 .agent-dock-name { min-width: 0; display: grid; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.agent-name-line { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
+.agent-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-role-badge { flex: none; padding: 1px 6px; border: 1px solid #9d7924; border-radius: 999px; color: #5d4310; background: #f5e6b7; font-family: Aptos, Segoe UI, system-ui, sans-serif; font-size: .62rem; font-weight: 850; letter-spacing: .04em; line-height: 1.35; text-transform: uppercase; }
 .agent-dock-name small { overflow: hidden; color: #596660; font-size: .62rem; text-overflow: ellipsis; }
 .agent-dock-count { flex: none; min-width: 21px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #c9d1ca; font-size: .68rem; font-weight: 800; text-align: center; }
 .agent-dock-subrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; padding: 0 10px 7px 21px; }

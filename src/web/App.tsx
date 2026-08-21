@@ -496,10 +496,13 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
           ? copyFeedback.result === "copied" ? "Copiado" : "Error"
           : "Copiar";
         return (
-          <div className={`agent-dock-entry phase-${state?.phase ?? "idle"}`} key={agent}>
+          <div className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""}`} key={agent} role="group" aria-label={`${agent}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}>
             <div className="agent-dock-row">
               <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
-              <span className="agent-dock-name" title={isOllama && ollama?.configured ? `${agent} · ${ollama.model}` : agent}>{agent}{isOllama && ollama?.configured && <small>{ollama.model}</small>}</span>
+              <span className="agent-dock-name" title={isBase ? "Modelo base: controla los nodos sin asignar y coordina el cierre de la ejecución" : isOllama && ollama?.configured ? `${agent} · ${ollama.model}` : agent}>
+                <span className="agent-name-line"><span className="agent-name-text">{agent}</span>{isBase && <span className="agent-role-badge">Base</span>}</span>
+                {isOllama && ollama?.configured && <small>{ollama.model}</small>}
+              </span>
               <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
               <button
                 type="button"
