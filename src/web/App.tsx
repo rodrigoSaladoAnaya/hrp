@@ -15,11 +15,13 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
+import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
 type Health = { buildStale?: boolean };
 type ConnectionState = "connecting" | "connected" | "offline";
+type CatalogLoadOptions = { focus?: CatalogRunFocus; visibleProjectId?: string };
 type MapNodeData = {
   change: ChangeNode;
   isSelected: boolean;
@@ -782,16 +784,23 @@ export function App() {
   const [error, setError] = useState<string>();
   const [approveError, setApproveError] = useState<string>();
   const observedStatuses = useRef(new Map<string, NodeStatus>());
+  const knownRunIds = useRef<Set<string> | undefined>(undefined);
   const loadedRunId = useRef("");
+  const currentProjectId = useRef(projectId);
+  const currentRunId = useRef(runId);
   const flowInstance = useRef<ReactFlowInstance<Node<MapNodeData>, Edge> | null>(null);
 
-  const loadCatalog = useCallback(async () => {
+  const loadCatalog = useCallback(async ({ focus, visibleProjectId }: CatalogLoadOptions = {}) => {
     try {
       const response = await fetch("/api/projects");
       if (!response.ok) throw new Error("No se pudo cargar la lista de proyectos");
       const next = await response.json() as Catalog;
+      const nextFocus = resolveCatalogRunFocus(next.projects, { focus, currentProjectId: visibleProjectId, knownRunIds: knownRunIds.current });
+      const nextRunIds = collectCatalogRunIds(next.projects);
+      knownRunIds.current = nextRunIds;
       setCatalog(next);
-      setProjectId((current) => current && next.projects.some((project) => project.id === current) ? current : next.projects[0]?.id ?? "");
+      setProjectId((current) => nextFocus?.projectId ?? (current && next.projects.some((project) => project.id === current) ? current : next.projects[0]?.id ?? ""));
+      if (nextFocus) setRunId(nextFocus.runId);
     } finally {
       setLoadingCatalog(false);
     }
@@ -852,6 +861,8 @@ export function App() {
     setRunId((current) => current && project.runs.some((run) => run.id === current) ? current : project.runs[0]?.id ?? "");
   }, [project]);
 
+  useEffect(() => { currentProjectId.current = projectId; }, [projectId]);
+  useEffect(() => { currentRunId.current = runId; }, [runId]);
   useEffect(() => { loadDetail(runId).catch((cause) => setError(String(cause))); }, [runId, loadDetail]);
 
   useEffect(() => {
@@ -860,13 +871,16 @@ export function App() {
     source.onopen = () => setConnectionState("connected");
     source.addEventListener("ready", () => setConnectionState("connected"));
     source.addEventListener("change", (event) => {
-      const change = JSON.parse((event as MessageEvent).data) as { runId: string };
-      loadCatalog().catch(() => undefined);
-      if (runId && change.runId === runId) loadDetail(runId).catch(() => undefined);
+      const change = JSON.parse((event as MessageEvent).data) as CatalogChange;
+      const visibleProjectId = currentProjectId.current;
+      const visibleRunId = currentRunId.current;
+      const { focus, shouldReloadDetail } = resolveCatalogChange({ change, visibleProjectId, visibleRunId });
+      loadCatalog({ focus, visibleProjectId }).catch(() => undefined);
+      if (shouldReloadDetail) loadDetail(visibleRunId).catch(() => undefined);
     });
     source.onerror = () => setConnectionState("offline");
     return () => source.close();
-  }, [runId, loadCatalog, loadDetail]);
+  }, [loadCatalog, loadDetail]);
 
   useEffect(() => {
     const params = new URLSearchParams();

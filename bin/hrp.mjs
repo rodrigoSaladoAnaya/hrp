@@ -125,7 +125,12 @@ async function attention({ agent, runId, workspace, waitSeconds = 0 }) {
 // impide que la sesión termine, así que es el único punto donde HRP puede
 // devolverle el turno a un agente sin que el humano se lo pida.
 const hookWaitMs = Math.min(Math.max(Number(process.env.HRP_HOOK_WAIT_MS ?? 15000), 0), 120_000);
-const hookMaxParks = Math.max(Number(process.env.HRP_HOOK_MAX_PARKS ?? 40), 1);
+// Sólo se retiene la sesión mientras otro agente tiene un nodo en vuelo: ahí el
+// trabajo llega en minutos. Cualquier otra espera (auditor pendiente, pausa,
+// prerrequisitos de un agente que no está trabajando) puede durar horas y su
+// siguiente movimiento suele ser del humano; retener ahí no mantiene atento al
+// agente, le impide devolver el turno.
+const hookMaxParks = Math.max(Number(process.env.HRP_HOOK_MAX_PARKS ?? 3), 1);
 
 function readHookEvent() {
   try {
@@ -658,7 +663,10 @@ async function main() {
       }
       if (action !== "stop") throw new Error("Uso: hrp hook <stop|session-start> --agent NOMBRE");
 
-      const signal = await attention({ agent, workspace, waitSeconds: Math.round(hookWaitMs / 1000) });
+      let signal = await attention({ agent, workspace, waitSeconds: 0 });
+      if (!signal.actionable && (!signal.waiting || signal.kind === "busy")) {
+        signal = await attention({ agent, workspace, waitSeconds: Math.round(hookWaitMs / 1000) });
+      }
       if (signal.actionable) {
         writeHookParks(sessionId, 0);
         process.stdout.write(JSON.stringify({
@@ -667,23 +675,25 @@ async function main() {
         }));
         return;
       }
-      if (!signal.waiting) {
-        writeHookParks(sessionId, 0);
-        return;
-      }
+      // El contador sólo se reinicia cuando la espera termina, no en cada
+      // consulta: reiniciarlo antes de leerlo dejaba el tope inalcanzable.
+      const soltar = (respond) => { writeHookParks(sessionId, 0); return respond?.(); };
+      if (!signal.waiting) return soltar();
+      // El resto de las esperas se informan sin retener: si el siguiente
+      // movimiento es del humano, atrapar al agente sólo le impide contestarle.
+      const avisar = () => soltar(() => process.stdout.write(JSON.stringify({
+        continue: true,
+        systemMessage: `HRP: la ejecución ${signal.runId} sigue viva y ahora mismo no hay trabajo para ${agent} (${signal.kind}). ${signal.directive} Cuando quieras retomar: 'hrp attention --agent ${agent} --workspace ${workspace} --wait 600'.`,
+      })));
+      if (signal.kind !== "busy") return avisar();
+      // 'busy' es la única espera corta y previsible: otro agente está
+      // ejecutando un nodo justo ahora y el turno se libera al terminarlo.
       const parks = readHookParks(sessionId) + 1;
-      if (parks > hookMaxParks) {
-        writeHookParks(sessionId, 0);
-        process.stdout.write(JSON.stringify({
-          continue: true,
-          systemMessage: `HRP sigue sin señal para ${agent} después de ${hookMaxParks} esperas seguidas (${signal.directive}). Dejo de retener la sesión; retómala con 'hrp attention --agent ${agent} --wait 600'.`,
-        }));
-        return;
-      }
+      if (parks > hookMaxParks) return avisar();
       writeHookParks(sessionId, parks);
       process.stdout.write(JSON.stringify({
         decision: "block",
-        reason: `La ejecución ${signal.runId} sigue viva y todavía no hay trabajo para ti: ${signal.directive} No cierres el turno: ejecuta 'hrp attention --agent ${agent} --workspace ${workspace} --wait 600' y retoma en cuanto devuelva trabajo (espera ${parks}/${hookMaxParks}).`,
+        reason: `${signal.directive} No cierres el turno todavía: ejecuta 'hrp attention --agent ${agent} --workspace ${workspace} --wait 600' y retoma en cuanto ese nodo termine (espera ${parks}/${hookMaxParks}).`,
       }));
     } catch (error) {
       process.stderr.write(`hrp hook: ${error instanceof Error ? error.message : String(error)}\n`);

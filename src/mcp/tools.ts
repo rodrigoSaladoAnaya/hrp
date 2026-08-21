@@ -123,14 +123,27 @@ export class HrpMcpClient {
     };
   }
 
-  async attach(workspaceRoot: string = process.cwd()): Promise<unknown> {
+  // Un servidor MCP lo lanza el host, no el usuario: su process.cwd() puede ser
+  // el directorio del plugin en caché en vez del proyecto observado. Registrar
+  // eso como workspace crearía un proyecto fantasma y correría las
+  // verificaciones fuera del repo, en silencio. La ruta explícita del agente
+  // siempre se respeta; el guardia sólo cubre el valor por omisión.
+  private defaultWorkspace(): string {
+    const cwd = process.cwd();
+    if (cwd.split(path.sep).join("/").includes("/plugins/cache/")) {
+      throw new Error(`El servidor MCP está corriendo desde la caché de un plugin (${cwd}); indica workspaceRoot explícitamente con la carpeta del proyecto observado`);
+    }
+    return cwd;
+  }
+
+  async attach(workspaceRoot?: string): Promise<unknown> {
     return this.request("/api/projects", {
       method: "POST",
-      body: JSON.stringify({ workspaceRoot: path.resolve(workspaceRoot) }),
+      body: JSON.stringify({ workspaceRoot: path.resolve(workspaceRoot ?? this.defaultWorkspace()) }),
     });
   }
 
-  async resolveProjectId(projectId?: string, workspaceRoot: string = process.cwd()): Promise<string> {
+  async resolveProjectId(projectId?: string, workspaceRoot?: string): Promise<string> {
     if (projectId) return projectId;
     const project = (await this.attach(workspaceRoot)) as { id: string };
     return project.id;
@@ -220,7 +233,7 @@ export class HrpMcpClient {
   }
 
   async verifyRun(runId: string, nodeId: string, params: { command: string; args?: string[]; cwd?: string }): Promise<unknown> {
-    const cwd = params.cwd ? path.resolve(params.cwd) : process.cwd();
+    const cwd = params.cwd ? path.resolve(params.cwd) : this.defaultWorkspace();
     const commandArgs = params.args ?? [];
     const execution = spawnSync(params.command, commandArgs, {
       cwd,

@@ -161,7 +161,12 @@ Un agente que termina su turno deja de existir para HRP. El problema real que re
 
 **Límites conocidos.** El hook actúa al terminar el turno: una sesión ya cerrada no se puede despertar —al abrir la siguiente, el hook `SessionStart` inyecta las ejecuciones vivas del workspace para que retome—. Y ningún entorno recarga hooks, MCP o skills en sesiones abiertas.
 
-**Antibucle.** Retener una sesión indefinidamente sería el defecto simétrico. El hook cuenta las esperas consecutivas sin señal por `session_id` y, tras 40, suelta la sesión con un `systemMessage`. La señal, además, nunca ordena lo imposible: no anuncia nodos con dependencias abiertas, ni trabajo ajeno mientras otro nodo está en vuelo, ni el cierre de una ejecución que ya no tiene nada que cerrar.
+**Sólo se retiene lo que se va a liberar solo.** Retener una sesión indefinidamente es el defecto simétrico, y se observó en uso: mientras el humano esperaba una respuesta, el hook devolvía al agente al trabajo tres turnos seguidos porque *alguna* ejecución seguía viva. Retener a un agente en una espera cuyo siguiente movimiento es del humano no lo mantiene atento: le impide contestar. Por eso el hook distingue dos clases de espera:
+
+- **Corta y previsible** — `busy`: otro agente está ejecutando un nodo ahora mismo y el turno se libera al terminarlo. Ahí sí retiene, con un tope propio y bajo (`HRP_HOOK_MAX_PARKS`, por omisión 3) para que un nodo estancado no secuestre la sesión.
+- **Larga o dependiente del humano** — pausa, prerrequisitos de un agente que no está trabajando, auditor pendiente, otra pasada de revisión: deja terminar el turno con un `systemMessage` que nombra la ejecución viva y cómo retomarla. El humano ve que hay algo pendiente sin que el agente quede preso.
+
+La señal, además, nunca ordena lo imposible: no anuncia nodos con dependencias abiertas, ni trabajo ajeno mientras otro nodo está en vuelo, ni el cierre de una ejecución que ya no tiene nada que cerrar.
 
 ## Reconfiguración en caliente
 

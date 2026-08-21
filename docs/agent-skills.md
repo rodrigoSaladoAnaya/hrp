@@ -36,7 +36,7 @@ Notas:
 Desde la raíz de HRP ejecuta:
 
 ```sh
-./scripts/install-codex.sh
+hrp agent install codex     # o 'all' para los tres agentes
 ```
 
 El instalador realiza en orden estas operaciones:
@@ -45,7 +45,10 @@ El instalador realiza en orden estas operaciones:
 2. enlaza el CLI en `~/.local/bin/hrp`;
 3. registra `integrations/codex` como marketplace local `hrp-local` si todavía no existe;
 4. instala `hrp@hrp-local`, cuyo manifiesto declara `./.mcp.json` y el servidor `hrp`;
-5. conserva `hrp` CLI como fallback si MCP no está disponible.
+5. deja el **despertador nativo**: los hooks `Stop` y `SessionStart` que declara `hooks.json` del plugin, para que una tarea de Codex no termine mientras HRP tenga trabajo para ella;
+6. conserva `hrp` CLI como fallback si MCP no está disponible.
+
+`scripts/install-codex.sh` sigue existiendo y hace el mismo trabajo de marketplace, plugin y caché; `hrp agent install codex` es el punto único porque aplica además el contrato común de los tres instaladores (verificación del resultado y limpieza de restos).
 
 No agregues la raíz del repositorio como marketplace: el manifiesto soportado vive en `integrations/codex/.agents/plugins/marketplace.json`. Tampoco copies manualmente `.codex-plugin/plugin.json`.
 
@@ -59,6 +62,13 @@ codex mcp list
 La primera salida debe mostrar `hrp@hrp-local installed, enabled` y la segunda un servidor `hrp` habilitado. Codex resuelve las skills y herramientas al abrir una tarea: después de instalar o actualizar, crea una tarea nueva. Una tarea que ya estaba abierta seguirá usando la versión anterior aunque la caché haya cambiado.
 
 ## Instalar skills y actualizar HRP
+
+```sh
+hrp agent install all           # skill + MCP + despertador nativo de cada agente
+hrp agent status                # qué quedó instalado por modelo
+```
+
+Los comandos de skills siguen disponibles cuando sólo interesa la copia de la skill, sin MCP ni hooks:
 
 ```sh
 hrp skills install all          # instala sólo las skills compatibles
@@ -76,7 +86,7 @@ Cada instalación escribe un recibo `.hrp-install-source` con la ruta de su fuen
 
 `hrp service start` sincroniza las skills instaladas antes de reportar el estado del servicio: cualquier skill con recibo propio cuyo contenido difiera de la fuente se reinstala y se informa en la salida (`Skills sincronizadas con esta versión de HRP: …`). Esa sincronización no reemplaza el plugin cacheado de Codex.
 
-El comando único recomendado es `scripts/update.sh`: compila, reinicia el servicio e instala/actualiza las **tres** skills (incluidas las que aún no estaban instaladas), terminando con el `status`:
+El comando único recomendado es `scripts/update.sh`: compila, reinicia el servicio e instala las integraciones de los **tres** agentes con `hrp agent install all`, terminando con `hrp agent status`:
 
 ```sh
 cd /ruta/a/hrp
@@ -85,8 +95,8 @@ npm install
 ./scripts/update.sh
 ```
 
-`scripts/update.sh` usa `scripts/install-codex.sh`, por lo que también reinstala el plugin.
+`scripts/update.sh` instala con `hrp agent install all`, así que también reinstala el plugin de Codex y su caché.
 
 ## Fuente única de versión
 
-`package.json` es la fuente única de verdad para la versión semántica de HRP que gobierna el CLI (`hrp version`), el servidor MCP (`serverInfo.version`) y los componentes distribuidos. El instalador `scripts/install-codex.sh` sincroniza automáticamente el manifiesto del plugin Codex (`.codex-plugin/plugin.json`), derivando la base semántica desde `package.json` y conservando un único sufijo `+codex.<timestamp>` para invalidar la caché local de Codex sin divergir de la versión canónica del proyecto.
+`package.json` es la fuente única de verdad para la versión semántica de HRP que gobierna el CLI (`hrp version`), el servidor MCP (`serverInfo.version`) y los componentes distribuidos. El instalador de Codex sincroniza automáticamente el manifiesto del plugin (`.codex-plugin/plugin.json`), derivando la base semántica desde `package.json` y conservando un único sufijo `+codex.<timestamp>` para invalidar la caché local de Codex sin divergir de la versión canónica del proyecto.
