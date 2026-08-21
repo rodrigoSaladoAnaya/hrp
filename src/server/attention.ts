@@ -8,7 +8,7 @@ import { auditorIdentity, computeAuditorConsensus, nodeCoverageIsCurrent, type R
 // archivo.
 export const attentionKinds = [
   "findings", "work", "audit", "gate",
-  "paused", "blocked", "busy", "implementation", "auditors", "review-pass",
+  "released", "paused", "blocked", "busy", "implementation", "auditors", "review-pass",
   "stopped", "done", "idle",
 ] as const;
 export type AttentionKind = (typeof attentionKinds)[number];
@@ -44,6 +44,7 @@ const flags: Record<AttentionKind, { actionable: boolean; terminal: boolean; wai
   work: { actionable: true, terminal: false, waiting: false },
   audit: { actionable: true, terminal: false, waiting: false },
   gate: { actionable: true, terminal: false, waiting: false },
+  released: { actionable: false, terminal: true, waiting: false },
   stopped: { actionable: false, terminal: true, waiting: false },
   done: { actionable: false, terminal: true, waiting: false },
   paused: { actionable: false, terminal: false, waiting: true },

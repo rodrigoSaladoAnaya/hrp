@@ -119,6 +119,14 @@ async function attention({ agent, runId, workspace, waitSeconds = 0 }) {
   }
 }
 
+async function releaseAttention({ agent, runId }) {
+  if (!runId) throw new Error("Falta <run-id> para liberar la atención");
+  return api(`/api/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agent)}/attention/release`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 // --- Despertador nativo -------------------------------------------------
 // Los hooks de Claude Code y de Codex comparten esquema: reciben el evento por
 // stdin y responden por stdout. Un hook Stop que devuelve {"decision":"block"}
@@ -445,6 +453,7 @@ Uso:
   hrp node retry <run-id> <node-id> [--agent NOMBRE]
   hrp patch publish <run-id> <node-id> --summary TEXTO [--rationale TEXTO] --diff-file PATH|-
   hrp verify run <run-id> <node-id> -- <comando> [args...]
+  hrp verify tree <run-id>   (comprueba, antes de commitear, que el árbol lo respalda esta ejecución)
   hrp node complete <run-id> <node-id> [--tokens N]
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID] [--agent NOMBRE]
   hrp agent status <run-id> --agent NOMBRE --phase idle|waiting|executing|reviewing|completed|failed --summary TEXTO [--detail TEXTO] [--node ID] [--completed N --total N --reviewed ID,ID --remaining ID,ID]
@@ -467,6 +476,7 @@ Uso:
   hrp state <run-id>
   hrp version
   hrp attention [run-id] [--agent NOMBRE] [--run RUN_ID] [--workspace PATH] [--wait SEGUNDOS]
+  hrp attention release <run-id> --agent NOMBRE
   hrp hook <stop|session-start> --agent NOMBRE   (lee el evento por stdin; lo instalan los agentes)
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
   hrp agent install <claude|codex|antigravity|all>   (skill + MCP + despertador nativo del modelo)
@@ -613,6 +623,56 @@ async function main() {
     process.stdout.write(output);
     if ((result.status ?? 1) !== 0) process.exitCode = result.status ?? 1;
     if (json) print(observed);
+    return;
+  }
+  // La puerta previa al commit. HRP sabe qué archivos respalda un nodo completado
+  // y con qué contenido; git sabe qué se movió en el árbol. Cruzarlos es lo único
+  // que distingue "mi trabajo" de "lo que había ahí cuando hice git add".
+  if (group === "verify" && action === "tree") {
+    if (!first) throw new Error("Uso: hrp verify tree <run-id>");
+    const { files = [] } = await api(`/api/runs/${encodeURIComponent(first)}/attribution`);
+    const { projects = [] } = await api("/api/projects");
+    const owner = projects.find((project) => (project.runs ?? []).some((run) => run.id === first));
+    if (!owner) throw new Error(`No encuentro el proyecto de la ejecución ${first}`);
+    const status = spawnSync("git", ["status", "--porcelain"], { cwd: owner.workspaceRoot, encoding: "utf8", shell: false });
+    if (status.status !== 0) {
+      throw new Error(`git status falló en ${owner.workspaceRoot}: ${(status.stderr ?? "").trim() || "sin salida"}`);
+    }
+    // El porcelain trae dos caracteres de estado y un espacio antes de la ruta;
+    // un renombrado llega como 'viejo -> nuevo' y lo que importa es el destino.
+    const changed = (status.stdout ?? "").split("\n").filter(Boolean)
+      .map((line) => line.slice(3).trim())
+      .map((entry) => entry.includes(" -> ") ? entry.slice(entry.indexOf(" -> ") + 4) : entry)
+      .map((entry) => entry.replace(/^"|"$/g, ""));
+    // Tener nodo no basta: sólo un nodo COMPLETADO cuya huella siga coincidiendo
+    // respalda el contenido que hay en disco. Un nodo a medias deja el archivo
+    // tan inatribuible como si no existiera.
+    const attribution = new Map(files.map((file) => [file.file, file]));
+    const unbacked = changed.filter((file) => !attribution.has(file));
+    const unfinished = changed.filter((file) => attribution.get(file)?.status === "unknown");
+    const drifted = files.filter((file) => file.status === "drifted");
+    const attributable = !unbacked.length && !unfinished.length && !drifted.length;
+    if (json) {
+      // El código de salida es la señal que consume un script previo al commit;
+      // pedir --json no puede convertir un árbol sucio en una salida exitosa.
+      if (!attributable) process.exitCode = 1;
+      return print({ runId: first, workspaceRoot: owner.workspaceRoot, attributable, changed, unbacked, unfinished, drifted });
+    }
+    if (attributable) {
+      return print(`Árbol atribuible: los ${changed.length} ${changed.length === 1 ? "archivo modificado lo respalda" : "archivos modificados los respalda"} un nodo completado de esta ejecución.`);
+    }
+
+    print("El árbol NO es atribuible a esta ejecución; revísalo antes de commitear:");
+    for (const file of unbacked) {
+      print(`  sin nodo   ${file} — modificado en el árbol y ningún nodo de esta ejecución lo cubre`);
+    }
+    for (const file of unfinished) {
+      print(`  sin huella ${file} — nada respalda lo que hay en disco: su nodo no ha completado, o completó contra un servicio anterior a 'published_hash'`);
+    }
+    for (const file of drifted) {
+      print(`  cambió     ${file.file} — se movió después de que ${file.nodeId ?? "su nodo"} publicó su diff; el diff revisado ya no lo describe`);
+    }
+    process.exitCode = 1;
     return;
   }
   if (group === "activity" && action === "publish") {
@@ -763,6 +823,12 @@ async function main() {
   if (group === "attention") {
     const agent = value("--agent", process.env.HRP_AGENT);
     if (!agent) throw new Error("Falta --agent NOMBRE (o la variable HRP_AGENT): la señal de HRP siempre es para un agente concreto");
+    if (action === "release") {
+      const state = await releaseAttention({ agent, runId: first });
+      if (json) print(state);
+      else print(`Atención liberada para ${agent} en ${first}.`);
+      return;
+    }
     const signal = await attention({
       agent,
       runId: value("--run") ?? (action && action !== "wait" ? action : undefined),

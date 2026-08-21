@@ -9,6 +9,6 @@ export function agentAttentionCommand(agent: string, workspaceRoot?: string): st
   return `hrp attention --agent ${shellArgument(agent)}${workspace} --wait 1800`;
 }
 
-export function agentAttentionReleaseInstruction(agent: string): string {
-  return `Presiona Ctrl+C en la terminal donde ${agent} esta ejecutando hrp attention para dejar de esperar HRP.`;
+export function agentAttentionReleaseCommand(runId: string, agent: string): string {
+  return `hrp attention release ${shellArgument(runId)} --agent ${shellArgument(agent)}`;
 }

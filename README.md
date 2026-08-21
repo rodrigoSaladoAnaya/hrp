@@ -95,9 +95,11 @@ hrp node discover|approve|assign|start|complete
 hrp node retry <run-id> <node-id>
 hrp patch publish
 hrp verify run
+hrp verify tree <run-id>
 hrp activity publish
 hrp state <run-id>
 hrp attention --agent <nombre> --wait 600
+hrp attention release <run-id> --agent <nombre>
 hrp agent install <claude|codex|antigravity|all>
 hrp agent status
 ```

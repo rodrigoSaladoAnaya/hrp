@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -39,6 +39,12 @@ type Row = Record<string, unknown>;
 export type AgentStateInput =
   Omit<AgentWorkState, "updatedAt" | "completed" | "total" | "reviewedNodeIds" | "remainingNodeIds">
   & Partial<Pick<AgentWorkState, "completed" | "total" | "reviewedNodeIds" | "remainingNodeIds">>;
+
+export type AttentionRelease = {
+  runId: string;
+  agent: string;
+  createdAt: string;
+};
 
 function now(): string {
   return new Date().toISOString();
@@ -96,6 +102,20 @@ function agentStateFromRow(row: Row): AgentWorkState {
     startedAt: row.started_at ? String(row.started_at) : undefined,
     updatedAt: String(row.updated_at),
   };
+}
+
+// El estado de un archivo del run frente al disco. 'attributed': el contenido
+// sigue siendo el que su nodo publicó. 'drifted': cambió después. 'unknown': no
+// hay huella con la que comparar, porque el archivo no existe o ningún nodo
+// suyo ha completado todavía.
+export type AttributionStatus = "attributed" | "drifted" | "unknown";
+
+export interface FileAttribution {
+  file: string;
+  nodeId?: string;
+  status: AttributionStatus;
+  publishedHash?: string;
+  currentHash?: string;
 }
 
 export class HrpStore {
@@ -200,6 +220,12 @@ export class HrpStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY (finding_id, agent)
       );
+      CREATE TABLE IF NOT EXISTS attention_releases (
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        agent TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, agent)
+      );
       CREATE INDEX IF NOT EXISTS runs_project_updated ON runs(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS activity_run_id ON activity(run_id, id DESC);
       CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id, created_at);
@@ -254,6 +280,23 @@ export class HrpStore {
     }
     if (!nodeColumns.some((column) => String(column.name) === "tokens")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN tokens INTEGER");
+    }
+    // Huellas del archivo del nodo: baseline_hash es lo que había cuando el
+    // agente arrancó, published_hash lo que había cuando publicó su diff. Con
+    // las dos se distingue lo que cambió el nodo de lo que cambió otra sesión
+    // editando el mismo archivo al mismo tiempo. Los nodos anteriores quedan en
+    // NULL, que es la forma de decir "de este no hay huella".
+    if (!nodeColumns.some((column) => String(column.name) === "baseline_hash")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN baseline_hash TEXT");
+    }
+    if (!nodeColumns.some((column) => String(column.name) === "published_hash")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN published_hash TEXT");
+    }
+    // La huella prueba que el archivo cambió; el texto anterior es lo único que
+    // permite comparar en qué cambió contra lo que el diff declara. Pesa lo
+    // mismo, en orden de magnitud, que el diff que ya se guarda por nodo.
+    if (!nodeColumns.some((column) => String(column.name) === "baseline_content")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN baseline_content TEXT");
     }
     if (!nodeColumns.some((column) => String(column.name) === "executed_by")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN executed_by TEXT");
@@ -368,6 +411,31 @@ export class HrpStore {
     return (this.database.prepare("SELECT * FROM projects ORDER BY last_opened_at DESC").all() as Row[]).map(projectFromRow);
   }
 
+  // La huella se calcula sobre el archivo real del workspace, no sobre el diff:
+  // el diff es lo que el agente dice haber hecho y el archivo es lo que de
+  // verdad hay en disco. Devuelve undefined cuando no hay archivo que medir
+  // —un nodo que crea un archivo nuevo, o un workspace que ya no existe—
+  // porque la ausencia de huella no es un error, es "todavía no hay nada".
+  private readWorkspaceFile(runId: string, file: string): string | undefined {
+    const run = this.getRun(runId);
+    const project = run ? this.getProject(run.projectId) : undefined;
+    if (!project) return undefined;
+    const resolved = path.resolve(project.workspaceRoot, file);
+    // Un 'file' con .. sacaría la lectura fuera del workspace observado.
+    if (resolved !== project.workspaceRoot && !resolved.startsWith(project.workspaceRoot + path.sep)) return undefined;
+    try {
+      if (!existsSync(resolved) || !statSync(resolved).isFile()) return undefined;
+      return readFileSync(resolved, "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+
+  private hashWorkspaceFile(runId: string, file: string): string | undefined {
+    const content = this.readWorkspaceFile(runId, file);
+    return content === undefined ? undefined : createHash("sha256").update(content).digest("hex");
+  }
+
   getProject(id: string): Project | undefined {
     const row = this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Row | undefined;
     return row ? projectFromRow(row) : undefined;
@@ -433,15 +501,38 @@ export class HrpStore {
     if (approved && run.control !== "paused") {
       throw new Error("Auditors are locked while the execution runs; pause it with 'hrp run pause' to reconfigure them");
     }
+    // La pausa habilita reemplazar auditores agotados, no quedarse sin ninguno.
+    // approveNodes exige al menos uno para dejar arrancar el grafo; si la
+    // reconfiguración pudiera vaciar la lista, auditMajority(0) daría cero votos
+    // requeridos y 'hrp review gate' declararía revisión limpia sobre una
+    // ejecución que nadie revisó. La garantía se sostiene o no se sostiene.
+    if (approved && normalized.length === 0) {
+      throw new Error("A run with approved nodes cannot be left without auditors; replace them instead of removing the last one");
+    }
     const reconfiguring = Boolean(approved);
     const timestamp = now();
+    const previousDetail = this.getRunDetail(runId)!;
     this.database.prepare("UPDATE runs SET auditors_json = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(normalized), timestamp, runId);
     for (const removed of run.auditors.filter((agent) => !normalized.includes(agent))) {
-      this.database.prepare("DELETE FROM agent_states WHERE run_id = ? AND agent = ? AND summary = 'Seleccionado para auditar'")
-        .run(runId, removed);
+      const previous = previousDetail.agentStates.find((state) => state.agent === removed);
+      if (!previous || previous.summary === "Seleccionado para auditar") {
+        this.database.prepare("DELETE FROM agent_states WHERE run_id = ? AND agent = ? AND summary = 'Seleccionado para auditar'")
+          .run(runId, removed);
+      } else {
+        this.setAgentState(runId, {
+          agent: removed,
+          phase: "waiting",
+          summary: "Retirado de auditoría por el humano",
+          detail: "La ejecución estaba pausada al reconfigurar auditores; no cierres una auditoría con la lista anterior.",
+          completed: previous.completed,
+          total: previous.total,
+          reviewedNodeIds: previous.reviewedNodeIds,
+          remainingNodeIds: previous.remainingNodeIds,
+        });
+      }
     }
-    const nodeIds = this.getRunDetail(runId)!.nodes.map((node) => node.id);
+    const nodeIds = previousDetail.nodes.map((node) => node.id);
     // Sólo se anuncia a los auditores nuevos. Reinicializar a los que ya
     // estaban borraría la cobertura real de quien lleva media auditoría hecha,
     // que es justo el caso al retirar a un compañero a mitad de la ejecución.
@@ -484,6 +575,11 @@ export class HrpStore {
       total: state.total ?? previous?.total ?? 0,
       reviewedNodeIds: state.reviewedNodeIds ?? previous?.reviewedNodeIds ?? [],
       remainingNodeIds: state.remainingNodeIds ?? previous?.remainingNodeIds ?? [],
+      // startedAt es el reloj contra el que auditorVoteIsCurrent decide si una
+      // pasada sigue vigente. Escribirlo sin fusionar dejaba que cualquier
+      // llamada del ciclo de implementación lo pusiera en NULL, y entonces el
+      // voto caía en updatedAt = ahora y revalidaba cobertura vieja sola.
+      startedAt: state.startedAt ?? previous?.startedAt,
     };
     if (merged.completed > merged.total) throw new Error("Agent progress cannot exceed its total");
     const validNodeIds = new Set(detail.nodes.map((node) => node.id));
@@ -626,6 +722,7 @@ export class HrpStore {
   helloAgent(runId: string, agent: string): RunSummary {
     if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
     this.registerAgent(runId, agent);
+    this.clearAttentionRelease(runId, agent);
     const existing = this.database.prepare("SELECT 1 FROM agent_states WHERE run_id = ? AND agent = ?").get(runId, agent);
     if (!existing) {
       const assigned = this.nodesForAgent(runId, agent);
@@ -641,6 +738,29 @@ export class HrpStore {
       });
     }
     return this.getRun(runId)!;
+  }
+
+  releaseAttention(runId: string, agent: string): AttentionRelease {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    this.registerAgent(runId, agent);
+    this.addActivity(runId, "note", `Atención liberada para ${agent}`, "El comando hrp attention release despierta cualquier espera activa de ese agente en esta ejecución.", undefined, agent);
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO attention_releases (run_id, agent, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(run_id, agent) DO UPDATE SET created_at = excluded.created_at
+    `).run(runId, agent, timestamp);
+    return { runId, agent, createdAt: timestamp };
+  }
+
+  getAttentionRelease(runId: string, agent: string): AttentionRelease | undefined {
+    const row = this.database.prepare("SELECT * FROM attention_releases WHERE run_id = ? AND agent = ?").get(runId, agent) as Row | undefined;
+    return row ? { runId: String(row.run_id), agent: String(row.agent), createdAt: String(row.created_at) } : undefined;
+  }
+
+  clearAttentionRelease(runId: string, agent: string): void {
+    this.database.prepare("DELETE FROM attention_releases WHERE run_id = ? AND agent = ?").run(runId, agent);
   }
 
   approveNodes(runId: string, nodeIds?: string[]): ChangeNode[] {
@@ -667,7 +787,8 @@ export class HrpStore {
   assignNode(runId: string, nodeId: string, assignee: string | null): ChangeNode {
     const node = this.requireNode(runId, nodeId);
     if (node.status === "completed") throw new Error("Completed nodes cannot be reassigned");
-    const paused = this.getRun(runId)?.control === "paused";
+    const run = this.getRun(runId);
+    const paused = run?.control === "paused";
     // Un agente que se queda sin presupuesto deja su nodo en vuelo y bloquea la
     // ejecución entera, porque sólo puede haber uno a la vez. Con la ejecución
     // pausada el humano puede recuperarlo: el nodo vuelve a 'pending' y pierde
@@ -683,6 +804,34 @@ export class HrpStore {
     if (recovering) {
       this.database.prepare("UPDATE nodes SET status = 'pending', executed_by = NULL, updated_at = ? WHERE run_id = ? AND id = ?")
         .run(timestamp, runId, nodeId);
+      const previousAgent = node.executedBy ?? node.assignee;
+      if (previousAgent) {
+        // El estado de un agente es uno solo para sus dos papeles. Recuperarle
+        // un nodo propio actualiza lo que ejecuta, pero no puede tocar lo que
+        // audita: reviewedNodeIds y un voto ya emitido son trabajo publicado
+        // sobre nodos ajenos, y startedAt es el reloj contra el que ese voto se
+        // declara vigente. Borrarlos aquí obligaría al auditor a rehacer una
+        // pasada que sigue siendo válida.
+        const previousState = this.getRunDetail(runId)?.agentStates.find((state) => state.agent === previousAgent);
+        const assigned = this.nodesForAgent(runId, previousAgent);
+        const reviewed = previousState?.reviewedNodeIds ?? [];
+        const alreadyReviewed = new Set(reviewed);
+        const keepsVote = Boolean(run?.auditors.includes(previousAgent)) && previousState?.phase === "completed";
+        this.setAgentState(runId, {
+          agent: previousAgent,
+          phase: keepsVote ? "completed" : "waiting",
+          summary: `Nodo recuperado por el humano: ${node.file} · ${node.symbol}`,
+          detail: "La ejecución estaba pausada; relee el estado antes de retomar porque el nodo en curso pudo cambiar de dueño.",
+          completed: assigned.filter((candidate) => candidate.status === "completed").length,
+          total: assigned.length,
+          reviewedNodeIds: reviewed,
+          // El almacén prohíbe que un nodo esté a la vez revisado y pendiente.
+          remainingNodeIds: assigned
+            .filter((candidate) => candidate.status !== "completed" && !alreadyReviewed.has(candidate.id))
+            .map((candidate) => candidate.id),
+          startedAt: previousState?.startedAt,
+        });
+      }
     }
     this.touchRun(runId, timestamp);
     this.addActivity(runId, "node", normalized
@@ -727,6 +876,26 @@ export class HrpStore {
     const inFlight = this.database.prepare("SELECT id FROM nodes WHERE run_id = ? AND status = 'running' AND id != ?").get(runId, nodeId) as Row | undefined;
     if (inFlight) throw new Error(`Another node is already running: ${String(inFlight.id)}. The workspace executes one node at a time`);
     this.updateNodeStatus(runId, nodeId, "running");
+    // El arranque es el único instante en que HRP sabe qué contenía el archivo
+    // antes de que el agente lo tocara. Sin esa foto no hay forma posterior de
+    // separar lo que hizo este nodo de lo que hizo otra sesión en paralelo.
+    const baselineContent = this.readWorkspaceFile(runId, node.file);
+    const baseline = baselineContent === undefined
+      ? undefined
+      : createHash("sha256").update(baselineContent).digest("hex");
+    this.database.prepare("UPDATE nodes SET baseline_hash = ?, baseline_content = ? WHERE run_id = ? AND id = ?")
+      .run(baseline ?? null, baselineContent ?? null, runId, nodeId);
+    const lastPublished = this.database.prepare(`
+      SELECT id, published_hash FROM nodes
+      WHERE run_id = ? AND file = ? AND id != ? AND published_hash IS NOT NULL
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(runId, node.file, nodeId) as Row | undefined;
+    if (baseline && lastPublished && String(lastPublished.published_hash) !== baseline) {
+      this.addActivity(runId, "note",
+        `El archivo cambió fuera de HRP antes de este nodo: ${node.file}`,
+        `El último nodo del run que publicó sobre este archivo (${String(lastPublished.id)}) lo dejó con otro contenido. Alguien lo editó entre aquella publicación y este arranque, así que el diff que publiques aquí no describirá todo lo que hay en el archivo.`,
+        nodeId, agent ?? node.assignee ?? run.baseAgent);
+    }
     if (agent) {
       this.registerAgent(runId, agent);
       this.database.prepare("UPDATE nodes SET executed_by = ? WHERE run_id = ? AND id = ?").run(agent, runId, nodeId);
@@ -747,6 +916,51 @@ export class HrpStore {
     const effectiveAgent = agent ?? node.assignee ?? run.baseAgent;
     this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId, effectiveAgent);
     return this.requireNode(runId, nodeId);
+  }
+
+  // Compara el cambio real del archivo (base guardada al arrancar contra lo que
+  // hay ahora) con el que el diff declara. Trabaja con multiconjuntos de líneas
+  // en vez de aplicar el parche: si el archivo ganó o perdió líneas que el diff
+  // no menciona, alguien más lo editó mientras este nodo estaba en curso.
+  // Devuelve undefined cuando no hay nada que reprochar o nada con qué comparar.
+  private undeclaredChange(runId: string, nodeId: string, diff: string, current: string | undefined): string | undefined {
+    if (current === undefined) return undefined;
+    const row = this.database.prepare("SELECT baseline_content FROM nodes WHERE run_id = ? AND id = ?")
+      .get(runId, nodeId) as Row | undefined;
+    if (!row || row.baseline_content === null || row.baseline_content === undefined) return undefined;
+    const tally = (lines: string[]): Map<string, number> => {
+      const counts = new Map<string, number>();
+      for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
+      return counts;
+    };
+    const surplus = (left: Map<string, number>, right: Map<string, number>): string[] => {
+      const extra: string[] = [];
+      for (const [line, count] of left) {
+        const spare = count - (right.get(line) ?? 0);
+        for (let index = 0; index < spare; index += 1) extra.push(line);
+      }
+      return extra;
+    };
+    const baselineLines = tally(String(row.baseline_content).split("\n"));
+    const currentLines = tally(current.split("\n"));
+    const realAdded = tally(surplus(currentLines, baselineLines));
+    const realRemoved = tally(surplus(baselineLines, currentLines));
+    const declaredAdded = tally(diff.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).map((line) => line.slice(1)));
+    const declaredRemoved = tally(diff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).map((line) => line.slice(1)));
+    const addedGap = surplus(realAdded, declaredAdded);
+    const removedGap = surplus(realRemoved, declaredRemoved);
+    if (!addedGap.length && !removedGap.length) return undefined;
+    const sample = (lines: string[], mark: string) => lines
+      .filter((line) => line.trim())
+      .slice(0, 3)
+      .map((line) => `${mark} ${line.trim().slice(0, 120)}`);
+    const detail = [
+      `El diff publicado no explica todo el cambio del archivo: ${addedGap.length} ${addedGap.length === 1 ? "línea añadida" : "líneas añadidas"} y ${removedGap.length} ${removedGap.length === 1 ? "línea eliminada" : "líneas eliminadas"} sin declarar.`,
+      "Lo más probable es que otra sesión esté editando el mismo archivo. El diff sigue siendo evidencia válida de lo que hizo este nodo, pero no describe el archivo completo, y un commit por nombre de archivo se llevaría también lo ajeno.",
+      ...sample(addedGap, "sin declarar +"),
+      ...sample(removedGap, "sin declarar -"),
+    ].join("\n");
+    return detail;
   }
 
   publishPatch(runId: string, nodeId: string, summary: string, diff: string, rationale?: string): ChangeNode {
@@ -771,12 +985,56 @@ export class HrpStore {
       throw new Error(`Diff mixes files that belong to other operations: ${[...foreignFiles].join(", ")}. Publish them as their own nodes or discover them`);
     }
     const timestamp = now();
-    this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, patch_rationale = ?, updated_at = ? WHERE run_id = ? AND id = ?")
-      .run(diff, summary, rationale?.trim() || null, timestamp, runId, nodeId);
+    const current = this.readWorkspaceFile(runId, node.file);
+    const publishedHash = current === undefined
+      ? undefined
+      : createHash("sha256").update(current).digest("hex");
+    this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, patch_rationale = ?, published_hash = ?, updated_at = ? WHERE run_id = ? AND id = ?")
+      .run(diff, summary, rationale?.trim() || null, publishedHash ?? null, timestamp, runId, nodeId);
     this.touchRun(runId, timestamp);
     const nodeAgent = node.executedBy ?? node.assignee ?? this.getRun(runId)?.baseAgent;
     this.addActivity(runId, "patch", `Diff aplicado: ${node.file} · ${node.symbol}`, summary, nodeId, nodeAgent);
+    const undeclared = this.undeclaredChange(runId, nodeId, diff, current);
+    if (undeclared) {
+      // Aviso, no rechazo. El trabajo concurrente legítimo existe, y bloquear la
+      // publicación dejaría al agente sin poder registrar la evidencia de lo que
+      // sí hizo. Lo que no puede pasar es que nadie se entere.
+      this.addActivity(runId, "note",
+        `El archivo cambió más de lo que declara este diff: ${node.file}`,
+        undeclared, nodeId, nodeAgent);
+    }
     return this.requireNode(runId, nodeId);
+  }
+
+  // Qué del árbol observado está respaldado por evidencia y qué no. No ejecuta
+  // git: compara la huella que dejó el último nodo completado de cada archivo
+  // contra lo que hay en disco ahora. 'drifted' es el caso que importa —el
+  // archivo se movió después de que su nodo publicó, así que el diff revisado
+  // ya no lo describe— y es justo lo que un commit por nombre se llevaría.
+  workspaceAttribution(runId: string): FileAttribution[] {
+    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    const rows = this.database.prepare("SELECT id, file, status, published_hash FROM nodes WHERE run_id = ? ORDER BY updated_at")
+      .all(runId) as Row[];
+    const lastCompleted = new Map<string, Row>();
+    for (const row of rows) {
+      // El ORDER BY deja ganar al más reciente de cada archivo.
+      if (String(row.status) === "completed") lastCompleted.set(String(row.file), row);
+    }
+    return [...new Set(rows.map((row) => String(row.file)))].sort().map((file) => {
+      const last = lastCompleted.get(file);
+      const nodeId = last ? String(last.id) : undefined;
+      const currentHash = this.hashWorkspaceFile(runId, file);
+      if (currentHash === undefined) return { file, nodeId, status: "unknown" as const };
+      const publishedHash = last?.published_hash == null ? undefined : String(last.published_hash);
+      if (!publishedHash) return { file, nodeId, status: "unknown" as const, currentHash };
+      return {
+        file,
+        nodeId,
+        status: publishedHash === currentHash ? ("attributed" as const) : ("drifted" as const),
+        publishedHash,
+        currentHash,
+      };
+    });
   }
 
   publishVerification(runId: string, nodeId: string, verification: Omit<Verification, "passed" | "observedAt">): ChangeNode {
@@ -821,14 +1079,27 @@ export class HrpStore {
     if (node.executedBy) {
       const assigned = this.nodesForAgent(runId, node.executedBy);
       const completed = assigned.filter((candidate) => candidate.status === "completed").length;
-      const remaining = assigned.filter((candidate) => candidate.status !== "completed").map((candidate) => candidate.id);
+      const previousState = this.getRunDetail(runId)?.agentStates.find((state) => state.agent === node.executedBy);
+      const reviewed = previousState?.reviewedNodeIds ?? [];
+      const alreadyReviewed = new Set(reviewed);
+      const remaining = assigned
+        .filter((candidate) => candidate.status !== "completed" && !alreadyReviewed.has(candidate.id))
+        .map((candidate) => candidate.id);
+      // Terminar de implementar no es haber auditado. Para un agente que
+      // también está en run.auditors, escribir 'completed' aquí equivalía a un
+      // voto: auditorVoteIsCurrent solo mira la fase y el reloj, y esta ruta no
+      // pasa por la validación de cobertura de /api/runs/:id/agents/:agent/status.
+      // El voto tiene que venir de una pasada declarada, no de un efecto lateral.
+      const audits = Boolean(this.getRun(runId)?.auditors.includes(node.executedBy));
       this.setAgentState(runId, {
         agent: node.executedBy,
-        phase: remaining.length ? "waiting" : "completed",
-        summary: remaining.length ? `Esperando la siguiente operación · ${remaining.length} pendiente${remaining.length === 1 ? "" : "s"}` : "Implementación asignada terminada",
+        phase: remaining.length || audits ? "waiting" : "completed",
+        summary: remaining.length
+          ? `Esperando la siguiente operación · ${remaining.length} pendiente${remaining.length === 1 ? "" : "s"}`
+          : audits ? "Implementación asignada terminada; falta declarar la pasada de auditoría" : "Implementación asignada terminada",
         completed,
         total: assigned.length,
-        reviewedNodeIds: [],
+        reviewedNodeIds: reviewed,
         remainingNodeIds: remaining,
       });
     }

@@ -1,5 +1,9 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { attentionKinds, attentionRank, auditableNodes, computeAttention } from "./attention.js";
+import { HrpStore } from "./store.js";
 import type { ChangeNode, Finding, RunDetail, RunSummary } from "../shared/protocol.js";
 
 // El resolutor decide cuándo se molesta a un agente y cuándo se le deja en paz.
@@ -444,6 +448,79 @@ describe("computeAttention", () => {
     expect(detenida.actionable).toBe(false);
   });
 
+  // La recuperación no se simula: se ejecuta contra HrpStore y se le pregunta a
+  // computeAttention sobre el RunDetail resultante. Así la prueba cubre la
+  // integración recuperación -> estado -> señal, que es donde puede romperse.
+  it("despierta al nuevo dueño de un nodo recuperado sólo después de reanudar", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "hrp-attention-"));
+    try {
+      const workspace = path.join(root, "workspace");
+      mkdirSync(workspace);
+      const store = new HrpStore(path.join(root, "data"));
+      const project = store.attachProject(workspace);
+      const run = store.createRun(project.id, "Recuperación", "Recuperar un nodo en curso");
+      store.setRunAuditors(run.id, ["antigravity"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "uno", file: "A.ts", symbol: "A.method", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+      ] }, "codex");
+      store.approveNodes(run.id);
+      store.startNode(run.id, "uno", "codex");
+      store.setRunControl(run.id, "paused");
+      store.assignNode(run.id, "uno", "claude");
+
+      const paused = computeAttention(store.getRunDetail(run.id)!, "claude");
+      expect(paused.kind).toBe("paused");
+      expect(paused.actionable).toBe(false);
+
+      store.setRunControl(run.id, "active");
+      const resumed = store.getRunDetail(run.id)!;
+
+      const previousOwner = computeAttention(resumed, "codex");
+      expect(previousOwner.actionable).toBe(false);
+      expect(previousOwner.directive).not.toContain("uno");
+
+      const newOwner = computeAttention(resumed, "claude");
+      expect(newOwner.kind).toBe("work");
+      expect(newOwner.actionable).toBe(true);
+      expect(newOwner.directive).toBe("Aprobado: 1 nodo disponible (uno)");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tras reemplazar un auditor sólo el auditor vigente recibe la pasada", () => {
+    const nodes = [node({ id: "uno", status: "completed", executedBy: "codex" })];
+    const agentStates = [{
+      agent: "claude",
+      phase: "waiting" as const,
+      summary: "Retirado de auditoría por el humano",
+      completed: 1,
+      total: 1,
+      reviewedNodeIds: ["uno"],
+      remainingNodeIds: [],
+      updatedAt: timestamp,
+    }];
+
+    const removed = computeAttention(detail({
+      nodes,
+      run: { auditors: ["antigravity"], baseAgent: "codex" },
+      agentStates,
+    }), "claude");
+    expect(removed.kind).toBe("done");
+    expect(removed.actionable).toBe(false);
+
+    const replacement = computeAttention(detail({
+      nodes,
+      run: { auditors: ["antigravity"], baseAgent: "codex" },
+      agentStates,
+    }), "antigravity");
+    expect(replacement.kind).toBe("audit");
+    // La cobertura arranca vacía para el reemplazo y el nodo ajeno le queda
+    // pendiente: eso es lo que se afirma, no que el texto lleve cierto id.
+    expect(replacement.directive).toContain("--completed 0 --total 1");
+    expect(replacement.directive).toContain("--remaining uno");
+  });
+
   it("con un nodo ajeno en vuelo pide esperar, porque el workspace ejecuta uno a la vez", () => {
     const signal = computeAttention(detail({
       nodes: [
@@ -498,6 +575,8 @@ describe("attentionRank", () => {
   it("ordena las señales accionables antes que las de espera y el cierre al final", () => {
     expect(attentionRank("findings")).toBeLessThan(attentionRank("work"));
     expect(attentionRank("work")).toBeLessThan(attentionRank("blocked"));
+    expect(attentionRank("gate")).toBeLessThan(attentionRank("released"));
+    expect(attentionRank("released")).toBeLessThan(attentionRank("stopped"));
     expect(attentionRank("blocked")).toBeLessThan(attentionRank("busy"));
     expect(attentionRank("busy")).toBeLessThan(attentionRank("stopped"));
     expect(attentionRank("stopped")).toBeLessThan(attentionRank("idle"));

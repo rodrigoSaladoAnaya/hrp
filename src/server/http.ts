@@ -100,10 +100,14 @@ export function createApp(store: HrpStore) {
     return run.projectId;
   };
 
+  // El pid viaja en health porque es la única identidad del demonio que el CLI
+  // puede obtener sin haberlo arrancado él: sin esto, un servicio cuyo pidfile
+  // se perdió queda fuera del alcance de 'hrp service stop'.
   app.get("/api/health", (_request, response) => response.json({
     ok: true,
     product: "hrp",
     protocolVersion: PROTOCOL_VERSION,
+    pid: process.pid,
     ...readBuildIdentity(),
   }));
 
@@ -254,6 +258,15 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  app.post("/api/runs/:runId/agents/:agent/attention/release", (request, response, next) => {
+    try {
+      const state = store.releaseAttention(request.params.runId, request.params.agent);
+      const run = store.getRun(request.params.runId)!;
+      broadcast(run.projectId, run.id, "attention-released");
+      response.json(state);
+    } catch (error) { next(error); }
+  });
+
   app.put("/api/runs/:runId/auditors", (request, response, next) => {
     try {
       const input = z.object({ auditors: z.array(z.string().trim().min(1)).max(16) }).strict().parse(request.body);
@@ -345,6 +358,11 @@ export function createApp(store: HrpStore) {
     try {
       const input = z.object({ assignee: z.string().min(1).nullable() }).strict().parse(request.body);
       const node = store.assignNode(request.params.runId, request.params.nodeId, input.assignee);
+      // Una sola señal basta: ni el long-poll de /api/attention ni el cliente
+      // de /api/events miran el tipo del evento —el primero reevalúa con
+      // cualquier cambio y el segundo sólo distingue 'run-created'—, así que
+      // distinguir la recuperación aquí no cambiaba comportamiento y costaba un
+      // getRunDetail completo (nodos, actividad y hallazgos) en cada asignación.
       broadcast(projectForRun(request.params.runId), request.params.runId, "node-assigned");
       response.json(node);
     } catch (error) { next(error); }
@@ -512,6 +530,14 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  // Lectura pura: qué del árbol observado respalda un nodo completado y qué se
+  // movió después. No emite broadcast porque no cambia nada.
+  app.get("/api/runs/:runId/attribution", (request, response, next) => {
+    try {
+      response.json({ files: store.workspaceAttribution(request.params.runId) });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/runs/:runId/review-gate", (request, response, next) => {
     try {
       response.json({
@@ -543,6 +569,10 @@ export function createApp(store: HrpStore) {
       return projects.flatMap((project) => store.listRuns(project.id).map((run) => run.id));
     };
 
+    if (waitMs > 0) {
+      for (const id of scopedRunIds()) store.clearAttentionRelease(id, agent);
+    }
+
     // Sin un run explícito solo cuentan las ejecuciones donde ese agente
     // participa: ser base, auditor, tener nodos asignados o haber aparecido.
     const involves = (detail: RunDetail): boolean => runId !== undefined
@@ -555,7 +585,20 @@ export function createApp(store: HrpStore) {
       const runs = scopedRunIds()
         .map((candidate) => store.getRunDetail(candidate))
         .filter((detail): detail is RunDetail => Boolean(detail) && involves(detail!))
-        .map((detail) => computeAttention(detail, agent))
+        .map((detail) => {
+          const signal = computeAttention(detail, agent);
+          const release = store.getAttentionRelease(detail.run.id, agent);
+          return release && release.createdAt >= detail.run.updatedAt
+            ? {
+                ...signal,
+                kind: "released" as const,
+                actionable: false,
+                terminal: true,
+                waiting: false,
+                directive: `Atención liberada para ${agent} en ${detail.run.title}; deja de esperar HRP hasta reactivar con 'hrp attention --agent ${agent} --run ${detail.run.id} --wait 600'.`,
+              }
+            : signal;
+        })
         .sort((left, right) => attentionRank(left.kind) - attentionRank(right.kind));
       return { best: runs[0], runs };
     };

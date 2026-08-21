@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,9 +60,139 @@ describe("HrpStore", () => {
     store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
     store.publishVerification(run.id, "change", { command: "npm test", output: "ok", exitCode: 0 });
     store.completeNode(run.id, "change");
+    // La fixture elige a codex como auditor, así que terminar de implementar no
+    // puede dejarlo en 'completed': esa fase cuenta como voto de auditoría y
+    // aquí no ha revisado nada. El voto se declara aparte, con cobertura.
+    expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex")).toMatchObject({
+      phase: "waiting", completed: 1, total: 1, remainingNodeIds: [],
+    });
+  });
+
+  it("closes an implementer that does not audit in the completed phase", () => {
+    const { store, run } = fixture();
+    store.setRunAuditors(run.id, ["claude"]);
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+    store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
+    store.publishVerification(run.id, "change", { command: "npm test", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "change");
     expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex")).toMatchObject({
       phase: "completed", completed: 1, total: 1, remainingNodeIds: [],
     });
+  });
+
+  it("keeps startedAt when a later status omits it", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.setAgentState(run.id, {
+      agent: "codex",
+      phase: "reviewing",
+      summary: "Auditando",
+      completed: 0,
+      total: 1,
+      reviewedNodeIds: [],
+      remainingNodeIds: ["change"],
+      startedAt: "2026-08-21T00:30:00.000Z",
+    });
+    store.setAgentState(run.id, { agent: "codex", phase: "waiting", summary: "En espera" });
+    expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex")).toMatchObject({
+      startedAt: "2026-08-21T00:30:00.000Z",
+      reviewedNodeIds: [],
+      remainingNodeIds: ["change"],
+    });
+  });
+
+  // Estas pruebas escriben archivos de verdad en el workspace temporal: toda la
+  // detección compara huellas contra el disco, así que simularla no probaría nada.
+  const workspaceOf = (store: HrpStore, projectId: string) => store.getProject(projectId)!.workspaceRoot;
+
+  it("warns when the file changed beyond what the published diff declares", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\n");
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+    // El nodo añade 'mia'; otra sesión añade 'ajena' en el mismo archivo.
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\nmia\najena\n");
+    store.publishPatch(run.id, "change", "Añade mia", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n dos\n+mia\n");
+
+    const warning = store.getRunDetail(run.id)?.activity
+      .find((event) => event.type === "note" && event.message.includes("más de lo que declara"));
+    expect(warning).toBeDefined();
+    expect(warning?.detail).toContain("ajena");
+    expect(warning?.detail).not.toContain("sin declarar + mia");
+  });
+
+  it("does not warn when the diff explains the whole change", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\n");
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\nmia\n");
+    store.publishPatch(run.id, "change", "Añade mia", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n dos\n+mia\n");
+
+    expect(store.getRunDetail(run.id)?.activity.some((event) => event.type === "note")).toBe(false);
+  });
+
+  it("warns when the file moved between one node and the next on the same file", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    writeFileSync(path.join(workspace, "A.ts"), "uno\n");
+    store.publishGraph(run.id, { nodes: [
+      { id: "primero", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "segundo", file: "A.ts", symbol: "A.dos", title: "Dos", description: "Work", rationale: "Required", dependencies: ["primero"] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "primero", "codex");
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\n");
+    store.publishPatch(run.id, "primero", "Añade dos", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n+dos\n");
+    store.publishVerification(run.id, "primero", { command: "npm test", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "primero");
+
+    // Entre un nodo y el siguiente, alguien más toca el archivo.
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\najena\n");
+    store.startNode(run.id, "segundo", "codex");
+
+    const warning = store.getRunDetail(run.id)?.activity
+      .find((event) => event.type === "note" && event.message.includes("fuera de HRP antes de este nodo"));
+    expect(warning).toBeDefined();
+    expect(warning?.detail).toContain("primero");
+  });
+
+  it("reports each file as attributed, drifted or unknown", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    writeFileSync(path.join(workspace, "A.ts"), "uno\n");
+    store.publishGraph(run.id, { nodes: [
+      { id: "hecho", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "sinhacer", file: "B.ts", symbol: "B.uno", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "hecho", "codex");
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\n");
+    store.publishPatch(run.id, "hecho", "Añade dos", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n+dos\n");
+    store.publishVerification(run.id, "hecho", { command: "npm test", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "hecho");
+
+    expect(store.workspaceAttribution(run.id)).toMatchObject([
+      { file: "A.ts", nodeId: "hecho", status: "attributed" },
+      { file: "B.ts", status: "unknown" },
+    ]);
+
+    writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\najena\n");
+    expect(store.workspaceAttribution(run.id)[0]).toMatchObject({ file: "A.ts", nodeId: "hecho", status: "drifted" });
   });
 
   it("rejects attaching the filesystem root or the home directory", () => {
@@ -168,6 +298,67 @@ describe("HrpStore", () => {
     const completed = store.completeNode(run.id, "change", 48000);
     expect(completed.tokens).toBe(48000);
     expect(store.getRunDetail(run.id)?.activity.some((event) => event.message.includes("~48k tokens"))).toBe(true);
+  });
+
+  it("recovers a running node while paused without losing attempt evidence", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+    store.publishPatch(run.id, "change", "Partial change", "@@ A.ts\n+return maybe");
+    store.publishVerification(run.id, "change", { command: "npm test", output: "partial check", exitCode: 0 });
+
+    store.setRunControl(run.id, "paused");
+    const recovered = store.assignNode(run.id, "change", "claude");
+    expect(recovered).toMatchObject({ status: "pending", assignee: "claude", executedBy: undefined });
+    expect(recovered.diff).toContain("return maybe");
+    expect(recovered.verification).toMatchObject({ command: "npm test", passed: true });
+    const codexState = store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex");
+    expect(codexState).toMatchObject({ phase: "waiting", currentNodeId: undefined, total: 0, remainingNodeIds: [] });
+    expect(codexState?.summary).toMatch(/recuperado por el humano/i);
+  });
+
+  it("keeps the auditor coverage and vote of the agent whose node is recovered", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "ajeno", file: "A.ts", symbol: "A.method", title: "Ajeno", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "propio", file: "B.ts", symbol: "B.method", title: "Propio", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "ajeno", "claude");
+    store.publishPatch(run.id, "ajeno", "Changed method", "@@ A.ts\n+return true");
+    store.publishVerification(run.id, "ajeno", { command: "npm test", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "ajeno");
+
+    // codex es auditor de la ejecución y además implementa: publica su pasada
+    // sobre el nodo ajeno y arranca el suyo. Recuperárselo no puede costarle
+    // una auditoría que ya hizo sobre trabajo de otro.
+    store.startNode(run.id, "propio", "codex");
+    store.setAgentState(run.id, {
+      agent: "codex",
+      phase: "completed",
+      summary: "Auditoría terminada",
+      completed: 1,
+      total: 1,
+      reviewedNodeIds: ["ajeno"],
+      remainingNodeIds: [],
+      startedAt: "2026-08-21T00:30:00.000Z",
+    });
+
+    store.setRunControl(run.id, "paused");
+    store.assignNode(run.id, "propio", "claude");
+
+    const codexState = store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex");
+    expect(codexState).toMatchObject({
+      phase: "completed",
+      reviewedNodeIds: ["ajeno"],
+      startedAt: "2026-08-21T00:30:00.000Z",
+    });
+    expect(codexState?.summary).toMatch(/recuperado por el humano/i);
+    // Lo que sí se recalcula es su cobertura de ejecución: ya no le queda nada.
+    expect(codexState).toMatchObject({ completed: 0, total: 0, remainingNodeIds: [] });
   });
 
   it("enforces the human assignment when the agent declares itself", () => {
@@ -586,9 +777,12 @@ describe("HrpStore", () => {
         });
       }
 
-      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["claude", "antigravity"]);
-      expect(store.getRun(run.id)).toMatchObject({ pendingAuditorCount: 2, pendingAuditorVotes: 1 });
-      expect(store.pendingAuditorVotes(run.id)).toBe(1);
+      // claude y antigravity votaron con un reloj anterior al cambio de 'dos',
+      // así que su voto no cuenta; codex tampoco cuenta, porque implementó pero
+      // nunca declaró una pasada: terminar de implementar no vota.
+      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["claude", "codex", "antigravity"]);
+      expect(store.getRun(run.id)).toMatchObject({ pendingAuditorCount: 3, pendingAuditorVotes: 2 });
+      expect(store.pendingAuditorVotes(run.id)).toBe(2);
     });
 
     it("keeps auditor coverage when a finding is rejected or reopened", () => {
@@ -654,6 +848,64 @@ describe("HrpStore", () => {
         .toThrow(/reviewed and remaining/);
       expect(() => store.setAgentState(run.id, { agent: "claude", phase: "reviewing", summary: "Exceso", completed: 5 }))
         .toThrow(/exceed its total/);
+    });
+
+    it("marks a removed active auditor as waiting while preserving its published coverage", () => {
+      const { store, run } = reviewFixture();
+      store.setRunAuditors(run.id, ["claude", "antigravity"]);
+      store.setAgentState(run.id, {
+        agent: "claude",
+        phase: "reviewing",
+        summary: "Auditando el run",
+        completed: 1,
+        total: 1,
+        reviewedNodeIds: ["uno"],
+        remainingNodeIds: [],
+      });
+
+      store.setRunControl(run.id, "paused");
+      store.setRunAuditors(run.id, ["antigravity"]);
+
+      const removed = store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "claude");
+      expect(removed).toMatchObject({
+        phase: "waiting",
+        summary: "Retirado de auditoría por el humano",
+        reviewedNodeIds: ["uno"],
+        remainingNodeIds: [],
+      });
+      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["antigravity"]);
+    });
+
+    it("records and clears a formal attention release for one agent", () => {
+      const { store, run } = reviewFixture();
+      const released = store.releaseAttention(run.id, "claude");
+
+      expect(released).toMatchObject({ runId: run.id, agent: "claude", createdAt: expect.any(String) });
+      expect(store.getAttentionRelease(run.id, "claude")?.createdAt).toEqual(expect.any(String));
+      expect(store.getAttentionRelease(run.id, "codex")).toBeUndefined();
+
+      store.helloAgent(run.id, "claude");
+      expect(store.getAttentionRelease(run.id, "claude")).toBeUndefined();
+    });
+
+    it("does not invalidate completed auditor coverage when releasing attention", () => {
+      const { store, run } = reviewFixture();
+      store.setRunAuditors(run.id, ["claude"]);
+      store.setAgentState(run.id, {
+        agent: "claude",
+        phase: "completed",
+        summary: "Auditoría terminada",
+        completed: 1,
+        total: 1,
+        reviewedNodeIds: ["uno"],
+        remainingNodeIds: [],
+        startedAt: new Date().toISOString(),
+      });
+
+      store.releaseAttention(run.id, "claude");
+
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+      expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "claude")?.phase).toBe("completed");
     });
 
     it("persists and returns the agent associated with activity events", () => {

@@ -16,13 +16,16 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary } from "../shared/protocol";
-import { agentAttentionCommand, agentAttentionReleaseInstruction } from "./agent-attention";
+import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
 type Health = { buildStale?: boolean };
+// Lo devuelve GET /api/runs/:id/attribution. Se declara aquí, como Health,
+// porque el cliente no puede importar tipos del servidor.
+type FileAttribution = { file: string; nodeId?: string; status: "attributed" | "drifted" | "unknown" };
 type ConnectionState = "connecting" | "connected" | "offline";
 type CatalogLoadOptions = { focus?: CatalogRunFocus; visibleProjectId?: string };
 type GlobalPendingEntry = {
@@ -296,7 +299,7 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollamaConfigured, canApprove, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; canApprove: boolean; onChanged: () => void }) {
+function Inspector({ node, nodes, activity, runId, runControl, attribution, baseAgent, seenAgents, ollamaConfigured, canApprove, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; runControl: RunSummary["control"]; attribution: FileAttribution[]; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; canApprove: boolean; onChanged: () => void }) {
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
@@ -308,6 +311,12 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollama
   }
   const dependencies = node.dependencies.map((id) => nodes.find((candidate) => candidate.id === id)).filter(Boolean) as ChangeNode[];
   const failedAttempts = activity.filter((item) => item.nodeId === node.id && item.type === "verify" && item.message.toLocaleLowerCase("es").includes("fallida")).length;
+  const canReassign = node.status === "pending" || node.status === "failed" || (node.status === "running" && runControl === "paused");
+  // El diff que el humano lee es la foto del archivo cuando el nodo publicó. Si
+  // el archivo se movió después —otra sesión editando el mismo archivo—, ese
+  // diff ya no describe lo que hay en disco, y aprobar o commitear a partir de
+  // él se lleva trabajo que nadie revisó.
+  const drifted = attribution.some((entry) => entry.file === node.file && entry.status === "drifted");
   const post = (path: string, body: unknown) => {
     fetch(`/api/runs/${runId}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
       .then(() => onChanged())
@@ -329,10 +338,24 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollama
         </div>
       </header>
 
-      {(node.status === "pending" || node.status === "failed") && (
+      {drifted && (
+        <p className="assign-warning" role="alert"><Icon name="warning"/>El archivo cambió después de que este nodo publicó su diff. Lo que ves abajo sigue siendo lo que hizo esta operación, pero ya no describe el archivo completo: comprueba el árbol con «hrp verify tree» antes de commitear.</p>
+      )}
+
+      {canReassign && (
         <section className="human-controls">
           {!node.approved && (
             <button type="button" className="approve-button" disabled={!canApprove} title={canApprove ? undefined : "Elige al menos un auditor en la columna izquierda"} onClick={() => post("/approve", { nodeIds: [node.id] })}><Icon name="check"/>{canApprove ? "Aprobar esta operación" : "Elige un auditor para aprobar"}</button>
+          )}
+          {node.status === "running" && runControl === "paused" && (
+            <>
+              {/* El selector no basta para recuperar: onChange no dispara al
+                  reelegir el valor actual, y un nodo del modelo base ya muestra
+                  esa opción seleccionada. Este botón es la acción explícita, y
+                  conserva al dueño para no confundir recuperar con reasignar. */}
+              <button type="button" className="approve-button" onClick={() => post(`/nodes/${node.id}/assign`, { assignee: node.assignee ?? null })}><Icon name="clock"/>Recuperar esta operación</button>
+              <p className="assign-warning"><Icon name="warning"/>Recuperar o reasignar esta operación la devuelve a pendiente y conserva el diff y la verificación del intento. Al reanudar, los agentes deben releer el estado.</p>
+            </>
           )}
           {node.suggestedAgent && (
             <p className="suggested-note">El modelo base sugiere delegar esta operación a <strong>{node.suggestedAgent}</strong>; tú decides con el selector.</p>
@@ -456,7 +479,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
   const copyAttention = async (agent: string, action: "attend" | "release") => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-      const text = action === "attend" ? agentAttentionCommand(agent, workspaceRoot) : agentAttentionReleaseInstruction(agent);
+      const text = action === "attend" ? agentAttentionCommand(agent, workspaceRoot) : agentAttentionReleaseCommand(run.id, agent);
       await navigator.clipboard.writeText(text);
       setCopyFeedback({ agent, action, result: "copied" });
     } catch {
@@ -472,6 +495,11 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
   const approvalStarted = nodes.some((node) => node.approved);
   const reconfigurable = approvalStarted && run.control === "paused";
   const selectionLocked = approvalStarted && !reconfigurable;
+  const auditorHint = selectionLocked
+    ? "Auditores fijados; pausa la ejecución para cambiarlos"
+    : reconfigurable
+      ? "Ejecución pausada: reemplaza auditores sin perder cobertura publicada"
+      : "Elige quién audita antes de aprobar";
   const toggleAuditor = async (agent: string, selected: boolean) => {
     const next = selected ? [...run.auditors, agent] : run.auditors.filter((candidate) => candidate !== agent);
     setSelectionBusy(agent);
@@ -487,7 +515,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
   return (
     <section className="agent-dock" aria-label="Agentes de la ejecución">
       <header className="agent-dock-head">
-        <div><strong>Agentes</strong><span>{selectionLocked ? "Auditores fijados; pausa la ejecución para cambiarlos" : reconfigurable ? "Ejecución pausada: puedes reconfigurar quién audita" : "Elige quién audita antes de aprobar"}</span></div>
+        <div><strong>Agentes</strong><span>{auditorHint}</span></div>
         <b>{run.auditors.length} aud.</b>
       </header>
       {selectionError && <p className="agent-dock-error" role="alert">{selectionError}</p>}
@@ -510,10 +538,10 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
             ? `No se pudo copiar el comando para poner atención con ${agent}`
             : `Copiar comando para poner atención con ${agent}`;
         const releaseLabel = releaseResult === "copied"
-          ? `Instrucción copiada para dejar de poner atención con ${agent}`
+          ? `Comando copiado para dejar de poner atención con ${agent}`
           : releaseResult === "failed"
-            ? `No se pudo copiar la instrucción para dejar de poner atención con ${agent}`
-            : `Copiar instrucción para dejar de poner atención con ${agent}`;
+            ? `No se pudo copiar el comando para dejar de poner atención con ${agent}`
+            : `Copiar comando para dejar de poner atención con ${agent}`;
         return (
           <div className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""}`} key={agent} role="group" aria-label={`${agent}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}>
             <div className="agent-dock-row">
@@ -549,7 +577,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
                 {state && state.total > 0 && <b>{state.completed}/{state.total}</b>}
                 {elapsed && <time>{elapsed}</time>}
               </button>
-              <label className="auditor-toggle" title={isOllama && !ollama?.configured ? "Configura Ollama Cloud antes de elegirlo" : selectionLocked ? "La selección se bloquea mientras la ejecución corre; pausa la ejecución para cambiarla" : `${selectedAuditor ? "Quitar" : "Usar"} ${agent} como auditor`}>
+              <label className="auditor-toggle" title={isOllama && !ollama?.configured ? "Configura Ollama Cloud antes de elegirlo" : selectionLocked ? "La selección se bloquea mientras la ejecución corre; pausa la ejecución para cambiarla" : reconfigurable ? `${selectedAuditor ? "Retirar" : "Añadir"} ${agent} en la auditoría; la cobertura ya publicada se conserva` : `${selectedAuditor ? "Quitar" : "Usar"} ${agent} como auditor`}>
                 <input type="checkbox" aria-label={`Usar ${agent}${isOllama && ollama?.configured ? ` (${ollama.model})` : ""} como auditor`} checked={selectedAuditor} disabled={selectionLocked || Boolean(selectionBusy) || (isOllama && !ollama?.configured)} onChange={(event) => { toggleAuditor(agent, event.target.checked).catch(() => undefined); }}/>
                 <span>Audita</span>
               </label>
@@ -892,6 +920,7 @@ export function App() {
   const [projectId, setProjectId] = useState(() => new URLSearchParams(location.search).get("project") ?? "");
   const [runId, setRunId] = useState(() => new URLSearchParams(location.search).get("run") ?? "");
   const [detail, setDetail] = useState<RunDetail>();
+  const [attribution, setAttribution] = useState<FileAttribution[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [view, setView] = useState<GraphView>("map");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
@@ -1027,6 +1056,12 @@ export function App() {
       for (const node of next.nodes) observedStatuses.current.set(`${next.run.id}:${node.id}`, node.status);
       loadedRunId.current = id;
       setDetail(next);
+      // La atribución es informativa: si el servicio corre un build anterior y
+      // no expone la ruta, el panel sigue funcionando sin el aviso.
+      fetch(`/api/runs/${id}/attribution`)
+        .then((result) => result.ok ? result.json() as Promise<{ files?: FileAttribution[] }> : { files: [] })
+        .then((report) => setAttribution(report.files ?? []))
+        .catch(() => setAttribution([]));
       setSelectedId((current) => newlyFailed?.id
         ?? (!switching && current === "" ? ""
           : current && next.nodes.some((node) => node.id === current) ? current : next.nodes.find((node) => node.status === "running")?.id ?? next.nodes[0]?.id));
@@ -1336,7 +1371,7 @@ export function App() {
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} canApprove={auditorsReady} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} runControl={detail.run.control} attribution={attribution} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} canApprove={auditorsReady} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
             </main>
           )}
         </div>

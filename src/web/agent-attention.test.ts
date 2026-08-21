@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentAttentionCommand, agentAttentionReleaseInstruction } from "./agent-attention";
+import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 
 describe("agentAttentionCommand", () => {
   it("builds the attention command for the selected model and workspace", () => {
@@ -14,8 +14,10 @@ describe("agentAttentionCommand", () => {
       .toBe("hrp attention --agent antigravity --workspace '/Users/dev/My Project'\"'\"'s repo' --wait 1800");
   });
 
-  it("builds the release instruction for stopping a manual attention wait", () => {
-    expect(agentAttentionReleaseInstruction("codex"))
-      .toBe("Presiona Ctrl+C en la terminal donde codex esta ejecutando hrp attention para dejar de esperar HRP.");
+  it("builds the release command for stopping a manual attention wait", () => {
+    expect(agentAttentionReleaseCommand("run-123", "codex"))
+      .toBe("hrp attention release run-123 --agent codex");
+    expect(agentAttentionReleaseCommand("run 123", "agent's shell"))
+      .toBe("hrp attention release 'run 123' --agent 'agent'\"'\"'s shell'");
   });
 });
