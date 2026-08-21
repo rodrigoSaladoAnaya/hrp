@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentAttentionCommand } from "./agent-attention";
+import { agentAttentionCommand, agentAttentionReleaseInstruction } from "./agent-attention";
 
 describe("agentAttentionCommand", () => {
   it("builds the attention command for the selected model and workspace", () => {
@@ -12,5 +12,10 @@ describe("agentAttentionCommand", () => {
   it("quotes workspace paths that contain shell-sensitive characters", () => {
     expect(agentAttentionCommand("antigravity", "/Users/dev/My Project's repo"))
       .toBe("hrp attention --agent antigravity --workspace '/Users/dev/My Project'\"'\"'s repo' --wait 1800");
+  });
+
+  it("builds the release instruction for stopping a manual attention wait", () => {
+    expect(agentAttentionReleaseInstruction("codex"))
+      .toBe("Presiona Ctrl+C en la terminal donde codex esta ejecutando hrp attention para dejar de esperar HRP.");
   });
 });

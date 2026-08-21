@@ -16,7 +16,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary } from "../shared/protocol";
-import { agentAttentionCommand } from "./agent-attention";
+import { agentAttentionCommand, agentAttentionReleaseInstruction } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 
@@ -163,7 +163,7 @@ function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   });
 }
 
-function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" }) {
+function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "bellOff" }) {
   const paths = {
     sliders: <><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></>,
     route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 3 4"/></>,
@@ -174,6 +174,8 @@ function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clo
     warning: <><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v4M12 17h.01"/></>,
     code: <><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></>,
     copy: <><rect x="8" y="8" width="11" height="11" rx="1"/><path d="M16 8V5H5v11h3"/></>,
+    bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></>,
+    bellOff: <><path d="m3 3 18 18"/><path d="M6.6 6.6A5.9 5.9 0 0 0 6 8c0 7-3 7-3 9h14"/><path d="M18 14.5c-.6-1.2 0-3.1 0-6.5a6 6 0 0 0-7.4-5.8"/><path d="M10 21h4"/></>,
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" className="icon">{paths[name]}</svg>;
 }
@@ -437,7 +439,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
   ollama?: OllamaSettingsView;
   onAuditorsChange: (auditors: string[]) => Promise<void>;
 }) {
-  const [copyFeedback, setCopyFeedback] = useState<{ agent: string; result: "copied" | "failed" }>();
+  const [copyFeedback, setCopyFeedback] = useState<{ agent: string; action: "attend" | "release"; result: "copied" | "failed" }>();
   const [expandedAgent, setExpandedAgent] = useState<string>();
   const [selectionBusy, setSelectionBusy] = useState<string>();
   const [selectionError, setSelectionError] = useState<string>();
@@ -451,13 +453,14 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
     return () => clearInterval(timer);
   }, [hasActiveAgent]);
   if (!nodes.length) return null;
-  const copyCommand = async (agent: string) => {
+  const copyAttention = async (agent: string, action: "attend" | "release") => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-      await navigator.clipboard.writeText(agentAttentionCommand(agent, workspaceRoot));
-      setCopyFeedback({ agent, result: "copied" });
+      const text = action === "attend" ? agentAttentionCommand(agent, workspaceRoot) : agentAttentionReleaseInstruction(agent);
+      await navigator.clipboard.writeText(text);
+      setCopyFeedback({ agent, action, result: "copied" });
     } catch {
-      setCopyFeedback({ agent, result: "failed" });
+      setCopyFeedback({ agent, action, result: "failed" });
     }
     if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
     feedbackTimer.current = setTimeout(() => setCopyFeedback(undefined), 2000);
@@ -499,12 +502,18 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
         const presenceLabel = isBase ? "Modelo base"
           : isOllama ? (ollama?.configured ? `Ollama Cloud · ${ollama.model}` : "Sin API key configurada")
             : present ? "Presente" : "Sin señal";
-        const copyResult = copyFeedback?.agent === agent ? copyFeedback.result : undefined;
-        const buttonLabel = copyResult === "copied"
-          ? `Comando copiado para ${agent}`
-          : copyResult === "failed"
-            ? `No se pudo copiar el comando para ${agent}`
-            : `Copiar comando de atención para ${agent}`;
+        const attendResult = copyFeedback?.agent === agent && copyFeedback.action === "attend" ? copyFeedback.result : undefined;
+        const releaseResult = copyFeedback?.agent === agent && copyFeedback.action === "release" ? copyFeedback.result : undefined;
+        const attendLabel = attendResult === "copied"
+          ? `Comando copiado para poner atención con ${agent}`
+          : attendResult === "failed"
+            ? `No se pudo copiar el comando para poner atención con ${agent}`
+            : `Copiar comando para poner atención con ${agent}`;
+        const releaseLabel = releaseResult === "copied"
+          ? `Instrucción copiada para dejar de poner atención con ${agent}`
+          : releaseResult === "failed"
+            ? `No se pudo copiar la instrucción para dejar de poner atención con ${agent}`
+            : `Copiar instrucción para dejar de poner atención con ${agent}`;
         return (
           <div className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""}`} key={agent} role="group" aria-label={`${agent}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}>
             <div className="agent-dock-row">
@@ -514,14 +523,24 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
                 {isOllama && ollama?.configured && <small>{ollama.model}</small>}
               </span>
               <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
-              <button
-                type="button"
-                className={`agent-copy ${copyResult ? `is-${copyResult}` : ""}`}
-                aria-label={buttonLabel}
-                aria-live="polite"
-                title={buttonLabel}
-                onClick={() => { copyCommand(agent).catch(() => undefined); }}
-              ><Icon name={copyResult === "copied" ? "check" : copyResult === "failed" ? "warning" : "copy"}/></button>
+              <span className="agent-attention-actions">
+                <button
+                  type="button"
+                  className={`agent-attention-button ${attendResult ? `is-${attendResult}` : ""}`}
+                  aria-label={attendLabel}
+                  aria-live="polite"
+                  title={attendLabel}
+                  onClick={() => { copyAttention(agent, "attend").catch(() => undefined); }}
+                ><Icon name={attendResult === "copied" ? "check" : attendResult === "failed" ? "warning" : "bell"}/></button>
+                <button
+                  type="button"
+                  className={`agent-attention-button agent-attention-release ${releaseResult ? `is-${releaseResult}` : ""}`}
+                  aria-label={releaseLabel}
+                  aria-live="polite"
+                  title={releaseLabel}
+                  onClick={() => { copyAttention(agent, "release").catch(() => undefined); }}
+                ><Icon name={releaseResult === "copied" ? "check" : releaseResult === "failed" ? "warning" : "bellOff"}/></button>
+              </span>
             </div>
             <div className="agent-dock-subrow">
               <button type="button" className="agent-activity-row" disabled={!state} aria-expanded={expandedAgent === agent} onClick={() => setExpandedAgent((current) => current === agent ? undefined : agent)}>

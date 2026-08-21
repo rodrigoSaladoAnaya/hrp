@@ -421,11 +421,14 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .auditor-toggle:has(input:checked) { color: #244f40; background: #cfe1d7; }
 .auditor-toggle:has(input:disabled) { opacity: .7; cursor: default; }
 .auditor-toggle input { width: 13px; height: 13px; margin: 0; accent-color: #2d6a50; }
-.agent-copy { width: 36px; height: 36px; display: inline-grid; flex: none; place-items: center; padding: 0; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; }
-.agent-copy .icon { width: 17px; height: 17px; }
-.agent-copy:hover { background: #d2d9d2; }
-.agent-copy.is-copied { border-color: #6c9883; color: var(--completed); background: #d6e7dd; }
-.agent-copy.is-failed { border-color: #b47670; color: var(--failed); background: #f2dfdc; }
+.agent-attention-actions { display: inline-flex; align-items: center; gap: 4px; }
+.agent-attention-button { width: 34px; height: 36px; display: inline-grid; flex: none; place-items: center; padding: 0; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; }
+.agent-attention-button .icon { width: 17px; height: 17px; }
+.agent-attention-button:hover { background: #d2d9d2; }
+.agent-attention-release { color: #685942; }
+.agent-attention-release:hover { background: #e5d6bb; }
+.agent-attention-button.is-copied { border-color: #6c9883; color: var(--completed); background: #d6e7dd; }
+.agent-attention-button.is-failed { border-color: #b47670; color: var(--failed); background: #f2dfdc; }
 .agent-activity-row { min-width: 0; min-height: 36px; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 0 8px; border: 0; color: #52605b; background: transparent; cursor: pointer; text-align: left; }
 .agent-activity-row:hover:not(:disabled), .agent-activity-row[aria-expanded="true"] { color: #24332e; background: #d2d9d2; }
 .agent-activity-row:disabled { cursor: default; }
