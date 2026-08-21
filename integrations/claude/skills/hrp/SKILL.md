@@ -113,7 +113,7 @@ El humano puede asignar nodos a agentes concretos. Tu identidad es `claude`: tra
 
 ### 3. Ciclo por nodo: start → editar → patch → verify → complete
 
-Elige siempre un nodo aprobado cuyas dependencias estén completadas (HRP rechaza `start` si no lo están). Solo puede haber un nodo en curso por ejecución: si el inicio se rechaza por otro nodo en vuelo, espera a que termine.
+Elige siempre un nodo aprobado cuyas dependencias estén completadas (HRP rechaza `start` si no lo están). Puede haber varios nodos en curso si HRP confirma que no comparten archivo, contexto aprobado ni rama de dependencias. Tu propia sesión nunca sostiene dos nodos en curso: cierra el tuyo con patch, verify y complete antes de tomar otro. Si `start` se rechaza por conflicto con otro nodo en vuelo, no edites y espera a que termine. Mientras otro nodo esté en vuelo, el comando de `hrp verify run` debe nombrar el archivo, el símbolo o el id de este nodo; un comando integral se rechaza porque lee lo que el otro nodo está editando.
 
 ```sh
 hrp node start "$run_id" <node-id> --agent claude

@@ -71,6 +71,24 @@ export function auditableNodes(detail: RunDetail, agent: string) {
   return detail.nodes.filter((node) => auditorIdentity(node.executedBy ?? node.assignee) !== auditorIdentity(agent));
 }
 
+function dependsOn(nodesById: Map<string, RunDetail["nodes"][number]>, nodeId: string, dependencyId: string, seen = new Set<string>()): boolean {
+  if (nodeId === dependencyId) return true;
+  if (seen.has(nodeId)) return false;
+  seen.add(nodeId);
+  const node = nodesById.get(nodeId);
+  if (!node) return false;
+  return node.dependencies.some((dependency) => dependsOn(nodesById, dependency, dependencyId, seen));
+}
+
+function concurrentConflict(candidate: RunDetail["nodes"][number], running: RunDetail["nodes"][number], nodesById: Map<string, RunDetail["nodes"][number]>): string | undefined {
+  if (candidate.file === running.file) return `ambos modifican ${candidate.file}`;
+  if (running.contextFiles?.includes(candidate.file)) return `${running.id} usa ${candidate.file} como contexto aprobado`;
+  if (candidate.contextFiles?.includes(running.file)) return `${candidate.id} leería ${running.file} mientras ${running.id} lo cambia`;
+  if (dependsOn(nodesById, candidate.id, running.id)) return `${candidate.id} depende de ${running.id}`;
+  if (dependsOn(nodesById, running.id, candidate.id)) return `${running.id} depende de ${candidate.id}`;
+  return undefined;
+}
+
 export function computeAttention(detail: RunDetail, agent: string): Attention {
   const { run } = detail;
   const isAuditor = run.auditors.includes(agent);
@@ -144,20 +162,20 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
     return decide("audit", `Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${reviewed.length} --total ${auditable.length}${reviewedFlag} --remaining ${pendientes.join(",")}', obtén el contexto con 'hrp review pack ${run.id}', registra o debate hallazgos y, si estás conforme, vota OK cerrando con phase completed llevando --reviewed con ellos y --remaining vacío. Si un cierre previo no te convence, usa 'hrp finding reopen <id> --author ${agent} --body RAZON'.${propios ? ` Tus ${propios} nodos propios quedan fuera: no te autoaudites.` : ""}`);
   }
 
-  // El workspace ejecuta un nodo a la vez, así que mientras haya uno en vuelo
-  // 'hrp node start' rechaza cualquier otro. Para su dueño eso sí es trabajo
-  // accionable —es el agente que lo dejó a medias y hay que despertarlo para
-  // que lo cierre—; para el resto es una espera, no una orden imposible.
-  const running = detail.nodes.find((node) => node.status === "running");
-  if (running && run.control === "active") {
+  // Si un agente ya tiene un nodo en curso, debe cerrarlo antes de tomar otro.
+  // Para el resto, un nodo running sólo bloquea el trabajo que realmente
+  // comparte archivo/contexto o pertenece a la misma rama de dependencias.
+  const runningNodes = detail.nodes.filter((node) => node.status === "running");
+  const nodesById = new Map(detail.nodes.map((node) => [node.id, node]));
+  if (runningNodes.length && run.control === "active") {
     const owners = new Set(nodesForAgent(detail, agent).map((node) => node.id));
-    if (running.executedBy === agent && !owners.has(running.id)) {
-      return decide("busy", `Apareces como ejecutor de ${running.id}, pero ese nodo ya no está asignado a ${agent}. Deja de trabajarlo, relee 'hrp state ${run.id} --json' y espera la nueva señal de HRP.`);
+    const ownRunning = runningNodes.find((node) => owners.has(node.id) || node.executedBy === agent);
+    if (ownRunning?.executedBy === agent && !owners.has(ownRunning.id)) {
+      return decide("busy", `Apareces como ejecutor de ${ownRunning.id}, pero ese nodo ya no está asignado a ${agent}. Deja de trabajarlo, relee 'hrp state ${run.id} --json' y espera la nueva señal de HRP.`);
     }
-    if (owners.has(running.id) || running.executedBy === agent) {
-      return decide("work", `Tienes ${running.id} en curso (${running.file} · ${running.symbol}): ciérralo con patch, verify y complete antes de tomar otro nodo.`);
+    if (ownRunning) {
+      return decide("work", `Tienes ${ownRunning.id} en curso (${ownRunning.file} · ${ownRunning.symbol}): ciérralo con patch, verify y complete antes de tomar otro nodo.`);
     }
-    return decide("busy", `La ejecución trabaja un nodo a la vez y ahora corre ${running.id} con ${running.executedBy ?? running.assignee ?? "otro agente"}. Permanece atento: la señal llegará sola cuando termine.`);
   }
 
   const orphanedExecution = detail.nodes.find((node) => node.executedBy === agent
@@ -172,9 +190,19 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   // filtro y solo nombra trabajo que el servidor aceptará iniciar.
   const completedIds = new Set(detail.nodes.filter((node) => node.status === "completed").map((node) => node.id));
   const pendingForAgent = nodesForAgent(detail, agent).filter((node) => node.approved && node.status !== "completed");
-  const ready = pendingForAgent.filter((node) => node.dependencies.every((dependency) => completedIds.has(dependency)));
+  const dependencyReady = pendingForAgent.filter((node) => node.dependencies.every((dependency) => completedIds.has(dependency)));
+  const ready = dependencyReady.filter((node) => !runningNodes.some((running) => concurrentConflict(node, running, nodesById)));
   if (ready.length && run.control === "active") {
     return decide("work", `Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
+  }
+  if (dependencyReady.length && run.control === "active") {
+    const conflicts = dependencyReady.flatMap((node) => runningNodes.flatMap((running) => {
+      const reason = concurrentConflict(node, running, nodesById);
+      return reason ? [`${node.id} espera ${running.id}: ${reason}`] : [];
+    }));
+    if (conflicts.length) {
+      return decide("busy", `Tu trabajo listo no puede correr en paralelo todavía: ${conflicts.join("; ")}. Permanece atento: la señal llegará sola cuando termine el conflicto.`);
+    }
   }
   if (pendingForAgent.length && run.control === "active") {
     // Solo interesan los prerrequisitos ajenos: los que el propio agente tiene

@@ -274,7 +274,7 @@ describe("HrpStore", () => {
     expect(() => store.approveNodes(run.id)).toThrow(/No nodes are awaiting approval/);
   });
 
-  it("runs one node at a time per execution", () => {
+  it("allows independent nodes to run concurrently", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [
       { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
@@ -282,7 +282,66 @@ describe("HrpStore", () => {
     ] });
     store.approveNodes(run.id);
     store.startNode(run.id, "first");
-    expect(() => store.startNode(run.id, "second")).toThrow(/one node at a time/i);
+    expect(store.startNode(run.id, "second").status).toBe("running");
+  });
+
+  it("prevents the same agent from running two independent nodes", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "uno", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "dos", file: "B.ts", symbol: "B.dos", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "uno", "claude");
+    expect(() => store.startNode(run.id, "dos", "claude")).toThrow(/already running uno/i);
+    expect(store.startNode(run.id, "dos", "codex").status).toBe("running");
+  });
+
+  it("blocks concurrent nodes that touch the same file or branch", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "same-file", file: "A.ts", symbol: "A.second", title: "Same file", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "depends", file: "B.ts", symbol: "B.second", title: "Depends", description: "Work", rationale: "Required", dependencies: ["first"] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "first");
+    expect(() => store.startNode(run.id, "same-file")).toThrow(/cannot run concurrently.*both modify A\.ts/i);
+    expect(() => store.startNode(run.id, "depends")).toThrow(/Incomplete dependencies: first/);
+  });
+
+  it("blocks concurrent changes to files used as approved context", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "reader", file: "A.ts", symbol: "A.first", title: "Reader", description: "Work", rationale: "Required", dependencies: [], contextFiles: ["contract.ts"] },
+      { id: "contract", file: "contract.ts", symbol: "Contract", title: "Contract", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "reader");
+    expect(() => store.startNode(run.id, "contract")).toThrow(/approved context/i);
+  });
+
+  it("requires scoped verification while another node is running", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "uno", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "dos", file: "B.ts", symbol: "B.dos", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "solo", file: "C.ts", symbol: "C.solo", title: "Solo", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "uno", "claude");
+    store.startNode(run.id, "dos", "codex");
+    expect(() => store.publishVerification(run.id, "dos", { command: "npm test", output: "ok", exitCode: 0 })).toThrow(/does not declare its scope/);
+    expect(store.publishVerification(run.id, "dos", { command: "npm test -- B.ts", output: "ok", exitCode: 0 }).verification?.passed).toBe(true);
+
+    store.publishPatch(run.id, "uno", "Changed A", "@@ A.ts\n+return true");
+    store.publishVerification(run.id, "uno", { command: "npm test -- A.ts", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "uno");
+    store.publishPatch(run.id, "dos", "Changed B", "@@ B.ts\n+return true");
+    store.completeNode(run.id, "dos");
+
+    store.startNode(run.id, "solo", "claude");
+    expect(store.publishVerification(run.id, "solo", { command: "npm test", output: "ok", exitCode: 0 }).verification?.passed).toBe(true);
   });
 
   it("freezes assignment while a node runs and stores reported tokens", () => {

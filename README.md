@@ -110,7 +110,7 @@ Consulta [docs/protocol.md](docs/protocol.md) para el contrato y el formato del 
 
 - El grafo inicial requiere aprobación humana antes de comenzar; los nodos descubiertos dentro de una ejecución ya aprobada nacen aprobados automáticamente.
 - No existen los modos heredados `REVISAR`, `OBSERVAR` o `AUTO`; la aprobación es un gate único y explícito.
-- El humano puede asignar nodos a agentes y sólo se ejecuta un nodo a la vez por ejecución.
+- El humano puede asignar nodos a agentes; HRP permite ejecución concurrente sólo cuando no comparte archivo, contexto aprobado ni rama de dependencias con otro nodo en curso. Un agente mantiene un solo nodo activo, y la verificación debe declarar su alcance si otro nodo sigue en vuelo.
 - No se captura cadena de pensamiento; sólo intención y justificación operativa.
 - Un nodo sólo termina cuando tiene diff y verificación aprobada.
 - Un nodo fallido se corrige y reintenta dentro de la misma ejecución; `hrp node retry` conserva el intento anterior en Actividad.

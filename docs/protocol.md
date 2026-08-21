@@ -40,13 +40,17 @@ El plan nunca se sustituye por el resultado. Cuando el agente publica el parche,
 
 `patchRationale` es opcional para adaptadores anteriores, pero los adaptadores nuevos deben publicarlo. Si falta, la interfaz lo indica sin atribuir al agente una explicación que no proporcionó.
 
-## Aprobación, identidad y exclusión
+## Aprobación, identidad y concurrencia segura
 
 Todo nodo publicado o descubierto nace sin aprobar. El servidor rechaza `start` hasta que el humano lo aprueba desde el panel o mediante `hrp node approve`.
 
 El humano puede asignar un nodo. El adaptador declara su identidad al iniciar o reintentar y no toma trabajo asignado a otro agente. La identidad es declarativa, no autenticada.
 
-Sólo puede existir un nodo `running` por ejecución. Esta exclusión evita que parches y verificaciones de varios agentes contaminen el mismo workspace compartido.
+Pueden coexistir varios nodos `running` cuando HRP determina que son compatibles. El servidor rechaza `start` si el candidato depende de un nodo en curso, si otro nodo en curso depende de él, si ambos modifican el mismo archivo, o si uno modifica un archivo que el otro usa como contexto aprobado.
+
+Un mismo agente nunca sostiene dos nodos `running`: el estado observable por agente modela un solo `currentNodeId`, y un segundo nodo dejaría al primero sin rastro en el panel y en la señal de atención.
+
+Mientras haya otro nodo en vuelo, la verificación debe nombrar el archivo, el símbolo o el id del nodo. Un comando de proyecto entero también lee lo que el otro nodo tiene a medio editar, así que HRP lo rechaza hasta que el workspace vuelva a estar libre para esa lectura global.
 
 Republicar el grafo conserva los nodos completados y devuelve a aprobación los demás.
 

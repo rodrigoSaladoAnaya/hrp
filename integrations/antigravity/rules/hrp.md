@@ -19,7 +19,8 @@ Cuando interactúes con tareas que utilicen HRP o en proyectos gestionados por H
 - Espera la aprobación humana usando la herramienta MCP bloqueante `hrp_attention` (o como respaldo `hrp wait approval <run> --agent antigravity --timeout 300`). Nunca apruebes nodos tú mismo salvo orden explícita del humano. Permanece atento con `hrp_attention` mientras la ejecución siga activa, no termines tu turno.
 - Declara siempre tu identidad (`antigravity`) al iniciar nodos.
 - Respeta las asignaciones de agentes hechas por el humano; no ejecutes nodos asignados a otros agentes.
-- Trabaja un solo nodo activo (`running`) a la vez por ejecución.
+- Pueden coexistir varios nodos `running` sólo cuando HRP acepte que son compatibles: sin dependencia pendiente, sin archivo compartido y sin tocar archivos declarados como contexto aprobado por otro nodo.
+- El mismo agente nunca mantiene dos nodos `running` a la vez. Si `start` rechaza un conflicto, no edites el workspace y espera la siguiente señal de HRP.
 
 ## 4. Atribución de Diffs y Verificación
 - Cada parche publicado (`patch`) debe contener únicamente el diff atribuible al archivo y símbolo del nodo en curso.

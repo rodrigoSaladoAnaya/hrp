@@ -21,10 +21,10 @@ Antes de la primera operación HRP de una tarea, lee [references/agent-workflow.
 2. Un nodo representa exactamente `archivo + símbolo o sección lógica + intención`. Separa cambios independientes, incluso dentro del mismo archivo.
 3. Tras publicar el grafo inicial, espera la aprobación humana con `hrp wait approval <run-id> --agent codex --timeout 300`: bloquea hasta que el clic del humano libere trabajo y sale con error reintentable si agota el tiempo. Los nodos descubiertos dentro de una ejecución ya aprobada nacen aprobados automáticamente y se implementan en cuanto sus dependencias estén listas. No uses `hrp node approve` ni `hrp_approve_nodes` en nombre del humano salvo que éste lo pida explícitamente.
 4. Identifícate como `codex` al iniciar o reintentar. Respeta las asignaciones y no trabajes nodos asignados a otro agente; los nodos sin asignar pertenecen al modelo base.
-5. Sólo puede existir un nodo en curso por ejecución. Si otro nodo está activo, no modifiques el workspace hasta que termine.
-6. Para cada nodo sigue `start → editar únicamente su operación → patch → verify → complete`.
+5. Pueden existir varios nodos en curso sólo cuando HRP acepte que son compatibles: sin dependencia pendiente, sin archivo compartido y sin tocar archivos que otro nodo usa como contexto aprobado. El mismo agente nunca sostiene dos nodos `running`; si ya tienes uno, ciérralo antes de tomar otro. Si `start` rechaza el nodo por conflicto, no modifiques el workspace y espera la siguiente señal.
+6. Para cada nodo que HRP te permita iniciar sigue `start → editar únicamente su operación → patch → verify → complete`.
 7. El patch debe incluir un diff exclusivo del archivo declarado, un resumen de lo que realmente hizo y por qué se hizo así. HRP rechaza diffs que mezclan otros archivos.
-8. No completes un nodo sin diff no vacío y verificación exitosa.
+8. No completes un nodo sin diff no vacío y verificación exitosa. Mientras otro nodo esté en vuelo, el comando de verificación debe nombrar el archivo, el símbolo o el id de este nodo; los comandos de proyecto entero se rechazan hasta que el workspace quede libre.
 9. Un fallo técnico se corrige con `retry` en el mismo nodo. El trabajo imprevisto se publica como nodo descubierto, queda aprobado automáticamente y sigue el mismo ciclo `start → patch → verify → complete` sin otro clic humano.
 10. Publica explicaciones operativas breves y comprobables; nunca cadena de pensamiento privada, credenciales ni secretos.
 11. Al completar un nodo, reporta tu consumo con `--tokens N` únicamente si tu entorno expone el uso real de tokens; si no lo conoces, omite el parámetro. Nunca inventes el número.

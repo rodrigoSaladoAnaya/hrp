@@ -241,7 +241,9 @@ Fases válidas: `idle`, `waiting`, `executing`, `reviewing`, `completed` y `fail
 
 Ollama Cloud publica estos estados automáticamente. Mientras Kimi u otro modelo no haya respondido, el panel muestra el paquete enviado y mantiene sus nodos como **cobertura no confirmada**; HRP no finge avance interno que la API no expone. Cuando llega la respuesta, confirma la cobertura y registra los hallazgos o el resultado limpio.
 
-Solo puede haber **un nodo en curso por ejecución**: el workspace es compartido y dos agentes editando o verificando a la vez se contaminan mutuamente. Si el inicio se rechaza por otro nodo en vuelo, espera a que ese nodo termine.
+Pueden coexistir **varios nodos en curso**, pero sólo los que HRP acepta como compatibles. El workspace es compartido, así que `start` rechaza el candidato cuando depende de un nodo en curso, cuando un nodo en curso depende de él, cuando ambos modifican el mismo archivo, o cuando uno modifica un archivo que el otro declaró como contexto aprobado. Un mismo agente nunca sostiene dos nodos en curso: el estado por agente modela un solo `currentNodeId` y el segundo dejaría al primero sin rastro. Si el inicio se rechaza por conflicto, no toques el workspace y espera a que ese nodo termine.
+
+La compatibilidad protege la **escritura**; la **lectura** la declara el propio comando de verificación. Mientras haya otro nodo en vuelo, el comando debe nombrar el archivo, el símbolo o el id de este nodo: un comando de proyecto entero (un build o la suite completa) también lee lo que el otro nodo tiene a medio editar, así que su verde o su rojo no dicen nada sobre este nodo y HRP lo rechaza hasta que el workspace vuelva a ser tuyo solo.
 
 ### 5. Ejecutar un nodo
 
@@ -701,7 +703,7 @@ Integra esta tarea con Human Review Protocol v3 siguiendo docs/agent-adapter.md.
 
 Como ejecutor, trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está disponible y HTTP local como alternativa. Antes de editar, registra el workspace, crea una sola ejecución y publica un grafo granular: un nodo por archivo + símbolo o sección lógica + intención, con dependencias reales.
 
-Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones y ejecuta sólo un nodo a la vez. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
+Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones e inicia sólo nodos que HRP acepte como compatibles; si `start` rechaza un conflicto con otro nodo en curso, no edites y espera. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
 
 Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE`, debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...`, acuerda una corrección vinculada con `hrp finding agree <finding-id> --author TU_NOMBRE` y reabre cierres con `hrp finding reopen <finding-id> --author TU_NOMBRE --body RAZON` si tienes evidencia nueva. Mientras actúas sólo como revisor no edites código; si la unanimidad te asigna la corrección de un hallazgo que reportaste, impleméntala como ejecutor mediante un nodo HRP normal. No inventes hallazgos y nunca audites tus propios nodos: esa corrección deberá revisarla otro modelo, y la cobertura que exige el cierre se cuenta sólo sobre los nodos escritos por otros.
 
@@ -715,7 +717,8 @@ Un adaptador para Codex, Claude, Gemini u otro agente es compatible cuando:
 - [ ] usa el protocolo publicado por `PROTOCOL_VERSION` sin depender de conceptos internos del proveedor;
 - [ ] espera la aprobación humana después de publicar o descubrir nodos;
 - [ ] declara su identidad con `--agent` y respeta las asignaciones del humano;
-- [ ] respeta la regla de un nodo en curso por ejecución;
+- [ ] inicia sólo nodos que HRP acepta como compatibles y no sostiene dos nodos en curso a la vez;
+- [ ] declara el alcance del comando de verificación mientras haya otro nodo en vuelo;
 - [ ] registra la carpeta canónica correcta;
 - [ ] crea una sola ejecución por requerimiento;
 - [ ] publica el grafo antes de modificar archivos;

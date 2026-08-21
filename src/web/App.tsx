@@ -613,7 +613,7 @@ function RunControls({ run, onChanged }: { run: RunSummary; onChanged: () => voi
   return (
     <div className="run-controls" role="group" aria-label="Control de la ejecución">
       {run.control !== "active" && <button type="button" className="control-resume" onClick={() => { setControl("active").catch(() => undefined); }}>Reanudar</button>}
-      {run.control === "active" && <button type="button" className="control-pause" title="Ningún agente podrá iniciar nodos nuevos; el nodo en curso termina" onClick={() => { setControl("paused").catch(() => undefined); }}>Pausar</button>}
+      {run.control === "active" && <button type="button" className="control-pause" title="Ningún agente podrá iniciar nodos nuevos; los nodos en curso terminan su ciclo" onClick={() => { setControl("paused").catch(() => undefined); }}>Pausar</button>}
       {run.control !== "stopped" && <button type="button" className="control-stop" title="Detiene la ejecución para todos los agentes" onClick={() => { setControl("stopped").catch(() => undefined); }}>Detener</button>}
     </div>
   );
@@ -1335,7 +1335,7 @@ export function App() {
                   <div className={`control-banner control-banner-${detail.run.control}`} role="status">
                     <Icon name={detail.run.control === "paused" ? "clock" : "warning"}/>
                     <p>{detail.run.control === "paused"
-                      ? "Ejecución pausada: ningún agente puede iniciar nodos hasta que la reanudes; el nodo que estaba en curso termina su ciclo."
+                      ? "Ejecución pausada: ningún agente puede iniciar nodos hasta que la reanudes; los nodos en curso terminan su ciclo."
                       : "Ejecución detenida: los agentes no pueden iniciar más nodos y deben cerrar ordenadamente. Puedes reanudarla cuando quieras."}</p>
                   </div>
                 )}
@@ -1502,7 +1502,7 @@ function HelpPanel() {
             <h3>Tips</h3>
             <ul>
               <li>Nada se ejecuta sin tu aprobación; los nodos descubiertos también pasan por el gate.</li>
-              <li>Solo hay un nodo en curso por ejecución: los agentes se turnan solos.</li>
+              <li>HRP permite nodos compatibles en paralelo; si comparten archivo, contexto o rama, los agentes esperan la siguiente señal.</li>
               <li>Naranja prolongado con trabajo aprobado = ese modelo no se enteró; reenvíale el comando o usa «Devolver a claude» en el inspector.</li>
               <li>Un nodo en curso no puede cambiar de modelo; al terminar, su tarjeta muestra quién lo hizo y su costo (~tokens) si el agente lo reportó.</li>
               <li>Clic fuera del grafo deselecciona; el chevron colapsa proyectos y la × elimina con confirmación.</li>

@@ -521,18 +521,31 @@ describe("computeAttention", () => {
     expect(replacement.directive).toContain("--remaining uno");
   });
 
-  it("con un nodo ajeno en vuelo pide esperar, porque el workspace ejecuta uno a la vez", () => {
+  it("ofrece trabajo compatible aunque haya un nodo ajeno en vuelo", () => {
     const signal = computeAttention(detail({
       nodes: [
         node({ id: "en-vuelo", assignee: "codex", executedBy: "codex", status: "running" }),
         node({ id: "mio", assignee: "claude" }),
       ],
     }), "claude");
+    expect(signal.kind).toBe("work");
+    expect(signal.actionable).toBe(true);
+    expect(signal.directive).toContain("mio");
+    expect(signal.directive).not.toContain("en-vuelo");
+  });
+
+  it("pide esperar cuando el trabajo listo choca con un nodo ajeno en vuelo", () => {
+    const signal = computeAttention(detail({
+      nodes: [
+        node({ id: "en-vuelo", file: "A.ts", assignee: "codex", executedBy: "codex", status: "running" }),
+        node({ id: "mio", file: "A.ts", assignee: "claude" }),
+      ],
+    }), "claude");
     expect(signal.kind).toBe("busy");
     expect(signal.actionable).toBe(false);
     expect(signal.waiting).toBe(true);
     expect(signal.directive).toContain("en-vuelo");
-    expect(signal.directive).toContain("codex");
+    expect(signal.directive).toContain("ambos modifican A.ts");
   });
 
   it("al dueño del nodo en vuelo se le ordena cerrarlo, que es justo a quien hay que despertar", () => {
@@ -547,6 +560,43 @@ describe("computeAttention", () => {
     expect(signal.directive).toContain("en-vuelo");
     // No debe ofrecerle un nodo nuevo mientras arrastra uno a medias.
     expect(signal.directive).not.toContain("pendiente");
+  });
+
+  // La regla de compatibilidad vive dos veces: en computeAttention y en
+  // HrpStore.startNode. Esta prueba no las simula con fixtures: corre el mismo
+  // grafo contra el store real y comprueba que la señal sólo ofrece lo que el
+  // servidor aceptaría iniciar. Si una copia cambia sin la otra, falla aquí.
+  it("no ofrece un segundo nodo al mismo agente porque el servidor lo rechazaría", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "hrp-attention-"));
+    try {
+      const workspace = path.join(root, "workspace");
+      mkdirSync(workspace);
+      const store = new HrpStore(path.join(root, "data"));
+      const project = store.attachProject(workspace);
+      const run = store.createRun(project.id, "Concurrencia", "Nodos compatibles en paralelo");
+      store.setRunAuditors(run.id, ["antigravity"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "mio-uno", file: "A.ts", symbol: "A.first", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+        { id: "mio-dos", file: "B.ts", symbol: "B.second", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
+        { id: "ajeno", file: "C.ts", symbol: "C.third", title: "Ajeno", description: "Work", rationale: "Required", dependencies: [], suggestedAgent: "codex" },
+      ] }, "claude");
+      store.approveNodes(run.id);
+      store.startNode(run.id, "mio-uno", "claude");
+
+      const propia = computeAttention(store.getRunDetail(run.id)!, "claude");
+      expect(propia.directive).toContain("mio-uno");
+      expect(propia.directive).not.toContain("mio-dos");
+      expect(() => store.startNode(run.id, "mio-dos", "claude")).toThrow(/already running mio-uno/);
+
+      // La otra mitad del invariante: al agente distinto sí se le ofrece su
+      // nodo compatible, y el servidor lo acepta.
+      const ajena = computeAttention(store.getRunDetail(run.id)!, "codex");
+      expect(ajena.kind).toBe("work");
+      expect(ajena.directive).toContain("ajeno");
+      expect(store.startNode(run.id, "ajeno", "codex").status).toBe("running");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("un nodo sin aprobar no es trabajo disponible", () => {

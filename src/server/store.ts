@@ -789,11 +789,10 @@ export class HrpStore {
     if (node.status === "completed") throw new Error("Completed nodes cannot be reassigned");
     const run = this.getRun(runId);
     const paused = run?.control === "paused";
-    // Un agente que se queda sin presupuesto deja su nodo en vuelo y bloquea la
-    // ejecución entera, porque sólo puede haber uno a la vez. Con la ejecución
-    // pausada el humano puede recuperarlo: el nodo vuelve a 'pending' y pierde
-    // su ejecutor, pero conserva el diff y la verificación del intento como
-    // evidencia de lo que alcanzó a hacer.
+    // Un agente que se queda sin presupuesto deja su nodo en vuelo. Aunque
+    // puedan correr otros nodos compatibles, el humano sólo puede recuperarlo
+    // con la ejecución pausada: vuelve a 'pending' y pierde su ejecutor, pero
+    // conserva el diff y la verificación del intento como evidencia.
     const recovering = node.status === "running";
     if (recovering && !paused) {
       throw new Error("Running nodes cannot be reassigned while the execution runs; pause it with 'hrp run pause' to take the node back");
@@ -860,6 +859,24 @@ export class HrpStore {
     return this.getRun(runId)!;
   }
 
+  private dependsOn(nodesById: Map<string, ChangeNode>, nodeId: string, dependencyId: string, seen = new Set<string>()): boolean {
+    if (nodeId === dependencyId) return true;
+    if (seen.has(nodeId)) return false;
+    seen.add(nodeId);
+    const node = nodesById.get(nodeId);
+    if (!node) return false;
+    return node.dependencies.some((dependency) => this.dependsOn(nodesById, dependency, dependencyId, seen));
+  }
+
+  private concurrentConflict(candidate: ChangeNode, running: ChangeNode, nodesById: Map<string, ChangeNode>): string | undefined {
+    if (candidate.file === running.file) return `both modify ${candidate.file}`;
+    if (running.contextFiles?.includes(candidate.file)) return `${running.id} is using ${candidate.file} as approved context`;
+    if (candidate.contextFiles?.includes(running.file)) return `${candidate.id} would read ${running.file} while ${running.id} is changing it`;
+    if (this.dependsOn(nodesById, candidate.id, running.id)) return `${candidate.id} depends on running node ${running.id}`;
+    if (this.dependsOn(nodesById, running.id, candidate.id)) return `running node ${running.id} depends on ${candidate.id}`;
+    return undefined;
+  }
+
   startNode(runId: string, nodeId: string, agent?: string): ChangeNode {
     const run = this.getRun(runId);
     if (!run) throw new Error(`Unknown run: ${runId}`);
@@ -873,8 +890,26 @@ export class HrpStore {
     const blockers = node.dependencies.map((id) => this.getNode(runId, id)).filter((item) => item?.status !== "completed");
     if (blockers.length) throw new Error(`Incomplete dependencies: ${blockers.map((item) => item?.id).join(", ")}`);
     if (node.status === "completed") throw new Error("Completed nodes cannot be restarted");
-    const inFlight = this.database.prepare("SELECT id FROM nodes WHERE run_id = ? AND status = 'running' AND id != ?").get(runId, nodeId) as Row | undefined;
-    if (inFlight) throw new Error(`Another node is already running: ${String(inFlight.id)}. The workspace executes one node at a time`);
+    const detail = this.getRunDetail(runId);
+    const nodesById = new Map((detail?.nodes ?? []).map((candidate) => [candidate.id, candidate]));
+    const inFlight = (detail?.nodes ?? []).filter((candidate) => candidate.status === "running" && candidate.id !== nodeId);
+    // El estado por agente modela un solo nodo actual (currentNodeId), así que
+    // un agente con dos nodos en vuelo perdería el rastro de uno: el panel y la
+    // señal de atención sólo pueden nombrar el último. La concurrencia se abre
+    // entre agentes distintos, no dentro del mismo.
+    const executor = agent ?? node.assignee;
+    const busy = executor
+      ? inFlight.find((candidate) => (candidate.executedBy ?? candidate.assignee) === executor)
+      : undefined;
+    if (busy) {
+      throw new Error(`Agent ${executor} is already running ${busy.id}; close it with patch, verify and complete before starting ${nodeId}`);
+    }
+    const conflict = inFlight
+      .map((running) => ({ running, reason: this.concurrentConflict(node, running, nodesById) }))
+      .find((item) => item.reason);
+    if (conflict) {
+      throw new Error(`Node ${nodeId} cannot run concurrently with ${conflict.running.id}: ${conflict.reason}. Wait for the conflicting node to finish`);
+    }
     this.updateNodeStatus(runId, nodeId, "running");
     // El arranque es el único instante en que HRP sabe qué contenía el archivo
     // antes de que el agente lo tocara. Sin esa foto no hay forma posterior de
@@ -1037,8 +1072,29 @@ export class HrpStore {
     });
   }
 
+  // Con varios nodos en vuelo el workspace deja de ser estable: un comando que
+  // recorre todo el proyecto lee también los archivos que otro nodo tiene a
+  // medio editar, así que su verde o su rojo no dicen nada sobre este nodo. La
+  // concurrencia protege la escritura; el alcance del comando protege la
+  // lectura, y sólo el propio comando puede declararlo.
+  private verificationScopeTerms(node: ChangeNode): string[] {
+    const terms = [node.id, node.file, ...node.symbol.split(/[^A-Za-z0-9_-]+/)];
+    const stem = node.file.split("/").pop()?.replace(/\.[^.]+$/, "");
+    if (stem) terms.push(stem);
+    return terms.filter((term) => term && term.length >= 3);
+  }
+
   publishVerification(runId: string, nodeId: string, verification: Omit<Verification, "passed" | "observedAt">): ChangeNode {
     const node = this.requireNode(runId, nodeId);
+    const inFlight = (this.getRunDetail(runId)?.nodes ?? [])
+      .filter((candidate) => candidate.status === "running" && candidate.id !== nodeId);
+    if (inFlight.length) {
+      const terms = this.verificationScopeTerms(node);
+      const scoped = terms.some((term) => verification.command.includes(term));
+      if (!scoped) {
+        throw new Error(`Verification of ${nodeId} does not declare its scope while ${inFlight.map((candidate) => candidate.id).join(", ")} ${inFlight.length === 1 ? "is" : "are"} running: '${verification.command}' would also read files those nodes are editing. Name the node's file, symbol or id in the command, or wait for them to finish before running a project-wide check`);
+      }
+    }
     const result: Verification = { ...verification, passed: verification.exitCode === 0, observedAt: now() };
     this.database.prepare("UPDATE nodes SET verification_json = ?, status = ?, updated_at = ? WHERE run_id = ? AND id = ?")
       .run(JSON.stringify(result), result.passed ? node.status : "failed", result.observedAt, runId, nodeId);
