@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildReviewPack, runAutoReview } from "./review.js";
+import { buildPlanReviewPack, buildReviewPack, runAutoReview, runPlanReview } from "./review.js";
 import { HrpStore } from "./store.js";
 
 const roots: string[] = [];
@@ -49,6 +49,143 @@ function ollamaServer(handler: (request: IncomingMessage, response: ServerRespon
     });
   });
 }
+
+describe("auditoría del plan", () => {
+  function planFixture(auditors: string[]) {
+    const { store, run } = fixture();
+    if (auditors.length) store.setRunAuditors(run.id, auditors);
+    store.publishGraph(run.id, { nodes: [
+      { id: "uno", file: "src/theme.ts", symbol: "saveTheme", title: "Persistir", description: "Guardar el tema", rationale: "Lo pide el requisito", dependencies: [] },
+    ] }, "claude");
+    return { store, run };
+  }
+
+  function planReviewServer(answer: string, calls: { count: number; prompts: string[] }) {
+    return ollamaServer((request, response) => {
+      calls.count += 1;
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const payload = JSON.parse(body) as { messages: Array<{ content: string }> };
+        calls.prompts.push(payload.messages[0].content);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ model: "qa-plan", message: { content: answer } }));
+      });
+    });
+  }
+
+  it("arma el paquete del grafo sin diffs y con los cinco tipos admitidos", () => {
+    const { store, run } = planFixture(["codex"]);
+    const pack = buildPlanReviewPack(store, run.id);
+    expect(pack).toContain("Audit the completed graph");
+    expect(pack).toContain("src/theme.ts · saveTheme");
+    expect(pack).not.toContain("```diff");
+    for (const tipo of ["Nodo faltante", "Corte incorrecto", "Dependencia mal declarada", "Nodo sin verificación observable", "Nodo fuera del requisito"]) {
+      expect(pack).toContain(tipo);
+    }
+    expect(pack).toContain("--scope plan");
+    expect(pack).toContain("nunca lleva --node");
+  });
+
+  it("no audita un run sin grafo publicado", async () => {
+    const { store, run } = fixture();
+    store.setRunAuditors(run.id, ["ollama"]);
+    expect(() => buildPlanReviewPack(store, run.id)).toThrow(/no published graph/);
+    await expect(runPlanReview(store, run.id)).resolves.toBeUndefined();
+  });
+
+  it("no audita sin auditores elegidos por el humano", async () => {
+    const { store, run } = planFixture([]);
+    await expect(runPlanReview(store, run.id)).resolves.toBeUndefined();
+  });
+
+  it("registra los hallazgos con scope plan sin bloquear el cierre ni tocar la cobertura", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await planReviewServer(JSON.stringify([
+      { severity: "major", title: "Falta el nodo de migración", body: "El nodo uno cambia el formato y nada migra lo anterior." },
+    ]), calls);
+    try {
+      const { store, run } = planFixture(["ollama"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      const coverageBefore = JSON.stringify(store.getRunDetail(run.id)?.agentStates);
+
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 1 });
+
+      const findings = store.listFindings(run.id);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({ scope: "plan", nodeId: undefined, reviewer: "ollama:qa-plan" });
+      // La ronda informa al humano antes de aprobar; no es un segundo gate.
+      expect(store.getRun(run.id)?.openFindings).toBe(0);
+      expect(store.runReviewGate(run.id)).toHaveLength(0);
+      // Tampoco es la auditoría de los diffs: la cobertura del auditor no se toca.
+      expect(JSON.stringify(store.getRunDetail(run.id)?.agentStates)).toBe(coverageBefore);
+      // Y no interfiere con el gate humano del grafo.
+      expect(store.getRun(run.id)?.awaitingApproval).toBe(1);
+
+      await expect(runPlanReview(store, run.id)).resolves.toBeUndefined();
+      expect(calls.count).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("relanza con force la misma versión del grafo, y sólo con force", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await planReviewServer("SIN-HALLAZGOS", calls);
+    try {
+      const { store, run } = planFixture(["ollama"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 0 });
+      expect(calls.count).toBe(1);
+
+      // Sin force la ronda de esa versión ya está cerrada y no se repite.
+      await expect(runPlanReview(store, run.id)).resolves.toBeUndefined();
+      expect(calls.count).toBe(1);
+
+      // Con force sí: es el caso de 'hrp graph review' y POST /plan-review
+      // cuando la ronda falló o el humano eligió auditores después de publicar.
+      await expect(runPlanReview(store, run.id, { force: true })).resolves.toEqual({ created: 0 });
+      expect(calls.count).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("vuelve a auditar cuando el grafo cambia de versión", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await planReviewServer("SIN-HALLAZGOS", calls);
+    try {
+      const { store, run } = planFixture(["ollama"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 0 });
+      store.publishGraph(run.id, { nodes: [
+        { id: "uno", file: "src/theme.ts", symbol: "saveTheme", title: "Persistir", description: "Guardar el tema", rationale: "Lo pide el requisito", dependencies: [] },
+        { id: "dos", file: "src/theme.ts", symbol: "loadTheme", title: "Leer", description: "Leer el tema", rationale: "Lo pide el requisito", dependencies: ["uno"] },
+      ] }, "claude");
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 0 });
+      expect(calls.count).toBe(2);
+      expect(calls.prompts[1]).toContain("loadTheme");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("con auditores de sesión no llama a ollama y explica cómo obtener el paquete", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await planReviewServer("SIN-HALLAZGOS", calls);
+    try {
+      const { store, run } = planFixture(["codex"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 0 });
+      expect(calls.count).toBe(0);
+      const activity = store.getRunDetail(run.id)?.activity.map((item) => item.message) ?? [];
+      expect(activity.some((message) => message.includes("hrp graph review"))).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+});
 
 describe("buildReviewPack", () => {
   it("muestra acuerdos pendientes y la unanimidad alcanzada", () => {

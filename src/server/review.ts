@@ -138,6 +138,75 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string,
   return lines.join("\n");
 }
 
+// Paquete de auditoría del PLAN: el grafo publicado antes de que exista una
+// sola línea de código. No lleva diffs porque no los hay; su valor depende de
+// que el revisor aterrice cada hallazgo en un archivo y un símbolo concretos,
+// porque un modelo que sólo ve el grafo tiende a devolver consejos genéricos.
+export function buildPlanReviewPack(store: HrpStore, runId: string): string {
+  const detail = store.getRunDetail(runId);
+  if (!detail) throw new Error(`Unknown run: ${runId}`);
+  if (detail.nodes.length === 0) throw new Error(`Run has no published graph yet: ${runId}`);
+  const lines: string[] = [
+    `# Auditoría del plan HRP v${PROTOCOL_VERSION}`,
+    "",
+    `- Run: ${detail.run.id}`,
+    `- Título: ${detail.run.title}`,
+    `- Requisito: ${detail.run.requirement}`,
+    `- Agente base: ${detail.run.baseAgent ?? "(sin registrar)"}`,
+    `- Versión del grafo: ${detail.run.graphVersion}`,
+    "",
+    "## Tu rol: auditor del plan, no del código",
+    "",
+    "Este run todavía no tiene código: revisas el grafo de operaciones que el modelo base",
+    "propone para cumplir el requisito. Buscas errores estructurales, que son los que",
+    "ningún diff podrá revelar después porque el nodo que falta no aparece en ningún cambio.",
+    "",
+    "Reporta ÚNICAMENTE hallazgos de estos cinco tipos:",
+    "",
+    "1. Nodo faltante — una operación necesaria para el requisito que el grafo no contempla.",
+    "2. Corte incorrecto — un nodo que mezcla cambios independientes, o que parte en dos algo indivisible.",
+    "3. Dependencia mal declarada — un prerrequisito real que falta, uno decorativo que sobra, o dos nodos que tocan el mismo archivo sin arista entre ellos.",
+    "4. Nodo sin verificación observable — la descripción no permite decidir con qué comando se comprobaría.",
+    "5. Nodo fuera del requisito — trabajo que el requerimiento humano no pide.",
+    "",
+    "Reglas de admisión de cada hallazgo:",
+    "",
+    "- Cita siempre archivo y símbolo concretos del proyecto; un hallazgo sin esa referencia no es accionable y no debe reportarse.",
+    "- Si propones un nodo faltante, indica su file, su symbol y con qué comando se verificaría.",
+    "- No opines sobre estilo, nombres ni sobre cómo implementar un nodo: eso es del modelo base.",
+    "- Lo que no encaje en los cinco tipos, repórtalo con severity \"question\": es una duda, no un bloqueo.",
+    "- El grafo puede crecer durante la implementación (nodos descubiertos), así que no exijas exhaustividad: busca lo que rompería el plan, no lo que lo completaría.",
+    "",
+    `- Reporta: \`hrp finding add ${detail.run.id} --title T --body B --severity critical|major|minor|question --scope plan --reviewer TU_NOMBRE\``,
+    "- Un hallazgo de plan nunca lleva --node: cita el id del nodo en el cuerpo.",
+    "- Si el plan te parece sano, dilo explícitamente; no inventes hallazgos para justificar la ronda.",
+    "",
+    "## Grafo propuesto",
+    "",
+  ];
+  for (const node of detail.nodes) {
+    lines.push(
+      `### ${node.id}${node.discovered ? " (descubierto)" : ""}`,
+      "",
+      `- Archivo: ${node.file} · ${node.symbol}`,
+      `- Título: ${node.title}`,
+      `- Qué hará: ${node.description}`,
+      `- Por qué: ${node.rationale}`,
+      `- Depende de: ${node.dependencies.length ? node.dependencies.join(", ") : "(nada)"}`,
+      "",
+    );
+  }
+  const planFindings = detail.findings.filter((finding) => finding.scope === "plan");
+  if (planFindings.length > 0) {
+    lines.push("## Hallazgos de plan ya reportados (no los dupliques)", "");
+    for (const finding of planFindings) {
+      lines.push(`- [${finding.status}/${finding.severity}] ${finding.title} (${finding.reviewer})`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
 // El candado registra el desenlace, no solo el intento: { state, startedAt,
 // done }. Un proceso que muere con la auditoría en vuelo deja done: false y el
 // siguiente disparo (o el rescate del arranque) puede reintentarla.
@@ -184,6 +253,135 @@ export function pendingAuditRunIds(store: HrpStore): string[] {
     if (marker && !marker.done) result.push(row.key.slice("autoReview:".length));
   }
   return result;
+}
+
+// Rondas de plan en vuelo de ESTE proceso: dos publicaciones seguidas del mismo
+// grafo no disparan dos auditorías.
+const inFlightPlanReviews = new Set<string>();
+
+function planReviewMarker(store: HrpStore, runId: string): AutoReviewMarker | undefined {
+  const row = store.database.prepare("SELECT value_json FROM settings WHERE key = ?").get(`planReview:${runId}`) as { value_json?: string } | undefined;
+  if (!row?.value_json) return undefined;
+  return parseMarker(row.value_json) ?? { state: "<corrupto>", startedAt: "", done: true };
+}
+
+function setPlanReviewMarker(store: HrpStore, runId: string, marker: AutoReviewMarker): void {
+  store.database.prepare(`
+    INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+  `).run(`planReview:${runId}`, JSON.stringify(marker), new Date().toISOString());
+}
+
+// Auditoría del PLAN: se dispara al publicarse el grafo, una sola vez por
+// versión. A diferencia de la auditoría final, NO toca el estado de cobertura
+// del auditor ni cuenta para el gate de cierre: su único destinatario es el
+// humano que está a punto de aprobar. Nunca propaga excepciones ni bloquea el
+// arranque de los nodos; un fallo queda como actividad y se puede relanzar.
+export async function runPlanReview(store: HrpStore, runId: string, options: { force?: boolean; onProgress?: () => void } = {}): Promise<{ created: number } | undefined> {
+  if (inFlightPlanReviews.has(runId)) return undefined;
+  inFlightPlanReviews.add(runId);
+  let marker: AutoReviewMarker | undefined;
+  const finish = () => { if (marker) setPlanReviewMarker(store, runId, { ...marker, done: true }); };
+  try {
+    const detail = store.getRunDetail(runId);
+    if (!detail) return undefined;
+    if (detail.nodes.length === 0) return undefined;
+    // Sin auditores elegidos no hay a quién preguntar: el humano todavía no
+    // decidió la política de revisión de este run.
+    if (detail.run.auditors.length === 0) return undefined;
+    // Una versión del grafo se audita una sola vez: republicar el mismo plan
+    // (o corregirlo y volver al gate) no debe repetir la ronda ni duplicar
+    // hallazgos que el base ya está resolviendo.
+    const state = `v${detail.run.graphVersion}`;
+    const previous = planReviewMarker(store, runId);
+    if (!options.force && previous && previous.state === state) {
+      if (previous.done) return undefined;
+      if (Date.now() - Date.parse(previous.startedAt) < RETRY_AFTER_MS) return undefined;
+    }
+    marker = { state, startedAt: new Date().toISOString(), done: false };
+    setPlanReviewMarker(store, runId, marker);
+    // Los auditores con sesión no tienen canal automático: se les entrega el
+    // paquete con 'hrp graph review'. Sólo ollama puede auditar sin humano.
+    if (!detail.run.auditors.includes("ollama")) {
+      store.addActivity(runId, "note", "Auditoría del plan disponible para los auditores con sesión: 'hrp graph review <run-id>' entrega el paquete", undefined, undefined, "hrp");
+      finish();
+      options.onProgress?.();
+      return { created: 0 };
+    }
+    const settings = store.getOllamaSettings();
+    if (!settings.apiKey) {
+      store.addActivity(runId, "note", "Auditoría del plan omitida: ollama no está configurado", undefined, undefined, "ollama");
+      finish();
+      return undefined;
+    }
+    const pack = buildPlanReviewPack(store, runId);
+    const prompt = [
+      "Eres un modelo revisor dentro del protocolo HRP. Audita el PLAN de trabajo que sigue: todavía no hay código.",
+      `Responde ÚNICAMENTE con un arreglo JSON, sin explicaciones, sin markdown y sin fences: cada elemento es {"severity":"critical|major|minor|question","title":"...","body":"..."}.`,
+      "No incluyas ningún campo \"node\": un hallazgo de plan cita el id del nodo dentro de \"body\".",
+      "Si el plan te parece sano, responde exactamente el literal SIN-HALLAZGOS.",
+      "No inventes hallazgos para rellenar: SIN-HALLAZGOS es una respuesta válida y valiosa.",
+      "",
+      pack,
+    ].join("\n");
+    store.addActivity(runId, "note", `Auditoría del plan iniciada (${settings.model}) · ${detail.nodes.length} ${detail.nodes.length === 1 ? "operación propuesta" : "operaciones propuestas"}`, undefined, undefined, "ollama");
+    options.onProgress?.();
+    const upstream = await upstreamJson(
+      `${settings.baseUrl}/api/chat`,
+      { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
+      JSON.stringify({ model: settings.model, stream: false, options: { temperature: 0 }, messages: [{ role: "user", content: prompt }] }),
+    );
+    const body = upstream.body as { model?: string; message?: { content?: string }; error?: string; prompt_eval_count?: number; eval_count?: number };
+    if (upstream.statusCode >= 400) throw new Error(`Ollama respondió ${upstream.statusCode}: ${body.error ?? "error upstream"}`);
+    const model = body.model ?? settings.model;
+    const tokens = body.prompt_eval_count != null || body.eval_count != null
+      ? ` · ${body.prompt_eval_count ?? "?"} prompt + ${body.eval_count ?? "?"} respuesta tokens` : "";
+    store.addActivity(runId, "note", `Consulta a ollama (${model}) · auditoría del plan${tokens}`, undefined, undefined, "ollama");
+    const answer = unwrapFence(String(body.message?.content ?? "").trim());
+    if (answer.startsWith("NECESITO:")) {
+      store.addActivity(runId, "note", `Auditoría del plan detenida — ${answer.split("\n")[0]}`, undefined, undefined, "ollama");
+      finish();
+      options.onProgress?.();
+      return undefined;
+    }
+    if (answer === "SIN-HALLAZGOS") {
+      store.addActivity(runId, "note", `Auditoría del plan (${model}): sin hallazgos`, undefined, undefined, "ollama");
+      finish();
+      options.onProgress?.();
+      return { created: 0 };
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(answer); } catch {
+      throw new Error(`la respuesta del revisor no es JSON ni SIN-HALLAZGOS: ${answer.slice(0, 160)}`);
+    }
+    if (!Array.isArray(parsed)) throw new Error("la respuesta del revisor no es un arreglo");
+    for (const item of parsed as Array<{ severity?: string; title?: string; body?: string }>) {
+      if (!item || typeof item.title !== "string" || !item.title || typeof item.body !== "string" || !item.body || !findingSeverities.includes(item.severity as FindingSeverity)) {
+        throw new Error(`hallazgo con formato inválido: ${JSON.stringify(item).slice(0, 160)}`);
+      }
+    }
+    let created = 0;
+    store.database.transaction(() => {
+      for (const item of parsed as Array<{ severity: FindingSeverity; title: string; body: string }>) {
+        store.createFinding(runId, { reviewer: `ollama:${model}`, severity: item.severity, title: item.title, body: item.body, scope: "plan" });
+        created += 1;
+      }
+      store.addActivity(runId, "note", `Auditoría del plan (${model}): ${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"} sobre el grafo`, undefined, undefined, "ollama");
+    })();
+    finish();
+    options.onProgress?.();
+    return { created };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      store.addActivity(runId, "note", `Auditoría del plan falló: ${message}`, undefined, undefined, "ollama");
+      finish();
+      options.onProgress?.();
+    } catch { /* run borrado: nada que anotar */ }
+    return undefined;
+  } finally {
+    inFlightPlanReviews.delete(runId);
+  }
 }
 
 // Auditorías en vuelo de ESTE proceso: dos completes simultáneos no disparan doble.

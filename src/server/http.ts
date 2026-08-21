@@ -6,9 +6,9 @@ import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
-import { activityTypes, agentWorkPhases, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls, type RunDetail } from "../shared/protocol.js";
+import { activityTypes, agentWorkPhases, findingScopes, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls, type RunDetail } from "../shared/protocol.js";
 import { attentionRank, auditableNodes, computeAttention, type Attention } from "./attention.js";
-import { buildReviewPack, runAutoReview, upstreamJson } from "./review.js";
+import { buildPlanReviewPack, buildReviewPack, runAutoReview, runPlanReview, upstreamJson } from "./review.js";
 import { HrpStore } from "./store.js";
 
 const nodeInput = z.object({
@@ -232,6 +232,14 @@ export function createApp(store: HrpStore) {
       }
       const nodes = store.publishGraph(request.params.runId, { nodes: input.nodes }, input.agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "graph-published");
+      // Auditoría del plan: corre en segundo plano para que publicar el grafo
+      // no espere al revisor, y su fallo nunca invalida la publicación. Sus
+      // hallazgos llegan al humano antes de que apruebe, no después.
+      void runPlanReview(store, request.params.runId, {
+        onProgress: () => broadcast(projectForRun(request.params.runId), request.params.runId, "agent-status"),
+      }).then((result) => {
+        if (result && result.created > 0) broadcast(projectForRun(request.params.runId), request.params.runId, "finding-created");
+      });
       response.status(201).json({ nodes });
     } catch (error) { next(error); }
   });
@@ -479,6 +487,9 @@ export function createApp(store: HrpStore) {
         title: z.string().min(1),
         body: z.string().min(1),
         nodeId: z.string().min(1).optional(),
+        // Omitido, el store lo deriva de nodeId; sólo la auditoría del plan
+        // necesita declararlo, y entonces el store rechaza que traiga nodeId.
+        scope: z.enum(findingScopes).optional(),
       }).strict().parse(request.body);
       const finding = store.createFinding(request.params.runId, input);
       broadcast(projectForRun(request.params.runId), request.params.runId, "finding-created");
@@ -532,6 +543,33 @@ export function createApp(store: HrpStore) {
       store.addActivity(request.params.runId, "note", `Paquete de revisión generado${nodeId ? ` · subárbol ${nodeId}` : ""}`, undefined, nodeId, agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "activity-published");
       response.type("text/markdown").send(pack);
+    } catch (error) { next(error); }
+  });
+
+  // Paquete de auditoría del PLAN para un auditor con sesión: el humano lo
+  // copia a la otra sesión antes de aprobar el grafo.
+  app.get("/api/runs/:runId/plan-pack", (request, response, next) => {
+    try {
+      const agent = typeof request.query.agent === "string" ? request.query.agent : (typeof request.headers["x-agent"] === "string" ? request.headers["x-agent"] : undefined);
+      const pack = buildPlanReviewPack(store, request.params.runId);
+      store.addActivity(request.params.runId, "note", "Paquete de auditoría del plan generado", undefined, undefined, agent);
+      broadcast(projectForRun(request.params.runId), request.params.runId, "activity-published");
+      response.type("text/markdown").send(pack);
+    } catch (error) { next(error); }
+  });
+
+  // Relanzar la ronda: sirve cuando falló, cuando el humano eligió auditores
+  // después de publicar, o para forzar otra pasada sobre la misma versión.
+  app.post("/api/runs/:runId/plan-review", (request, response, next) => {
+    try {
+      if (!store.getRun(request.params.runId)) throw new Error(`Unknown run: ${request.params.runId}`);
+      void runPlanReview(store, request.params.runId, {
+        force: true,
+        onProgress: () => broadcast(projectForRun(request.params.runId), request.params.runId, "agent-status"),
+      }).then((result) => {
+        if (result && result.created > 0) broadcast(projectForRun(request.params.runId), request.params.runId, "finding-created");
+      });
+      response.status(202).json({ started: true });
     } catch (error) { next(error); }
   });
 

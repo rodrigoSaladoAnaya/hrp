@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./http.js";
 import { HrpStore } from "./store.js";
@@ -806,6 +807,55 @@ describe("HrpStore", () => {
       expect(finding.agreements.map((agreement) => agreement.agent)).toEqual(["codex"]);
       expect(finding.messages).toHaveLength(0);
       expect(store.getRunDetail(run.id)?.findings).toHaveLength(1);
+    });
+
+    it("derives the finding scope from nodeId and only accepts 'plan' without one", () => {
+      const { store, run } = reviewFixture();
+      expect(store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Nodo", body: "d", nodeId: "uno" }).scope).toBe("node");
+      expect(store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Integración", body: "d" }).scope).toBe("integration");
+
+      const plan = store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Falta un nodo", body: "Cita uno en el cuerpo", scope: "plan" });
+      expect(plan.scope).toBe("plan");
+      expect(plan.nodeId).toBeUndefined();
+
+      // Un hallazgo de plan audita el grafo: con nodeId contaría como revisión
+      // de ese nodo en la cobertura del auditor.
+      expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "x", body: "y", scope: "plan", nodeId: "uno" })).toThrow(/plan finding reviews the graph/i);
+      expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "x", body: "y", scope: "node" })).toThrow(/contradicts nodeId/i);
+      expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "x", body: "y", scope: "integration", nodeId: "uno" })).toThrow(/contradicts nodeId/i);
+      expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "x", body: "y", scope: "grafo" as never })).toThrow(/scope/i);
+    });
+
+    it("keeps plan findings out of the closing gate", () => {
+      const { store, run } = reviewFixture();
+      store.createFinding(run.id, { reviewer: "codex", severity: "critical", title: "Falta un nodo", body: "Cita uno", scope: "plan" });
+      expect(store.getRun(run.id)?.openFindings).toBe(0);
+      expect(store.runReviewGate(run.id)).toHaveLength(0);
+
+      // Los otros dos alcances sí retienen el cierre, como antes de la fase.
+      store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Contrato roto", body: "d", nodeId: "uno" });
+      store.createFinding(run.id, { reviewer: "codex", severity: "minor", title: "Integración", body: "d" });
+      expect(store.getRun(run.id)?.openFindings).toBe(2);
+      expect(store.runReviewGate(run.id).map((finding) => finding.title)).toEqual(["Contrato roto", "Integración"]);
+    });
+
+    it("backfills the scope of findings stored before the column existed", () => {
+      const { store, run } = reviewFixture();
+      store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Con nodo", body: "d", nodeId: "uno" });
+      store.createFinding(run.id, { reviewer: "codex", severity: "minor", title: "Sin nodo", body: "d" });
+      const dataDirectory = store.dataDirectory;
+      store.close();
+
+      // Simula una base anterior a la columna: al reabrir, la migración debe
+      // reconstruir el mismo significado que antes daba la ausencia de node_id.
+      const raw = new Database(path.join(dataDirectory, "hrp-v2.sqlite"));
+      raw.exec("ALTER TABLE findings DROP COLUMN scope");
+      raw.close();
+
+      const reopened = new HrpStore(dataDirectory);
+      const findings = reopened.listFindings(run.id);
+      expect(findings.map((finding) => [finding.title, finding.scope])).toEqual([["Con nodo", "node"], ["Sin nodo", "integration"]]);
+      reopened.close();
     });
 
     it("assigns an accepted discovered correction to its reporter only after unanimous agreement", () => {

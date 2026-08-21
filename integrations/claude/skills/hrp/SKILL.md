@@ -99,6 +99,20 @@ ahorro del nodo ≈ salida que no escribes − (spec + revisión fiel + ~1k de c
 
 HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al aprobar.
 
+### 2a. Atiende la auditoría del plan (protocolo 3.2)
+
+Publicar el grafo dispara una ronda de auditoría **sobre el plan**, antes de que el humano lo apruebe: los auditores elegidos revisan el grafo, no código, buscando lo que ningún diff podría revelar después —un nodo faltante, un corte incorrecto, una dependencia mal declarada, un nodo sin verificación observable o uno fuera del requerimiento—. Es una sola ronda por versión del grafo y **no bloquea nada**: ni la aprobación, ni el arranque de nodos, ni el cierre del run.
+
+Sus hallazgos llegan con `scope: "plan"` y sin `nodeId`. Cuando aparezcan, atiéndelos antes de que el humano apruebe:
+
+1. Léelos con `hrp finding show <finding-id>`.
+2. Si el hallazgo procede, **corrige el grafo y vuelve a publicarlo** — no abras un nodo descubierto: lo que está mal es el plan, y republicar devuelve los nodos no completados al gate humano. Después acepta el hallazgo citando la nueva versión.
+3. Si no procede, recházalo con `hrp finding reject <id> --author claude --body RAZON`, con una razón técnica y verificable. Tu respuesta se ve junto al botón de aprobar, así que es lo que el humano leerá para decidir.
+
+Si tus auditores son modelos con sesión (no `ollama`), la ronda no puede lanzarse sola: genera el paquete con `hrp graph review "$run_id"` y pide al humano que lo copie. `hrp graph review` también relanza la ronda de ollama si falló o si el humano eligió auditores después de publicar.
+
+No trates esta ronda como una certificación del plan ni esperes a que "termine" para seguir: en cuanto el humano apruebe, arranca los nodos.
+
 ### 2b. Espera la aprobación humana (protocolo 3.0)
 
 Los nodos del **grafo inicial** nacen **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Lo que **descubras** después ya no pasa por ese gate. Tras publicar el grafo, espera el clic del humano con el comando bloqueante:

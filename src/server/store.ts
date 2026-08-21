@@ -13,11 +13,14 @@ import {
   type AgentWorkPhase,
   type Activity,
   type ActivityType,
+  findingScopeFor,
+  findingScopes,
   findingSeverities,
   findingStatuses,
   type ChangeNode,
   type ChangeNodeInput,
   type Finding,
+  type FindingScope,
   type FindingAgreement,
   type FindingInput,
   type FindingMessage,
@@ -204,6 +207,7 @@ export class HrpStore {
         title TEXT NOT NULL,
         body TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('open','debating','accepted','rejected','escalated')),
+        scope TEXT NOT NULL DEFAULT 'integration' CHECK(scope IN ('node','integration','plan')),
         resolution_node_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -260,6 +264,14 @@ export class HrpStore {
         UPDATE activity SET agent = substr(message, 11, instr(message, ')') - 11)
         WHERE agent IS NULL AND type = 'node' AND message LIKE 'En curso (%'
       `);
+    }
+    // Antes de v3.2 el alcance del hallazgo se leía de la ausencia de node_id;
+    // el backfill conserva esa lectura y deja 'plan' sólo para los que nazcan
+    // de la auditoría del grafo, que declara su scope de forma explícita.
+    const findingColumns = this.database.pragma("table_info(findings)") as Row[];
+    if (!findingColumns.some((column) => String(column.name) === "scope")) {
+      this.database.exec("ALTER TABLE findings ADD COLUMN scope TEXT NOT NULL DEFAULT 'integration'");
+      this.database.exec("UPDATE findings SET scope = CASE WHEN node_id IS NULL THEN 'integration' ELSE 'node' END");
     }
     const nodeColumns = this.database.pragma("table_info(nodes)") as Row[];
     if (!nodeColumns.some((column) => String(column.name) === "patch_rationale")) {
@@ -1274,6 +1286,7 @@ export class HrpStore {
       id: String(row.id),
       runId: String(row.run_id),
       nodeId: row.node_id ? String(row.node_id) : undefined,
+      scope: (row.scope ? String(row.scope) : findingScopeFor(row.node_id ? String(row.node_id) : undefined)) as FindingScope,
       reviewer: String(row.reviewer),
       severity: String(row.severity) as Finding["severity"],
       title: String(row.title),
@@ -1292,13 +1305,21 @@ export class HrpStore {
   createFinding(runId: string, input: FindingInput): Finding {
     if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
     if (!findingSeverities.includes(input.severity)) throw new Error(`Unknown severity: ${input.severity}`);
+    const scope: FindingScope = input.scope ?? findingScopeFor(input.nodeId);
+    if (!findingScopes.includes(scope)) throw new Error(`Unknown finding scope: ${scope}`);
+    // El hallazgo de plan audita el grafo, no un cambio: aceptar un node_id lo
+    // haría contar como revisión de ese nodo en la cobertura del auditor.
+    if (scope === "plan" && input.nodeId) throw new Error("A plan finding reviews the graph, not a node: cite the node id in the body instead of nodeId");
+    if (scope !== "plan" && scope !== findingScopeFor(input.nodeId)) {
+      throw new Error(`Finding scope '${scope}' contradicts nodeId: ${input.nodeId ? "a finding with nodeId is 'node'" : "a finding without nodeId is 'integration'"}`);
+    }
     if (input.nodeId) this.requireNode(runId, input.nodeId);
     const id = randomUUID();
     const timestamp = now();
     this.database.prepare(`
-      INSERT INTO findings (id, run_id, node_id, reviewer, severity, title, body, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
-    `).run(id, runId, input.nodeId ?? null, input.reviewer, input.severity, input.title, input.body, timestamp, timestamp);
+      INSERT INTO findings (id, run_id, node_id, reviewer, severity, title, body, status, scope, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+    `).run(id, runId, input.nodeId ?? null, input.reviewer, input.severity, input.title, input.body, scope, timestamp, timestamp);
     this.recordFindingAgreement(id, input.reviewer, timestamp);
     this.addActivity(runId, "note", `Hallazgo de ${input.reviewer} (${input.severity}): ${input.title}`, input.body, input.nodeId, input.reviewer);
     return this.requireFinding(id);
@@ -1442,7 +1463,11 @@ export class HrpStore {
   // Hallazgos que impiden dar por cerrado el run: vivos u olvidados sin arbitrar.
   runReviewGate(runId: string): Finding[] {
     if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
-    return this.listFindings(runId).filter((finding) => ["open", "debating", "escalated"].includes(finding.status));
+    // Los hallazgos de plan auditan el grafo antes de implementar: el humano ya
+    // los vio al aprobar, así que no retienen la entrega del trabajo terminado.
+    return this.listFindings(runId)
+      .filter((finding) => finding.scope !== "plan")
+      .filter((finding) => ["open", "debating", "escalated"].includes(finding.status));
   }
 
   // Lista informativa de auditores seleccionados que aún no votan OK. El dato
@@ -1493,7 +1518,7 @@ export class HrpStore {
       FROM nodes WHERE run_id = ?
     `).get(String(row.id)) as Row;
     const findingCounts = this.database.prepare(
-      "SELECT COUNT(*) AS open FROM findings WHERE run_id = ? AND status IN ('open','debating','escalated')",
+      "SELECT COUNT(*) AS open FROM findings WHERE run_id = ? AND scope != 'plan' AND status IN ('open','debating','escalated')",
     ).get(String(row.id)) as Row;
     const total = Number(counts.total ?? 0);
     const completed = Number(counts.completed ?? 0);
