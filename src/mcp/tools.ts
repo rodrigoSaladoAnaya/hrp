@@ -577,7 +577,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
         },
         agent: {
           type: "string",
-          description: "Identidad del agente que realiza el trabajo (por defecto 'antigravity').",
+          description: "Identidad del agente que realiza el trabajo; si se omite, HRP usa la asignación del nodo o el modelo base.",
         },
       },
       required: ["runId", "nodeId"],
@@ -678,7 +678,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
         },
         agent: {
           type: "string",
-          description: "Identidad del agente (por defecto 'antigravity').",
+          description: "Identidad del agente; si se omite, HRP usa la asignación del nodo o el modelo base.",
         },
       },
       required: ["runId", "nodeId"],

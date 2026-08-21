@@ -221,10 +221,12 @@ describe("HrpStore", () => {
     ] }, "claude");
     expect(store.getRun(run.id)?.baseAgent).toBe("claude");
     expect(store.getRun(run.id)?.seenAgents).toContain("claude");
+    expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "base")?.assignee).toBe("claude");
     store.publishGraph(run.id, { nodes: [
       { id: "other", file: "B.ts", symbol: "B.other", title: "Other", description: "Work", rationale: "Required", dependencies: [] },
     ] }, "codex");
     expect(store.getRun(run.id)?.baseAgent).toBe("claude");
+    expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "other")?.assignee).toBe("claude");
     const discovered = store.addDiscoveredNode(run.id, {
       id: "extra", file: "C.ts", symbol: "C.extra", title: "Extra", description: "Add", rationale: "Found", dependencies: [],
     });
@@ -259,6 +261,7 @@ describe("HrpStore", () => {
     ] }, "claude");
     store.approveNodes(run.id);
     expect(store.getRun(run.id)?.seenAgents).not.toContain("codex");
+    store.assignNode(run.id, "change", "codex");
     store.startNode(run.id, "change", "codex");
     expect(store.getRun(run.id)?.seenAgents).toEqual(expect.arrayContaining(["claude", "codex"]));
   });
@@ -289,15 +292,18 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "delegable", file: "A.ts", symbol: "A.a", title: "Delegable", description: "Mechanical work", rationale: "Cheap model suffices", dependencies: [], suggestedAgent: "ollama" },
       { id: "propio", file: "B.ts", symbol: "B.b", title: "Propio", description: "Core work", rationale: "Needs the base model", dependencies: [] },
-    ] });
+    ] }, "codex");
     const nodes = store.getRunDetail(run.id)!.nodes;
     expect(nodes.find((node) => node.id === "delegable")).toMatchObject({ suggestedAgent: "ollama", assignee: "ollama" });
-    expect(nodes.find((node) => node.id === "propio")?.assignee).toBeUndefined();
+    expect(nodes.find((node) => node.id === "propio")?.assignee).toBe("codex");
+    store.assignNode(run.id, "propio", "claude");
     store.assignNode(run.id, "delegable", "claude");
     store.publishGraph(run.id, { nodes: [
       { id: "delegable", file: "A.ts", symbol: "A.a", title: "Delegable", description: "Mechanical work", rationale: "Cheap model suffices", dependencies: [], suggestedAgent: "ollama" },
+      { id: "propio", file: "B.ts", symbol: "B.b", title: "Propio", description: "Core work", rationale: "Needs the base model", dependencies: [] },
     ] });
     expect(store.getRunDetail(run.id)!.nodes.find((node) => node.id === "delegable")?.assignee).toBe("claude");
+    expect(store.getRunDetail(run.id)!.nodes.find((node) => node.id === "propio")?.assignee).toBe("claude");
   });
 
   it("assigns discovered nodes to their suggested agent instead of the base agent", () => {
@@ -607,13 +613,14 @@ describe("HrpStore", () => {
       expect(store.getRunDetail(run.id)?.activity.some((item) => item.agent === "human" && item.message.toLowerCase().includes("aprobado"))).toBe(true);
 
       // Node executed with explicit agent
+      store.assignNode(run.id, "uno", "worker-1");
       store.startNode(run.id, "uno", "worker-1");
       store.publishPatch(run.id, "uno", "Parche worker", "@@ A.ts\n+1");
       store.publishVerification(run.id, "uno", { command: "test", output: "ok", exitCode: 0 });
       store.completeNode(run.id, "uno");
 
       const detail = store.getRunDetail(run.id)!;
-      const workerEvents = detail.activity.filter((item) => item.nodeId === "uno" && !item.message.includes("Aprobado"));
+      const workerEvents = detail.activity.filter((item) => item.nodeId === "uno" && !item.message.includes("Aprobado") && !item.message.includes("Asignado"));
       expect(workerEvents.length).toBeGreaterThanOrEqual(4);
       for (const event of workerEvents) {
         expect(event.agent).toBe("worker-1");

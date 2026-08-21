@@ -518,6 +518,7 @@ export class HrpStore {
       if (!run.baseAgent) this.database.prepare("UPDATE runs SET base_agent = ? WHERE id = ?").run(agent, runId);
       this.registerAgent(runId, agent);
     }
+    const baseAgent = run.baseAgent ?? agent;
     const ids = new Set(input.nodes.map((node) => node.id));
     if (ids.size !== input.nodes.length) throw new Error("Node ids must be unique");
     for (const node of input.nodes) {
@@ -563,10 +564,10 @@ export class HrpStore {
           ELSE 0 END,
         updated_at = excluded.updated_at
     `);
-    // La sugerencia del modelo base pre-asigna el nodo solo si el humano no
-    // decidió ya un ejecutor; la asignación sigue siendo editable hasta aprobar.
-    const suggestAssign = this.database.prepare(`
-      UPDATE nodes SET assignee = @suggestedAgent
+    // Si no hay una delegación sugerida, el nodo pertenece explícitamente al
+    // modelo base. La asignación humana existente siempre gana.
+    const defaultAssign = this.database.prepare(`
+      UPDATE nodes SET assignee = @assignee
       WHERE run_id = @runId AND id = @id AND assignee IS NULL AND status IN ('pending','failed')
     `);
     const timestamp = now();
@@ -575,7 +576,8 @@ export class HrpStore {
         // contextFiles se separa del spread: el binding nombrado no admite claves sobrantes.
         const { contextFiles, ...fields } = node;
         upsert.run({ ...fields, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, contextJson: contextFiles?.length ? JSON.stringify(contextFiles) : null, dependencies: JSON.stringify(node.dependencies), timestamp });
-        if (node.suggestedAgent) suggestAssign.run({ runId, id: node.id, suggestedAgent: node.suggestedAgent });
+        const assignee = node.suggestedAgent ?? baseAgent;
+        if (assignee) defaultAssign.run({ runId, id: node.id, assignee });
       }
       this.database.prepare("UPDATE runs SET graph_version = graph_version + 1, updated_at = ? WHERE id = ?").run(timestamp, runId);
     })(input.nodes);

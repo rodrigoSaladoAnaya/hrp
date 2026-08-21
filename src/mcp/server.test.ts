@@ -74,7 +74,7 @@ class MockHrpMcpClient extends HrpMcpClient {
     return { id: nodeId, assignee };
   }
 
-  override async startNode(runId: string, nodeId: string, agent: string = "antigravity"): Promise<unknown> {
+  override async startNode(runId: string, nodeId: string, agent?: string): Promise<unknown> {
     return { id: nodeId, status: "running", agent };
   }
 
