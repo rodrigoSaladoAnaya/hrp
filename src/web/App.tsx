@@ -15,7 +15,7 @@ import {
   type ReactFlowInstance,
   type Viewport,
 } from "@xyflow/react";
-import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
+import { auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary } from "../shared/protocol";
 import { agentAttentionCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
@@ -697,8 +697,16 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
       <ol className="findings-list">
         {findings.map((finding) => {
           const node = finding.nodeId ? nodes.find((candidate) => candidate.id === finding.nodeId) : undefined;
+          const resolutionNode = finding.resolutionNodeId ? nodes.find((candidate) => candidate.id === finding.resolutionNodeId) : undefined;
           const expanded = expandedId === finding.id;
           const terminal = finding.status === "accepted" || finding.status === "rejected";
+          const requiredAgreementAgents = finding.requiredAgreementAgents ?? [];
+          const agreedAgents = new Set((finding.agreements ?? []).map((agreement) => agreement.agent));
+          const pendingAgreementAgents = requiredAgreementAgents.filter((agent) => !agreedAgents.has(agent));
+          const agreementCount = requiredAgreementAgents.length - pendingAgreementAgents.length;
+          const unanimousCopy = auditorIdentity(resolutionNode?.assignee) === auditorIdentity(finding.reviewer)
+            ? `${finding.reviewer} puede implementar la corrección; otro modelo deberá auditarla.`
+            : `La corrección permanece con ${resolutionNode?.assignee ?? "el modelo base"}; transferirla a ${finding.reviewer} requiere otro auditor independiente y una asignación compatible.`;
           return (
             <li key={finding.id} className={`finding-card status-${finding.status} ${finding.status === "escalated" ? "needs-human" : ""}`}>
               <button type="button" className="finding-summary" aria-expanded={expanded} onClick={() => setExpandedId(expanded ? "" : finding.id)}>
@@ -719,6 +727,13 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
                     ))}
                   </div>
                   {finding.resolutionNodeId && <p className="finding-resolution">Corrección vinculada: <button type="button" onClick={() => onSelectNode(finding.resolutionNodeId!)}>{finding.resolutionNodeId}</button></p>}
+                  {requiredAgreementAgents.length > 0 && (
+                    <p className={finding.unanimous ? "finding-resolution" : "finding-meta"}>
+                      {finding.unanimous
+                        ? `Acuerdo unánime (${agreementCount}/${requiredAgreementAgents.length}). ${unanimousCopy}`
+                        : `Acuerdos ${agreementCount}/${requiredAgreementAgents.length} · Pendientes: ${pendingAgreementAgents.join(", ")}.`}
+                    </p>
+                  )}
                   <div className="finding-actions">
                     <textarea
                       placeholder={terminal ? "Razón para reabrir el debate…" : finding.status === "escalated" ? "Tu arbitraje: tercia en el debate o escribe la razón del rechazo…" : "Tercia en el debate como humano…"}

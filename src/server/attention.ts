@@ -80,6 +80,7 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   const auditorConsensus = computeAuditorConsensus(detail.run.auditors, allCompleted ? detail.agentStates : [], detail.nodes);
   const pendingAuditors = auditorConsensus.pendingAuditors;
   const pendingAuditorVotes = auditorConsensus.pendingAuditorVotes;
+  const auditorNeedsReview = allCompleted && isAuditor && (auditorState?.phase !== "completed" || pendingAuditors.includes(agent));
   const decide = (kind: AttentionKind, directive: string): Attention => ({
     runId: run.id,
     projectId: run.projectId,
@@ -108,9 +109,21 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
     return decide("findings", `Hallazgos por atender (${debates.length}): ${debates.map((finding) => finding.id).join(", ")}. Lee cada uno con 'hrp finding show <id>' y responde con 'hrp finding reply <id> --author ${agent} --body ...'; acepta creando un nodo de corrección (hrp node discover + hrp finding accept --resolution-node ID), rebate con argumentos técnicos o reabre un cierre con 'hrp finding reopen <id> --author ${agent} --body RAZON'. Tras dos rondas sin evidencia nueva, 'hrp finding escalate <id>'.`);
   }
 
+  const identity = auditorIdentity(agent);
+  const agreementsPending = identity ? detail.findings.filter((finding) => {
+    if (finding.status === "rejected" || finding.status === "escalated") return false;
+    if (finding.resolutionNodeId && detail.nodes.some((node) => node.id === finding.resolutionNodeId && node.status === "completed")) return false;
+    const agreed = new Set((finding.agreements ?? []).map((agreement) => auditorIdentity(agreement.agent)));
+    const responded = finding.messages.some((message) => auditorIdentity(message.author) === identity);
+    return (finding.requiredAgreementAgents ?? []).includes(identity) && !agreed.has(identity) && !responded;
+  }) : [];
+  if (agreementsPending.length && run.control === "active" && !auditorNeedsReview) {
+    return decide("findings", `Tu acuerdo falta en ${agreementsPending.length} ${agreementsPending.length === 1 ? "hallazgo" : "hallazgos"} (${agreementsPending.map((finding) => finding.id).join(", ")}). Lee el hilo con 'hrp finding show <id>'; si discrepas, responde con 'hrp finding reply <id> --author ${agent} --body ...'. Si aceptas que el reportero implemente la corrección vinculada y que otro agente la audite, publica 'hrp finding agree <id> --author ${agent}'.`);
+  }
+
   // Al terminar la implementación, una sesión revisora que estaba bloqueada
   // recibe una instrucción accionable. No se apropia de nodos del agente base.
-  if (allCompleted && isAuditor && (auditorState?.phase !== "completed" || pendingAuditors.includes(agent))) {
+  if (auditorNeedsReview) {
     // La cobertura se declara sobre lo ajeno: pedirle los propios sería pedirle
     // que se autoaudite, y el gate luego rechazaría ese cierre.
     const auditable = auditableNodes(detail, agent);

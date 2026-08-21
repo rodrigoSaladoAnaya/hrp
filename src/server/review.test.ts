@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runAutoReview } from "./review.js";
+import { buildReviewPack, runAutoReview } from "./review.js";
 import { HrpStore } from "./store.js";
 
 const roots: string[] = [];
@@ -49,6 +49,35 @@ function ollamaServer(handler: (request: IncomingMessage, response: ServerRespon
     });
   });
 }
+
+describe("buildReviewPack", () => {
+  it("muestra acuerdos pendientes y la unanimidad alcanzada", () => {
+    const { store, run } = fixture();
+    try {
+      store.setRunAuditors(run.id, ["claude", "antigravity"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "change", file: "src/A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+      ] }, "codex");
+      const finding = store.createFinding(run.id, {
+        reviewer: "claude",
+        severity: "major",
+        title: "Contrato incompleto",
+        body: "Falta validar el caso límite.",
+      });
+      store.setFindingStatus(finding.id, "accepted", "change");
+
+      const pendingPack = buildReviewPack(store, run.id);
+      expect(pendingPack).toContain("hrp finding agree <finding-id> --author TU_NOMBRE");
+      expect(pendingPack).toContain("acuerdos 2/3 · faltan antigravity");
+
+      store.agreeFinding(finding.id, "antigravity");
+      const unanimousPack = buildReviewPack(store, run.id);
+      expect(unanimousPack).toContain("acuerdos 3/3 · unanimidad");
+    } finally {
+      store.close();
+    }
+  });
+});
 
 describe("runAutoReview", () => {
   it("allows the configured Ollama auditor to close with no scope when the same base model implemented every node", async () => {

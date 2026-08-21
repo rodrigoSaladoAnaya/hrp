@@ -151,6 +151,10 @@ hrp finding show <finding-id>
 - Hallazgo inválido: `hrp finding reject <finding-id> --author codex --body "Razón técnica verificable"`.
 - Duda que no puede resolverse con evidencia: `hrp finding escalate <finding-id>`.
 
+Al reportar, el autor queda acordado; al aceptar, queda acordado el base. Después, cada auditor seleccionado lee el hilo y el nodo vinculado: si discrepa usa `hrp finding reply`; si acepta que el reportero implemente la corrección usa `hrp finding agree <finding-id> --author SU_NOMBRE` o `hrp_finding_agree`. Cuando base y auditores alcanzan unanimidad, HRP reasigna al reportero elegible el nodo de corrección descubierto sólo si otro auditor seleccionado distinto puede revisarlo y no existe una asignación manual incompatible. Sin ese revisor independiente, el nodo permanece con el modelo base.
+
+El reportero inicia esa corrección sólo cuando `hrp state` confirme la asignación, la ejecuta con el ciclo normal y queda excluido de auditarla. Otro auditor debe cubrir el nodo nuevo. `hrp finding reopen` reinicia los acuerdos para la nueva evidencia. Esta unanimidad pertenece al hallazgo; el gate final conserva mayoría simple.
+
 Al completarse todos los nodos, el servidor ejecuta la auditoría final automáticamente. Mantente atento con `hrp_attention` o `hrp attention --agent codex --wait 600`, resuelve todo hallazgo vivo y confirma:
 
 ```sh
@@ -159,13 +163,13 @@ hrp review gate "$run_id"
 
 ### Codex como colaborador
 
-Si `run.baseAgent` pertenece a Claude u otro agente, completa sólo los nodos asignados a `codex`. No resuelvas hallazgos, no tomes nodos sin asignar y no ejecutes la auditoría final: informa al base cuando tu trabajo quede publicado y verificado.
+Si `run.baseAgent` pertenece a Claude u otro agente, completa sólo los nodos asignados a `codex`. No aceptes, rechaces ni escales hallazgos en nombre del base y no tomes nodos sin asignar. Si eres auditor seleccionado, sí debate y registra tu propio acuerdo. Si la unanimidad reasigna a `codex` la corrección que reportaste, impleméntala como cualquier otro nodo asignado y deja su auditoría a otro modelo. No ejecutes el cierre final: informa al base cuando tu trabajo quede publicado y verificado.
 
 ### Codex como revisor
 
 Si estás seleccionado en `run.auditors`, mantén activa la espera con `hrp_attention` o `hrp attention --agent codex --wait 600`. Al recibir **Auditoría disponible**, no reclames nodos sin asignación: publica `hrp agent status <run-id> --agent codex --phase reviewing ...`, genera `hrp review pack <run-id>` y busca errores de integración, contratos rotos y desviaciones entre spec y diff. Durante pasadas largas actualiza `--completed`, `--reviewed` y `--remaining` para que el humano vea la cobertura real.
 
-Registra problemas con `hrp finding add` y debate con `hrp finding reply`; no edites el workspace ni inventes hallazgos para rellenar. Cuando todos los nodos estén cubiertos, publica `phase completed` con todos sus IDs en `--reviewed` y sin `--remaining`. Después vuelve a la espera con `hrp_attention` o `hrp attention`: si el base completa una corrección, HRP restablece el auditor a `waiting` y solicita otra pasada. Nunca publiques `completed` sólo porque aún no existen hallazgos.
+Registra problemas con `hrp finding add`, debate con `hrp finding reply` y acuerda una corrección aceptable con `hrp finding agree`; mientras actúes sólo como revisor no edites el workspace ni inventes hallazgos para rellenar. Si HRP te asigna por unanimidad la corrección de tu hallazgo, cambia al rol ejecutor para ese nodo y no lo incluyas en tu propia cobertura. Cuando todos los nodos ajenos estén cubiertos, publica `phase completed` con sus IDs en `--reviewed` y sin `--remaining`. Después vuelve a la espera con `hrp_attention` o `hrp attention`: una corrección completada puede restablecer a otros auditores a `waiting` y solicitar otra pasada. Nunca publiques `completed` sólo porque aún no existen hallazgos.
 
 ## 8. Control, reanudación y cierre
 
@@ -179,4 +183,4 @@ Después de una interrupción, consulta `hrp state "$run_id" --json` o `hrp_get_
 - no asumas que `En vivo` significa que otro agente sigue trabajando;
 - registra como descubierto el trabajo real que falte en el mapa.
 
-Antes de entregar como agente base, confirma que todos los nodos estén `completed`, tengan diff atribuible y verificación exitosa, que cada auditor seleccionado haya publicado `phase completed` y que `hrp review gate` pase sin hallazgos vivos ni `pendingAuditors`. Como colaborador, confirma únicamente tus nodos asignados y devuelve el control al base.
+Antes de entregar como agente base, confirma que todos los nodos estén `completed`, tengan diff atribuible y verificación exitosa, y que `hrp review gate` pase sin hallazgos vivos ni votos faltantes para la mayoría (`pendingAuditorVotes === 0`). `pendingAuditors` puede conservar modelos sin voto que ya no bloqueen el cierre. Como colaborador, confirma únicamente tus nodos asignados y devuelve el control al base.

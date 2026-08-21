@@ -61,6 +61,9 @@ function detail(partial: { nodes?: ChangeNode[]; run?: Partial<RunSummary>; find
       body: "b",
       status: "open",
       messages: [],
+      agreements: [],
+      requiredAgreementAgents: [],
+      unanimous: false,
       createdAt: timestamp,
       updatedAt: timestamp,
       ...finding,
@@ -85,6 +88,108 @@ describe("computeAttention", () => {
       findings: [{ status: "debating", messages: [{ id: "m", findingId: "f0", author: "claude", body: "respondido", createdAt: timestamp }] }],
     }), "claude");
     expect(signal.kind).toBe("work");
+  });
+
+  it("pide a cada auditor el acuerdo que aún falta en un hallazgo", () => {
+    const signal = computeAttention(detail({
+      nodes: [node({ id: "correccion", status: "pending" })],
+      run: { baseAgent: "codex", auditors: ["claude", "antigravity"] },
+      findings: [{
+        id: "hallazgo",
+        reviewer: "claude",
+        status: "accepted",
+        resolutionNodeId: "correccion",
+        agreements: [{ agent: "claude", createdAt: timestamp }, { agent: "codex", createdAt: timestamp }],
+        requiredAgreementAgents: ["codex", "claude", "antigravity"],
+      }],
+    }), "antigravity");
+
+    expect(signal.kind).toBe("findings");
+    expect(signal.directive).toContain("hallazgo");
+    expect(signal.directive).toContain("hrp finding agree <id> --author antigravity");
+  });
+
+  it("deja de pedir colaboración cuando el auditor ya registró su acuerdo", () => {
+    const signal = computeAttention(detail({
+      nodes: [node({ id: "correccion", status: "pending", assignee: "claude" })],
+      run: { baseAgent: "codex", auditors: ["claude", "antigravity"] },
+      findings: [{
+        reviewer: "claude",
+        status: "accepted",
+        resolutionNodeId: "correccion",
+        agreements: ["claude", "codex", "antigravity"].map((agent) => ({ agent, createdAt: timestamp })),
+        requiredAgreementAgents: ["codex", "claude", "antigravity"],
+        unanimous: true,
+      }],
+    }), "antigravity");
+
+    expect(signal.kind).not.toBe("findings");
+  });
+
+  it("permite auditar y no vuelve a pedir un acuerdo cuando la corrección terminó", () => {
+    const nodes = [node({ id: "correccion", status: "completed", executedBy: "codex" })];
+    const finding = {
+      reviewer: "claude",
+      status: "accepted" as const,
+      resolutionNodeId: "correccion",
+      agreements: ["claude", "codex"].map((agent) => ({ agent, createdAt: timestamp })),
+      requiredAgreementAgents: ["codex", "claude", "antigravity"],
+    };
+    const run = { baseAgent: "codex", auditors: ["claude", "antigravity"] };
+
+    const beforeVote = computeAttention(detail({ nodes, run, findings: [finding] }), "antigravity");
+    expect(beforeVote.kind).toBe("audit");
+    expect(beforeVote.directive).toContain("Auditoría disponible");
+
+    const agentStates = [{
+      agent: "antigravity",
+      phase: "completed" as const,
+      summary: "Auditoría terminada",
+      completed: 1,
+      total: 1,
+      reviewedNodeIds: ["correccion"],
+      remainingNodeIds: [],
+      startedAt: timestamp,
+      updatedAt: timestamp,
+    }];
+    const afterVote = computeAttention(detail({ nodes, run, findings: [finding], agentStates }), "antigravity");
+    expect(afterVote.kind).toBe("review-pass");
+    expect(afterVote.directive).not.toContain("hrp finding agree");
+  });
+
+  it("considera atendido el acuerdo cuando el auditor ya respondió en el hilo", () => {
+    const signal = computeAttention(detail({
+      nodes: [node({ id: "correccion", status: "pending" })],
+      run: { baseAgent: "codex", auditors: ["claude", "antigravity"] },
+      findings: [{
+        reviewer: "claude",
+        status: "accepted",
+        resolutionNodeId: "correccion",
+        agreements: ["claude", "codex"].map((agent) => ({ agent, createdAt: timestamp })),
+        requiredAgreementAgents: ["codex", "claude", "antigravity"],
+        messages: [{ id: "m", findingId: "f0", author: "antigravity", body: "No estoy de acuerdo", createdAt: timestamp }],
+      }],
+    }), "antigravity");
+
+    expect(signal.kind).toBe("implementation");
+    expect(signal.directive).not.toContain("hrp finding agree");
+  });
+
+  it("mantiene el debate del modelo base por encima de los acuerdos pendientes", () => {
+    const signal = computeAttention(detail({
+      nodes: [node({ id: "correccion" })],
+      run: { baseAgent: "codex", auditors: ["claude", "antigravity"] },
+      findings: [{
+        id: "hallazgo",
+        reviewer: "claude",
+        agreements: [{ agent: "claude", createdAt: timestamp }],
+        requiredAgreementAgents: ["codex", "claude", "antigravity"],
+      }],
+    }), "codex");
+
+    expect(signal.kind).toBe("findings");
+    expect(signal.directive).toContain("hrp finding accept");
+    expect(signal.directive).not.toContain("hrp finding agree");
   });
 
   it("sólo anuncia nodos que el servidor aceptaría iniciar", () => {

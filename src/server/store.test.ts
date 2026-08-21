@@ -393,8 +393,74 @@ describe("HrpStore", () => {
       expect(() => store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "x", body: "y", nodeId: "fantasma" })).toThrow(/Unknown node/);
       const finding = store.createFinding(run.id, { reviewer: "codex", severity: "major", title: "Contrato roto", body: "Detalle", nodeId: "uno" });
       expect(finding.status).toBe("open");
+      expect(finding.agreements.map((agreement) => agreement.agent)).toEqual(["codex"]);
       expect(finding.messages).toHaveLength(0);
       expect(store.getRunDetail(run.id)?.findings).toHaveLength(1);
+    });
+
+    it("assigns an accepted discovered correction to its reporter only after unanimous agreement", () => {
+      const { store, run } = fixture();
+      store.setRunAuditors(run.id, ["claude", "antigravity"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "original", file: "A.ts", symbol: "A.original", title: "Original", description: "Work", rationale: "Required", dependencies: [] },
+      ] }, "codex");
+      const finding = store.createFinding(run.id, { reviewer: "claude", severity: "major", title: "Contrato roto", body: "Detalle", nodeId: "original" });
+      const correction = store.addDiscoveredNode(run.id, {
+        id: "correction", file: "A.ts", symbol: "A.correction", title: "Correction", description: "Fix the contract", rationale: "Accepted finding", dependencies: ["original"],
+      });
+      expect(correction).toMatchObject({ approved: true, assignee: "codex" });
+      expect(finding.requiredAgreementAgents).toEqual(["codex", "claude", "antigravity"]);
+      expect(finding.agreements.map((agreement) => agreement.agent)).toEqual(["claude"]);
+
+      const accepted = store.setFindingStatus(finding.id, "accepted", "correction");
+      expect(accepted.agreements.map((agreement) => agreement.agent)).toEqual(["claude", "codex"]);
+      expect(accepted.unanimous).toBe(false);
+      expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "correction")?.assignee).toBe("codex");
+      expect(() => store.agreeFinding(finding.id, "outsider")).toThrow(/not the base model or a selected auditor/);
+
+      const unanimous = store.agreeFinding(finding.id, "antigravity");
+      expect(unanimous.unanimous).toBe(true);
+      expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "correction")?.assignee).toBe("claude");
+      expect(store.getRunDetail(run.id)?.activity.some((item) => item.message.includes("Corrección asignada por unanimidad a claude"))).toBe(true);
+
+      const reopened = store.setFindingStatus(finding.id, "open");
+      expect(reopened.unanimous).toBe(false);
+      expect(reopened.agreements.map((agreement) => agreement.agent)).toEqual(["claude"]);
+    });
+
+    it("keeps the correction with the base model when the reporter is the only auditor", () => {
+      const { store, run } = fixture();
+      store.setRunAuditors(run.id, ["claude"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "original", file: "A.ts", symbol: "A.original", title: "Original", description: "Work", rationale: "Required", dependencies: [] },
+      ] }, "codex");
+      const finding = store.createFinding(run.id, { reviewer: "claude", severity: "major", title: "Contrato roto", body: "Detalle", nodeId: "original" });
+      store.addDiscoveredNode(run.id, {
+        id: "correction", file: "A.ts", symbol: "A.correction", title: "Correction", description: "Fix the contract", rationale: "Accepted finding", dependencies: ["original"],
+      });
+
+      const accepted = store.setFindingStatus(finding.id, "accepted", "correction");
+
+      expect(accepted.unanimous).toBe(true);
+      expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "correction")?.assignee).toBe("codex");
+      expect(store.getRunDetail(run.id)?.activity.some((item) => item.message.includes("Corrección asignada por unanimidad"))).toBe(false);
+    });
+
+    it("preserves a correction assignment to another agent when agreement becomes unanimous", () => {
+      const { store, run } = fixture();
+      store.setRunAuditors(run.id, ["claude", "antigravity"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "original", file: "A.ts", symbol: "A.original", title: "Original", description: "Work", rationale: "Required", dependencies: [] },
+      ] }, "codex");
+      const finding = store.createFinding(run.id, { reviewer: "claude", severity: "minor", title: "Detalle", body: "Corregir" });
+      store.addDiscoveredNode(run.id, {
+        id: "manual", file: "B.ts", symbol: "B.manual", title: "Manual", description: "Fix", rationale: "Accepted finding", dependencies: [],
+      });
+      store.assignNode(run.id, "manual", "antigravity");
+      store.setFindingStatus(finding.id, "accepted", "manual");
+      store.agreeFinding(finding.id, "antigravity");
+      expect(store.getFinding(finding.id)?.unanimous).toBe(true);
+      expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "manual")?.assignee).toBe("antigravity");
     });
 
     it("replies promote open to debating without regressing terminal states", () => {

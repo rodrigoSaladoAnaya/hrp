@@ -480,6 +480,15 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  app.post("/api/findings/:findingId/agreements", (request, response, next) => {
+    try {
+      const input = z.object({ agent: z.string().min(1) }).strict().parse(request.body);
+      const finding = store.agreeFinding(request.params.findingId, input.agent);
+      broadcast(projectForRun(finding.runId), finding.runId, "finding-updated");
+      response.json(finding);
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/findings/:findingId/status", (request, response, next) => {
     try {
       const input = z.object({

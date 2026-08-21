@@ -85,6 +85,7 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string,
     "",
     `- Reporta: \`hrp finding add ${detail.run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE\``,
     "- Debate una respuesta del base: `hrp finding reply <finding-id> --body B --author TU_NOMBRE`",
+    "- Si aceptas una corrección vinculada: `hrp finding agree <finding-id> --author TU_NOMBRE`",
     "- Reabre un cierre con evidencia: `hrp finding reopen <finding-id> --author TU_NOMBRE --body RAZON`",
     `- Si estás conforme, vota OK con \`hrp agent status ${detail.run.id} --agent TU_NOMBRE --phase completed --summary \"Auditoría terminada\" --completed N --total N --reviewed ID,ID --remaining \"\"\`; el gate cierra con mayoría simple de auditores.`,
     "- Si no encuentras nada, dilo explícitamente; no inventes hallazgos.",
@@ -99,7 +100,11 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string,
   if (detail.findings.length > 0) {
     lines.push("", "## Hallazgos ya reportados (no los dupliques)", "");
     for (const finding of detail.findings) {
-      lines.push(`- [${finding.status}/${finding.severity}] ${finding.title} (${finding.reviewer}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""})`);
+      const agreed = new Set(finding.agreements.map((agreement) => agreement.agent));
+      const pending = finding.requiredAgreementAgents.filter((agent) => !agreed.has(agent));
+      const agreementCount = finding.requiredAgreementAgents.length - pending.length;
+      const consensus = `acuerdos ${agreementCount}/${finding.requiredAgreementAgents.length}${finding.unanimous ? " · unanimidad" : pending.length ? ` · faltan ${pending.join(", ")}` : ""}`;
+      lines.push(`- [${finding.status}/${finding.severity}] ${finding.title} (${finding.reviewer}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""} · ${consensus})`);
     }
   }
   const completed = scope.filter((node): node is ChangeNode & { diff: string } => node.status === "completed" && Boolean(node.diff));

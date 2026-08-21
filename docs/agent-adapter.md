@@ -535,9 +535,10 @@ El humano convierte en revisor a cualquier modelo con sesión —preferentemente
 - audita buscando **errores de integración entre nodos, contratos rotos, desviaciones entre la spec aprobada y el diff aplicado, y casos borde sin cubrir**;
 - reporta cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer SU_NOMBRE`;
 - debate las respuestas del base con `hrp finding reply <finding-id> --author SU_NOMBRE --body ...`, con argumentos técnicos y citas al diff;
+- si acepta la corrección vinculada, registra su acuerdo con `hrp finding agree <finding-id> --author SU_NOMBRE`; si discrepa, responde en el hilo en vez de acordar;
 - reabre un cierre con `hrp finding reopen <finding-id> --author SU_NOMBRE --body RAZON` cuando tenga evidencia nueva de que el debate no quedó resuelto;
 - sólo publica `phase completed` cuando `--reviewed` cubre **los nodos que no escribió él** y `--remaining` queda vacío; después vuelve a `hrp wait approval`, porque una corrección completada puede abrir otra pasada;
-- **nunca edita código**: su salida son hallazgos y debate;
+- mientras actúa sólo como revisor no edita código; si HRP le asigna por unanimidad el nodo descubierto que corrige su propio hallazgo, pasa a ejecutor de ese nodo y sigue el ciclo normal de parche y verificación;
 - si no encuentra nada real, lo dice; inventar hallazgos para rellenar contamina el debate y el registro.
 
 **La cobertura se cuenta sobre lo ajeno.** Un mismo agente puede implementar nodos y auditar la ejecución, y el contrato le prohíbe revisar los suyos: por eso el conjunto que exige el cierre son los nodos cuyo autor (`executedBy`, o `assignee` si nunca se ejecutó) es **otro**. `--total` y `--remaining` de la directiva de auditoría ya vienen calculados sobre ese subconjunto, y el servidor valida contra él —pedirle los propios volvía imposible el cierre y dejaba `review gate` bloqueado sin ningún hallazgo vivo—. Si el auditor resulta ser el autor de todo, su cierre se acepta para no bloquear la ejecución, pero queda escrito en Actividad que su auditoría no cubrió nada: esa ejecución necesita otro auditor.
@@ -548,6 +549,9 @@ Quien autoriza los cambios del debate es el **agente base**; el humano es monito
 
 - `hrp wait approval` avisa cuando hay hallazgos cuyo último turno no es del base; atenderlos tiene prioridad sobre iniciar nodos nuevos.
 - Cada hallazgo se **resuelve con autoridad propia**: si procede, el base lo acepta creando el nodo de corrección como trabajo descubierto (`hrp node discover`) y lo vincula con `hrp finding accept <id> --resolution-node NODO` — **la aceptación autoriza el nodo de corrección** (queda aprobado en el acto, sin clic humano); si no procede, lo **rechaza** con `hrp finding reject`, también frente a revisores sin sesión, dejando la razón técnica en el hilo (spec, requisito o evidencia ejecutable, nunca autoridad).
+- El reportero acuerda implícitamente al crear el hallazgo y el base al aceptarlo. Los demás auditores seleccionados acuerdan explícitamente con `hrp finding agree`; el censo requerido es el modelo base más **todos** los auditores del run.
+- Cuando un hallazgo aceptado con corrección descubierta alcanza unanimidad, HRP asigna esa corrección al modelo que lo reportó, siempre que pertenezca al censo, no exista una asignación manual incompatible y haya otro auditor seleccionado distinto del reportero que pueda revisarla. Sin ese revisor independiente, la corrección permanece con el modelo base. El reportero ya tiene el contexto para implementarla, pero ese nodo queda fuera de su propia cobertura auditora.
+- Reabrir un hallazgo reinicia los acuerdos y conserva sólo el del reportero; la nueva evidencia debe volver a obtener consenso. Esta unanimidad es local al hallazgo y **no sustituye** la mayoría simple del gate final.
 - Cualquier auditor puede reabrir un hallazgo cerrado con `hrp finding reopen <id> --author SU_NOMBRE --body RAZON`; el hallazgo vuelve a `open`, bloquea `review gate` y exige que el base responda con evidencia.
 - `hrp finding escalate` es un **recurso opcional** para dudas genuinas que el base no puede resolver con evidencia (ambigüedad del requisito, decisiones de producto); ya no es la salida obligada del desacuerdo.
 - `hrp finding reject` exige `--author` y `--body`: la razón del descarte queda en el hilo antes del cambio de estado. Un rechazo sin argumento técnico verificable es un abuso de la autoridad del base.
@@ -627,6 +631,7 @@ http://127.0.0.1:4317
 | Publicar verificación | `POST /api/runs/:runId/nodes/:nodeId/verify` | `{ "command", "output", "exitCode" }` |
 | Completar nodo | `POST /api/runs/:runId/nodes/:nodeId/complete` | `{}` |
 | Publicar actividad | `POST /api/runs/:runId/activity` | `{ "type", "message", "detail?", "nodeId?" }` |
+| Acordar un hallazgo | `POST /api/findings/:findingId/agreements` | `{ "agent": "claude" }` |
 | Eliminar ejecución | `DELETE /api/runs/:runId` | — |
 | Eliminar proyecto | `DELETE /api/projects/:projectId` | — |
 
@@ -698,7 +703,7 @@ Como ejecutor, trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está di
 
 Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones y ejecuta sólo un nodo a la vez. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
 
-Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE`, debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...` y reabre cierres con `hrp finding reopen <finding-id> --author TU_NOMBRE --body RAZON` si tienes evidencia nueva. Como revisor nunca edites código ajeno y no inventes hallazgos: decir que no encontraste nada es una respuesta valiosa. Nunca audites tus propios nodos: el auditor no es el autor, y la cobertura que exige el cierre se cuenta sólo sobre los nodos escritos por otros.
+Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE`, debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...`, acuerda una corrección vinculada con `hrp finding agree <finding-id> --author TU_NOMBRE` y reabre cierres con `hrp finding reopen <finding-id> --author TU_NOMBRE --body RAZON` si tienes evidencia nueva. Mientras actúas sólo como revisor no edites código; si la unanimidad te asigna la corrección de un hallazgo que reportaste, impleméntala como ejecutor mediante un nodo HRP normal. No inventes hallazgos y nunca audites tus propios nodos: esa corrección deberá revisarla otro modelo, y la cobertura que exige el cierre se cuenta sólo sobre los nodos escritos por otros.
 
 Antes de finalizar, consulta el estado, confirma que todos los nodos tengan diff y verificación aprobada, atiende los debates que te mencionen y verifica el cierre con `hrp review gate <run-id>`.
 ```

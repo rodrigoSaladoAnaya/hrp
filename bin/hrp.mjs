@@ -419,6 +419,7 @@ Uso:
   hrp finding list <run-id>
   hrp finding show <finding-id>
   hrp finding reply <finding-id> --author NOMBRE --body TEXTO
+  hrp finding agree <finding-id> --author NOMBRE
   hrp finding accept <finding-id> [--resolution-node ID]
   hrp finding reject <finding-id> --author NOMBRE --body RAZON
   hrp finding reopen <finding-id> --author NOMBRE --body RAZON
@@ -914,7 +915,16 @@ async function main() {
     }
   }
   if (group === "finding") {
-    const describeFinding = (finding) => `[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title} (${finding.reviewer}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""}${finding.resolutionNodeId ? ` · corrección ${finding.resolutionNodeId}` : ""})`;
+    const agreementProgress = (finding) => {
+      const requiredAgents = finding.requiredAgreementAgents ?? [];
+      const agreedAgents = new Set((finding.agreements ?? []).map((agreement) => agreement.agent));
+      return { current: requiredAgents.filter((agent) => agreedAgents.has(agent)).length, required: requiredAgents.length };
+    };
+    const describeFinding = (finding) => {
+      const { current: agreementCount, required: agreementTotal } = agreementProgress(finding);
+      const agreement = agreementTotal ? ` · acuerdos ${agreementCount}/${agreementTotal}${finding.unanimous ? " unánime" : ""}` : "";
+      return `[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title} (${finding.reviewer}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""}${finding.resolutionNodeId ? ` · corrección ${finding.resolutionNodeId}` : ""}${agreement})`;
+    };
     if (action === "add") {
       if (!first) throw new Error("Uso: hrp finding add <run-id> --title T --body B --severity S --reviewer NOMBRE [--node ID]");
       const body = { reviewer: value("--reviewer"), severity: value("--severity"), title: value("--title"), body: value("--body") };
@@ -942,6 +952,13 @@ async function main() {
       if (!first || !author || !body) throw new Error("Uso: hrp finding reply <finding-id> --author NOMBRE --body TEXTO");
       const finding = await api(`/api/findings/${encodeURIComponent(first)}/messages`, { method: "POST", body: JSON.stringify({ author, body }) });
       return print(json ? finding : `Respuesta registrada; el hallazgo queda en ${finding.status}.`);
+    }
+    if (action === "agree") {
+      const author = value("--author");
+      if (!first || !author) throw new Error("Uso: hrp finding agree <finding-id> --author NOMBRE");
+      const finding = await api(`/api/findings/${encodeURIComponent(first)}/agreements`, { method: "POST", body: JSON.stringify({ agent: author }) });
+      const { current, required } = agreementProgress(finding);
+      return print(json ? finding : `Acuerdo registrado: ${current}/${required}${finding.unanimous ? " · unanimidad alcanzada" : ""}.`);
     }
     if (action === "reopen") {
       const author = value("--author");

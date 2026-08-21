@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
+  auditorIdentity,
   computeAuditorConsensus,
   type AgentWorkState,
   type AgentWorkPhase,
@@ -16,6 +17,7 @@ import {
   type ChangeNode,
   type ChangeNodeInput,
   type Finding,
+  type FindingAgreement,
   type FindingInput,
   type FindingMessage,
   type FindingStatus,
@@ -192,10 +194,17 @@ export class HrpStore {
         body TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS finding_agreements (
+        finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        agent TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (finding_id, agent)
+      );
       CREATE INDEX IF NOT EXISTS runs_project_updated ON runs(project_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS activity_run_id ON activity(run_id, id DESC);
       CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id, created_at);
       CREATE INDEX IF NOT EXISTS finding_messages_finding ON finding_messages(finding_id, created_at);
+      CREATE INDEX IF NOT EXISTS finding_agreements_finding ON finding_agreements(finding_id, created_at);
     `);
     const activityColumns = this.database.pragma("table_info(activity)") as Row[];
     if (!activityColumns.some((column) => String(column.name) === "agent")) {
@@ -834,6 +843,12 @@ export class HrpStore {
       body: String(message.body),
       createdAt: String(message.created_at),
     } satisfies FindingMessage));
+    const agreements = (this.database.prepare("SELECT * FROM finding_agreements WHERE finding_id = ? ORDER BY created_at, agent").all(String(row.id)) as Row[]).map((agreement) => ({
+      agent: String(agreement.agent),
+      createdAt: String(agreement.created_at),
+    } satisfies FindingAgreement));
+    const requiredAgreementAgents = this.findingAgreementAgents(String(row.run_id));
+    const agreed = new Set(agreements.map((agreement) => auditorIdentity(agreement.agent)));
     return {
       id: String(row.id),
       runId: String(row.run_id),
@@ -844,6 +859,9 @@ export class HrpStore {
       body: String(row.body),
       status: String(row.status) as FindingStatus,
       resolutionNodeId: row.resolution_node_id ? String(row.resolution_node_id) : undefined,
+      agreements,
+      requiredAgreementAgents,
+      unanimous: requiredAgreementAgents.length > 0 && requiredAgreementAgents.every((agent) => agreed.has(agent)),
       messages,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
@@ -860,6 +878,7 @@ export class HrpStore {
       INSERT INTO findings (id, run_id, node_id, reviewer, severity, title, body, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
     `).run(id, runId, input.nodeId ?? null, input.reviewer, input.severity, input.title, input.body, timestamp, timestamp);
+    this.recordFindingAgreement(id, input.reviewer, timestamp);
     this.addActivity(runId, "note", `Hallazgo de ${input.reviewer} (${input.severity}): ${input.title}`, input.body, input.nodeId, input.reviewer);
     return this.requireFinding(id);
   }
@@ -893,6 +912,25 @@ export class HrpStore {
     return this.requireFinding(findingId);
   }
 
+  agreeFinding(findingId: string, agent: string): Finding {
+    const finding = this.requireFinding(findingId);
+    if (finding.status === "rejected" || finding.status === "escalated") {
+      throw new Error(`Finding ${findingId} is ${finding.status}; reopen it before agreeing`);
+    }
+    const identity = auditorIdentity(agent.trim());
+    if (!identity || !finding.requiredAgreementAgents.includes(identity)) {
+      throw new Error(`Agent ${agent} is not the base model or a selected auditor for this finding`);
+    }
+    const timestamp = now();
+    const inserted = this.recordFindingAgreement(findingId, identity, timestamp);
+    if (inserted) {
+      this.database.prepare("UPDATE findings SET updated_at = ? WHERE id = ?").run(timestamp, findingId);
+      this.addActivity(finding.runId, "note", `Acuerdo de ${identity}: ${finding.title}`, "Aprueba que el reportero implemente la corrección vinculada si el consenso llega a unanimidad.", finding.nodeId, identity);
+    }
+    this.assignCorrectionToReporterIfUnanimous(findingId);
+    return this.requireFinding(findingId);
+  }
+
   setFindingStatus(findingId: string, status: FindingStatus, resolutionNodeId?: string): Finding {
     const finding = this.requireFinding(findingId);
     if (!findingStatuses.includes(status)) throw new Error(`Unknown finding status: ${status}`);
@@ -909,6 +947,11 @@ export class HrpStore {
     // su nodo sin aprobar si algo falla a la mitad.
     const baseAgent = this.getRun(finding.runId)?.baseAgent;
     this.database.transaction(() => {
+      if (status === "open" && finding.status !== "open" && finding.status !== "debating") {
+        this.database.prepare("DELETE FROM finding_agreements WHERE finding_id = ?").run(findingId);
+        this.recordFindingAgreement(findingId, finding.reviewer);
+      }
+      if (status === "accepted" && baseAgent) this.recordFindingAgreement(findingId, baseAgent);
       this.database.prepare("UPDATE findings SET status = ?, resolution_node_id = COALESCE(?, resolution_node_id), updated_at = ? WHERE id = ?")
         .run(status, resolutionNodeId ?? null, now(), findingId);
       const resolvedNodeId = resolutionNodeId ?? finding.resolutionNodeId;
@@ -926,6 +969,7 @@ export class HrpStore {
             this.addActivity(finding.runId, "node", `La corrección vinculada pertenece al plan inicial y conserva el gate humano: ${resolvedNodeId}`, finding.title, resolvedNodeId, "human");
           }
         }
+        this.assignCorrectionToReporterIfUnanimous(findingId);
       }
       const labels: Record<FindingStatus, string> = {
         open: "Hallazgo reabierto",
@@ -938,6 +982,40 @@ export class HrpStore {
       this.addActivity(finding.runId, "note", `${labels[status]}: ${finding.title}${resolutionNote}`, undefined, finding.nodeId, baseAgent);
     })();
     return this.requireFinding(findingId);
+  }
+
+  private findingAgreementAgents(runId: string): string[] {
+    const run = this.getRun(runId);
+    if (!run) return [];
+    return [...new Set([run.baseAgent, ...run.auditors]
+      .map((agent) => auditorIdentity(agent))
+      .filter((agent): agent is string => Boolean(agent)))];
+  }
+
+  private recordFindingAgreement(findingId: string, agent: string, createdAt = now()): boolean {
+    const identity = auditorIdentity(agent.trim());
+    if (!identity) return false;
+    return this.database.prepare("INSERT OR IGNORE INTO finding_agreements (finding_id, agent, created_at) VALUES (?, ?, ?)")
+      .run(findingId, identity, createdAt).changes > 0;
+  }
+
+  private assignCorrectionToReporterIfUnanimous(findingId: string): void {
+    const finding = this.requireFinding(findingId);
+    if (finding.status !== "accepted" || !finding.unanimous || !finding.resolutionNodeId) return;
+    const reporter = auditorIdentity(finding.reviewer);
+    if (!reporter || !finding.requiredAgreementAgents.includes(reporter)) return;
+    const run = this.getRun(finding.runId);
+    if (!run?.auditors.some((auditor) => auditorIdentity(auditor) !== reporter)) return;
+    const node = this.getNode(finding.runId, finding.resolutionNodeId);
+    if (!run || !node?.discovered || (node.status !== "pending" && node.status !== "failed")) return;
+    if (node.suggestedAgent && auditorIdentity(node.suggestedAgent) !== reporter) return;
+    if (node.assignee && auditorIdentity(node.assignee) !== auditorIdentity(run.baseAgent) && auditorIdentity(node.assignee) !== reporter) return;
+    if (auditorIdentity(node.assignee) === reporter) return;
+    const timestamp = now();
+    this.database.prepare("UPDATE nodes SET assignee = ?, updated_at = ? WHERE run_id = ? AND id = ?")
+      .run(reporter, timestamp, finding.runId, node.id);
+    this.touchRun(finding.runId, timestamp);
+    this.addActivity(finding.runId, "node", `Corrección asignada por unanimidad a ${reporter}: ${node.file} · ${node.symbol}`, `El modelo base y todos los auditores acordaron el hallazgo reportado por ${finding.reviewer}; el reportero conserva el contexto y su propio nodo queda fuera de su cobertura auditora.`, node.id, run.baseAgent);
   }
 
   // Hallazgos que impiden dar por cerrado el run: vivos u olvidados sin arbitrar.

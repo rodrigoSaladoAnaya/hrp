@@ -91,10 +91,16 @@ class MockHrpMcpClient extends HrpMcpClient {
   }
 
   attentionCalls: unknown[] = [];
+  agreementCalls: unknown[] = [];
 
   override async attention(params: { agent: string; runId?: string; workspace?: string; waitSeconds?: number }): Promise<Record<string, unknown>> {
     this.attentionCalls.push(params);
     return { runId: params.runId ?? "run-100", agent: params.agent, kind: "work", actionable: true, terminal: false, waiting: false, directive: "Aprobado: 1 nodo disponible (uno)", pendingAuditors: [], runs: [] };
+  }
+
+  override async agreeFinding(findingId: string, agent: string): Promise<unknown> {
+    this.agreementCalls.push({ findingId, agent });
+    return { id: findingId, agreements: [{ agent }], unanimous: false };
   }
 }
 
@@ -154,9 +160,29 @@ describe("HrpMcpServer", () => {
     expect(tools.some((tool) => tool.name === "hrp_finding_list")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_show")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_reply")).toBe(true);
+    expect(tools.some((tool) => tool.name === "hrp_finding_agree")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_accept")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_reject")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_escalate")).toBe(true);
+  });
+
+  it("expone y despacha el acuerdo explícito de un hallazgo", async () => {
+    const mockClient = new MockHrpMcpClient();
+    const server = new HrpMcpServer(mockClient);
+    const toolsResponse = await server.handleMessage({ jsonrpc: "2.0", id: 40, method: "tools/list", params: {} });
+    const tools = (toolsResponse?.result as { tools: typeof hrpToolDefinitions }).tools;
+    const agreement = tools.find((tool) => tool.name === "hrp_finding_agree");
+    expect(agreement?.inputSchema.required).toEqual(["findingId", "author"]);
+
+    const response = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 41,
+      method: "tools/call",
+      params: { name: "hrp_finding_agree", arguments: { findingId: "finding-1", author: "claude" } },
+    });
+
+    expect(response?.result).toMatchObject({ isError: false });
+    expect(mockClient.agreementCalls).toEqual([{ findingId: "finding-1", agent: "claude" }]);
   });
 
   it("expone hrp_attention como el despertador de los entornos sin hooks", async () => {

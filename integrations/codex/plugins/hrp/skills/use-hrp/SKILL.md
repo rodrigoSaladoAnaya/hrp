@@ -35,7 +35,7 @@ Consulta `run.baseAgent` antes de actuar:
 
 - Si es `codex`, eres el agente base: trabajas nodos sin asignar o asignados a `codex`, administras los sugeridos para `ollama`, atiendes los hallazgos y no entregas hasta que `hrp review gate <run-id>` pase.
 - Si el base es otro agente, eres colaborador: trabaja únicamente nodos asignados a `codex`. No tomes nodos sin asignar, no administres `ollama` y no aceptes, rechaces ni escales hallazgos en nombre del base.
-- Si el usuario te entrega un paquete de revisión, eres revisor: reporta y debate hallazgos, pero nunca edites código.
+- Si el usuario te entrega un paquete de revisión, eres revisor: reporta, debate y acuerda hallazgos sin editar código mientras actúes sólo en ese rol. Si HRP te asigna después la corrección de un hallazgo que reportaste, vuelves al rol ejecutor para ese nodo.
 
 ## Revisión v3
 
@@ -44,10 +44,13 @@ Cuando seas el base, los hallazgos pendientes tienen prioridad sobre iniciar tra
 - Si procede, publica un nodo de corrección y usa `hrp finding accept <id> --resolution-node <nodo>`; la aceptación autoriza ese nodo.
 - Si no procede, usa `hrp finding reject <id> --author codex --body RAZON` con argumento técnico verificable.
 - Usa `hrp finding escalate <id>` sólo para ambigüedades genuinas que la evidencia no resuelva.
+- La creación registra el acuerdo del reportero y la aceptación registra el del base. Cada auditor que acepte la corrección usa `hrp_finding_agree` o `hrp finding agree <id> --author codex`; si discrepa, responde en el hilo.
+- La unanimidad del base y todos los auditores asigna la corrección descubierta al reportero elegible sólo si otro auditor seleccionado distinto puede revisarla y no hay una asignación incompatible; sin ese revisor independiente, permanece con el modelo base. Ejecútala sólo cuando el estado HRP muestre esa asignación y no incluyas ese nodo en tu propia cobertura auditora.
+- Reabrir el hallazgo reinicia el consenso. La unanimidad local del hallazgo no cambia la mayoría simple del gate final.
 
-La auditoría final se lanza automáticamente al completarse el run. El base permanece atento mientras cualquier auditor seleccionado siga en `waiting`, `reviewing` o `failed`; implementación completa no significa ejecución cerrada. Resuelve los hallazgos y confirma `hrp review gate`: el gate sólo pasa cuando no hay hallazgos vivos ni `pendingAuditors`. Un colaborador termina cuando sus nodos asignados quedan completados y entrega el control al base.
+La auditoría final se lanza automáticamente al completarse el run. El base permanece atento mientras falten votos para la mayoría auditora; implementación completa no significa ejecución cerrada. Resuelve los hallazgos y confirma `hrp review gate`: el gate sólo pasa cuando no hay hallazgos vivos y `pendingAuditorVotes` es cero, aunque aún existan auditores sin voto que ya no bloquean la mayoría. Un colaborador termina cuando sus nodos asignados quedan completados y entrega el control al base.
 
-Cuando Codex actúe como revisor, espera la señal **Auditoría disponible**, publica `agent status` en `reviewing` antes de leer el paquete, actualiza cobertura con `--reviewed` y `--remaining`, y publica `completed` únicamente al cubrir todos los nodos. Después vuelve a esperar: una corrección del base puede requerir otra pasada. Como revisor nunca tomes nodos sin asignación, aunque aparezcan en el run.
+Cuando Codex actúe como revisor, espera la señal **Auditoría disponible**, publica `agent status` en `reviewing` antes de leer el paquete, actualiza cobertura con `--reviewed` y `--remaining`, y publica `completed` únicamente al cubrir todos los nodos ajenos. Después vuelve a esperar: una corrección puede requerir otra pasada. Como revisor no tomes nodos sin asignación; la única excepción es una corrección que HRP haya reasignado explícitamente a `codex` tras la unanimidad, que debes ejecutar y dejar para auditoría de otro modelo.
 
 ## Despertador de Codex
 

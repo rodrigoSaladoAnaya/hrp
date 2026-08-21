@@ -318,6 +318,13 @@ export class HrpMcpClient {
     });
   }
 
+  async agreeFinding(findingId: string, agent: string): Promise<unknown> {
+    return this.request(`/api/findings/${encodeURIComponent(findingId)}/agreements`, {
+      method: "POST",
+      body: JSON.stringify({ agent }),
+    });
+  }
+
   async setFindingStatus(findingId: string, status: FindingStatus, resolutionNodeId?: string): Promise<unknown> {
     return this.request(`/api/findings/${encodeURIComponent(findingId)}/status`, {
       method: "POST",
@@ -795,6 +802,18 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
     },
   },
   {
+    name: "hrp_finding_agree",
+    description: "Registra el acuerdo explícito de un participante con un hallazgo y su corrección vinculada.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+        author: { type: "string", description: "Modelo base o auditor que registra su acuerdo." },
+      },
+      required: ["findingId", "author"],
+    },
+  },
+  {
     name: "hrp_finding_accept",
     description: "Acepta un hallazgo y lo vincula opcionalmente con su nodo de corrección.",
     inputSchema: {
@@ -973,6 +992,9 @@ export async function executeHrpTool(
 
     case "hrp_finding_reply":
       return client.replyFinding(String(args.findingId), String(args.author), String(args.body));
+
+    case "hrp_finding_agree":
+      return client.agreeFinding(String(args.findingId), String(args.author));
 
     case "hrp_finding_accept":
       return client.setFindingStatus(

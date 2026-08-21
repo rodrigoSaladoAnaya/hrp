@@ -83,6 +83,11 @@ export type FindingStatus = (typeof findingStatuses)[number];
 export const findingSeverities = ["critical", "major", "minor", "question"] as const;
 export type FindingSeverity = (typeof findingSeverities)[number];
 
+export type FindingAgreement = {
+  agent: string;
+  createdAt: string;
+};
+
 export type Finding = {
   id: string;
   runId: string;
@@ -93,8 +98,14 @@ export type Finding = {
   title: string;
   body: string;
   status: FindingStatus;
-  // Nodo descubierto que corrige el hallazgo aceptado; pasa por el gate humano.
+  // Nodo que corrige el hallazgo aceptado. Si es descubierto, la aceptación lo
+  // autoriza y la unanimidad puede transferirlo al modelo que lo reportó.
   resolutionNodeId?: string;
+  agreements: FindingAgreement[];
+  // Modelo base + auditores elegidos. La unanimidad de este conjunto autoriza
+  // al reportero a implementar; no sustituye la mayoría del gate final.
+  requiredAgreementAgents: string[];
+  unanimous: boolean;
   messages: FindingMessage[];
   createdAt: string;
   updatedAt: string;
