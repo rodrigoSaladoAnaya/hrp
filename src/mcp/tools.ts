@@ -756,7 +756,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
   },
   {
     name: "hrp_finding_add",
-    description: "Registra un hallazgo de auditoría con severidad, evidencia y nodo opcional.",
+    description: "Registra un hallazgo de auditoría con severidad, evidencia y nodo opcional. Para auditar el grafo antes de implementarlo usa scope 'plan' y cita el nodo en el cuerpo, sin nodeId.",
     inputSchema: {
       type: "object",
       properties: {
@@ -766,6 +766,11 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
         title: { type: "string", description: "Título concreto del problema." },
         body: { type: "string", description: "Evidencia y efecto técnico del problema." },
         nodeId: { type: "string", description: "Nodo relacionado opcional." },
+        scope: {
+          type: "string",
+          enum: ["node", "integration", "plan"],
+          description: "Alcance del hallazgo. Omítelo y se deriva de nodeId: 'node' con nodeId, 'integration' sin él. Declara 'plan' sólo al auditar el grafo antes de que exista código; entonces va sin nodeId y no bloquea el cierre del run.",
+        },
       },
       required: ["runId", "reviewer", "severity", "title", "body"],
     },
@@ -993,6 +998,7 @@ export async function executeHrpTool(
         title: String(args.title),
         body: String(args.body),
         nodeId: typeof args.nodeId === "string" ? args.nodeId : undefined,
+        scope: typeof args.scope === "string" ? args.scope as FindingInput["scope"] : undefined,
       });
 
     case "hrp_finding_list":

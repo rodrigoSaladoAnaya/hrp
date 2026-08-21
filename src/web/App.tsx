@@ -1256,6 +1256,9 @@ export function App() {
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
+  // Auditoría del plan: se lee en el momento del clic, que es cuando puede
+  // cambiar la decisión. No bloquea la aprobación ni el cierre del run.
+  const planFindings = detail?.findings.filter((finding) => finding.scope === "plan") ?? [];
   const auditorsReady = Boolean(detail?.run.auditors.length) && (!detail?.run.auditors.includes("ollama") || Boolean(ollama?.configured));
   const globalPending = useMemo(() => globalPendingEntries(catalog.projects), [catalog.projects]);
   const graphMagnifierStyle: CSSProperties = {
@@ -1355,6 +1358,25 @@ export function App() {
                     <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} {detail.run.auditors.includes("ollama") && !ollama?.configured ? "Configura Ollama Cloud o elige otro auditor antes de iniciar." : detail.run.auditors.length ? `Auditarán: ${detail.run.auditors.join(", ")}.` : "Elige al menos un auditor en la columna izquierda para iniciar."}</p>
                     <button type="button" disabled={!auditorsReady} onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
                     <button type="button" disabled={!auditorsReady} className="approve-paused" title="Autoriza el plan pero deja la ejecución en pausa: asigna nodos y conecta agentes con calma, y reanuda cuando todo esté listo" onClick={() => { approveAll(true).catch(() => undefined); }}>Aprobar en pausa</button>
+                    {planFindings.length > 0 && (
+                      <div className="plan-findings">
+                        <p>{planFindings.length === 1 ? "La auditoría del plan dejó 1 observación sobre el grafo:" : `La auditoría del plan dejó ${planFindings.length} observaciones sobre el grafo:`} decides tú si aprobar así o pedir al modelo base que republique el grafo corregido.</p>
+                        <ul>
+                          {planFindings.map((finding) => {
+                            const answer = finding.messages.at(-1);
+                            return (
+                              <li key={finding.id}>
+                                <span className={`plan-finding-severity severity-${finding.severity}`}>{finding.severity}</span>
+                                <b>{finding.title}</b>
+                                <span className="plan-finding-reviewer">{finding.reviewer}</span>
+                                <span className="plan-finding-body">{finding.body}</span>
+                                {answer && <span className="plan-finding-answer">{answer.author}: {answer.body}</span>}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
                     {approveError && <p className="approve-error" role="alert">{approveError}</p>}
                   </div>
                 )}

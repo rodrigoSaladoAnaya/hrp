@@ -85,6 +85,20 @@ export type FindingStatus = (typeof findingStatuses)[number];
 export const findingSeverities = ["critical", "major", "minor", "question"] as const;
 export type FindingSeverity = (typeof findingSeverities)[number];
 
+// Alcance de lo que audita el hallazgo. 'node' revisa el cambio de un nodo,
+// 'integration' cruza varios nodos del run, y 'plan' revisa el grafo publicado
+// antes de que exista código: nace de la auditoría previa a la aprobación
+// humana y por eso nunca lleva nodeId aunque cite un nodo por su id.
+export const findingScopes = ["node", "integration", "plan"] as const;
+export type FindingScope = (typeof findingScopes)[number];
+
+// Regla de compatibilidad para los hallazgos que no declaran scope: hasta v3.1
+// la ausencia de nodeId era exactamente "de integración". Un hallazgo de plan
+// debe declarar su scope de forma explícita; esta derivación nunca lo produce.
+export function findingScopeFor(nodeId?: string): FindingScope {
+  return nodeId ? "node" : "integration";
+}
+
 export type FindingAgreement = {
   agent: string;
   createdAt: string;
@@ -93,8 +107,9 @@ export type FindingAgreement = {
 export type Finding = {
   id: string;
   runId: string;
-  // Sin nodeId el hallazgo es de integración: cruza varios nodos del run.
+  // Sin nodeId el hallazgo es de integración o de plan; scope lo distingue.
   nodeId?: string;
+  scope: FindingScope;
   reviewer: string;
   severity: FindingSeverity;
   title: string;
@@ -124,6 +139,8 @@ export type FindingMessage = {
 
 export type FindingInput = Pick<Finding, "reviewer" | "severity" | "title" | "body"> & {
   nodeId?: string;
+  // Omitido, se deriva con findingScopeFor: sólo la auditoría del plan lo fija.
+  scope?: FindingScope;
 };
 
 export type Verification = {

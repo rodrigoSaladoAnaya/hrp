@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--scope", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -446,6 +446,7 @@ Uso:
   hrp run auditors <run-id> <agente...>
   hrp run delete <run-id> --yes
   hrp graph publish <run-id> <graph.json> --agent NOMBRE
+  hrp graph review <run-id> [--agent NOMBRE]   (audita el PLAN antes de aprobarlo)
   hrp node discover <run-id> <node.json>
   hrp node approve <run-id> [node-id...]
   hrp node assign <run-id> <node-id> <agente|->
@@ -464,7 +465,7 @@ Uso:
   hrp ollama review <run-id> [--node ID] [--model MODELO]
   hrp review pack <run-id> [--node ID]
   hrp review gate <run-id>
-  hrp finding add <run-id> --title T --body B --severity critical|major|minor|question --reviewer NOMBRE [--node ID]
+  hrp finding add <run-id> --title T --body B --severity critical|major|minor|question --reviewer NOMBRE [--node ID] [--scope node|integration|plan]
   hrp finding list <run-id>
   hrp finding show <finding-id>
   hrp finding reply <finding-id> --author NOMBRE --body TEXTO
@@ -584,6 +585,42 @@ async function main() {
     const agent = value("--agent");
     if (!agent) throw new Error("Uso: hrp graph publish <run-id> <graph.json> --agent NOMBRE");
     return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), agent }) }));
+  }
+  if (group === "graph" && action === "review") {
+    // Auditoría del PLAN: entrega el grafo a los auditores antes de aprobarlo.
+    // No bloquea nada; sus hallazgos informan el clic del humano.
+    if (!first) throw new Error("Uso: hrp graph review <run-id> [--agent NOMBRE]");
+    const detail = await api(`/api/runs/${encodeURIComponent(first)}`);
+    const auditors = detail.run?.auditors ?? [];
+    if (!(detail.nodes ?? []).length) throw new Error("La ejecución aún no publica su grafo: no hay plan que auditar");
+    if (!auditors.length) throw new Error("La ejecución no tiene auditores elegidos; el humano debe elegirlos en el panel antes de auditar el plan");
+    const sessionAuditors = auditors.filter((auditor) => auditor !== "ollama");
+    let ollamaStarted = false;
+    if (auditors.includes("ollama")) {
+      await api(`/api/runs/${encodeURIComponent(first)}/plan-review`, { method: "POST" });
+      ollamaStarted = true;
+    }
+    let pack = "";
+    if (sessionAuditors.length) {
+      const params = new URLSearchParams();
+      if (value("--agent")) params.set("agent", value("--agent"));
+      const query = params.toString() ? `?${params}` : "";
+      const packResponse = await fetch(`${url}/api/runs/${encodeURIComponent(first)}/plan-pack${query}`)
+        .catch((error) => { throw new Error(`HRP no responde en ${url}: ${error.message}`); });
+      if (!packResponse.ok) {
+        const errorBody = await packResponse.json().catch(() => ({}));
+        throw new Error(errorBody.error ?? `${packResponse.status} ${packResponse.statusText}`);
+      }
+      pack = await packResponse.text();
+    }
+    if (json) return print({ runId: first, ollamaStarted, sessionAuditors, pack });
+    if (ollamaStarted) print("Auditoría del plan relanzada con ollama; sus hallazgos aparecerán en el panel antes de que apruebes el grafo.");
+    if (pack) {
+      print(`Copia este paquete a ${sessionAuditors.join(", ")} para que auditen el plan:`);
+      print("");
+      print(pack);
+    }
+    return;
   }
   if (group === "node" && action === "discover") {
     return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(readJson(second)) }));
@@ -1050,10 +1087,13 @@ async function main() {
       return `[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title} (${finding.reviewer}${finding.nodeId ? ` · nodo ${finding.nodeId}` : ""}${finding.resolutionNodeId ? ` · corrección ${finding.resolutionNodeId}` : ""}${agreement})`;
     };
     if (action === "add") {
-      if (!first) throw new Error("Uso: hrp finding add <run-id> --title T --body B --severity S --reviewer NOMBRE [--node ID]");
+      if (!first) throw new Error("Uso: hrp finding add <run-id> --title T --body B --severity S --reviewer NOMBRE [--node ID] [--scope node|integration|plan]");
       const body = { reviewer: value("--reviewer"), severity: value("--severity"), title: value("--title"), body: value("--body") };
       if (!body.reviewer || !body.severity || !body.title || !body.body) throw new Error("Faltan datos: --reviewer, --severity (critical|major|minor|question), --title y --body son obligatorios");
       if (value("--node")) body.nodeId = value("--node");
+      // Omitido, el servicio lo deriva de --node. Sólo la auditoría del plan
+      // necesita declararlo: revisa el grafo, no un cambio, y por eso va sin --node.
+      if (value("--scope")) body.scope = value("--scope");
       const finding = await api(`/api/runs/${encodeURIComponent(first)}/findings`, { method: "POST", body: JSON.stringify(body) });
       return print(json ? finding : `Hallazgo registrado: ${describeFinding(finding)}`);
     }
