@@ -120,7 +120,8 @@ function globalPendingEntries(projects: ProjectWithRuns[]): GlobalPendingEntry[]
     if (run.status === "running") { reasons.push("hay trabajo en curso"); priority += 60; }
     if (run.status === "failed") { reasons.push("hay un nodo fallido"); priority += 55; }
     if (run.status === "pending" && run.nodeCount > 0) { reasons.push(`${run.completedCount}/${run.nodeCount} nodos completados`); priority += 40; }
-    if (run.status === "completed" && run.control === "active" && run.pendingAuditorCount > 0) { reasons.push(`${run.pendingAuditorCount} ${run.pendingAuditorCount === 1 ? "auditor pendiente" : "auditores pendientes"}`); priority += 35; }
+    const pendingAuditorVotes = run.pendingAuditorVotes ?? run.pendingAuditorCount;
+    if (run.status === "completed" && run.control === "active" && pendingAuditorVotes > 0) { reasons.push(`${pendingAuditorVotes} ${pendingAuditorVotes === 1 ? "voto auditor pendiente" : "votos auditores pendientes"}`); priority += 35; }
     if (run.status === "pending" && run.nodeCount === 0) { reasons.push("sin grafo publicado"); priority += 25; }
     if (run.control === "paused") { reasons.push("pausada"); priority += 15; }
     if (run.control === "active" && run.status !== "completed" && !reasons.length) { reasons.push("activa"); priority += 10; }
@@ -442,7 +443,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
     }
     const execution = `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} en la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
     if (!audits) return execution;
-    return `${execution} También fuiste seleccionado como auditor: antes de comenzar publica hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" y actualiza la cobertura con --completed, --total, --reviewed y --remaining cuando avances; revisa únicamente el trabajo de los demás agentes con hrp review pack ${run.id}, registra problemas reales con hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer ${agent}, debate con hrp finding reply <finding-id> --author ${agent} --body ..., nunca edites código ajeno ni audites tus propios nodos, y cierra con hrp agent status ${run.id} --agent ${agent} --phase completed --summary "Auditoría terminada" seguido de hrp review gate ${run.id}.`;
+    return `${execution} También fuiste seleccionado como auditor: antes de comenzar publica hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" y actualiza la cobertura con --completed, --total, --reviewed y --remaining cuando avances; revisa únicamente el trabajo de los demás agentes con hrp review pack ${run.id}, registra problemas reales con hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer ${agent}, debate con hrp finding reply <finding-id> --author ${agent} --body ... y reabre cierres con hrp finding reopen <finding-id> --author ${agent} --body RAZON; nunca edites código ajeno ni audites tus propios nodos, y si estás conforme vota OK con hrp agent status ${run.id} --agent ${agent} --phase completed --summary "Auditoría terminada" seguido de hrp review gate ${run.id}.`;
   };
   const copyCommand = async (agent: string) => {
     try {
@@ -657,6 +658,13 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
     if (resolution === undefined) return;
     await post(finding.id, `/api/findings/${finding.id}/status`, resolution ? { status, resolutionNodeId: resolution } : { status });
   };
+  const reopen = async (finding: Finding) => {
+    const reason = (drafts[finding.id] ?? "").trim() || window.prompt("Razón para reabrir el debate (queda en el hilo):")?.trim();
+    if (!reason) return;
+    if (!await post(finding.id, `/api/findings/${finding.id}/messages`, { author: "human", body: reason })) return;
+    setDrafts((previous) => ({ ...previous, [finding.id]: "" }));
+    await post(finding.id, `/api/findings/${finding.id}/status`, { status: "open" });
+  };
   const copyPackButton = (
     <button type="button" className="pack-copy" title="Copia el paquete markdown con todo el contexto del run (specs, diffs y verificaciones) para pegarlo en la sesión de otro modelo y convertirlo en revisor" onClick={() => { copyPack().catch(() => undefined); }}>
       {packFeedback === "copied" ? "Paquete copiado" : packFeedback === "failed" ? "No se pudo copiar" : "Copiar paquete de revisión"}
@@ -675,7 +683,7 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
   return (
     <div className="findings-panel">
       <header className="findings-head">
-        <p>{findings.filter((finding) => liveFindingStatuses.includes(finding.status)).length} vivos de {findings.length}; la ejecución no puede cerrarse con hallazgos vivos.</p>
+        <p>{findings.filter((finding) => liveFindingStatuses.includes(finding.status)).length} vivos de {findings.length}; el cierre requiere cero hallazgos vivos y mayoría auditora conforme.</p>
         {copyPackButton}
       </header>
       <ol className="findings-list">
@@ -703,21 +711,25 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
                     ))}
                   </div>
                   {finding.resolutionNodeId && <p className="finding-resolution">Corrección vinculada: <button type="button" onClick={() => onSelectNode(finding.resolutionNodeId!)}>{finding.resolutionNodeId}</button></p>}
-                  {!terminal && (
-                    <div className="finding-actions">
-                      <textarea
-                        placeholder={finding.status === "escalated" ? "Tu arbitraje: tercia en el debate o escribe la razón del rechazo…" : "Tercia en el debate como humano…"}
-                        value={drafts[finding.id] ?? ""}
-                        onChange={(event) => setDrafts((previous) => ({ ...previous, [finding.id]: event.target.value }))}
-                      />
-                      <div className="finding-buttons">
+                  <div className="finding-actions">
+                    <textarea
+                      placeholder={terminal ? "Razón para reabrir el debate…" : finding.status === "escalated" ? "Tu arbitraje: tercia en el debate o escribe la razón del rechazo…" : "Tercia en el debate como humano…"}
+                      value={drafts[finding.id] ?? ""}
+                      onChange={(event) => setDrafts((previous) => ({ ...previous, [finding.id]: event.target.value }))}
+                    />
+                    <div className="finding-buttons">
+                      {terminal ? (
+                        <button type="button" onClick={() => { reopen(finding).catch(() => undefined); }}>Reabrir debate</button>
+                      ) : (
+                        <>
                         <button type="button" onClick={() => { intervene(finding).catch(() => undefined); }} disabled={!(drafts[finding.id] ?? "").trim()}>Responder</button>
                         <button type="button" className="finding-accept" title="Da la razón al revisor; idealmente el agente base ya vinculó (o descubrirá) un nodo de corrección" onClick={() => { arbitrate(finding, "accepted").catch(() => undefined); }}>Aceptar</button>
                         <button type="button" className="finding-reject" title="Descarta el hallazgo; la razón que escribas queda en el hilo" onClick={() => { arbitrate(finding, "rejected").catch(() => undefined); }}>Rechazar</button>
-                      </div>
-                      {actionErrors[finding.id] && <p className="finding-error" role="alert">{actionErrors[finding.id]}</p>}
+                        </>
+                      )}
                     </div>
-                  )}
+                    {actionErrors[finding.id] && <p className="finding-error" role="alert">{actionErrors[finding.id]}</p>}
+                  </div>
                 </div>
               )}
             </li>

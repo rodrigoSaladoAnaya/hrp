@@ -502,7 +502,7 @@ Confirma —leyendo el JSON de `hrp state`, no releyendo tu trabajo— que:
 - todos los nodos estén `completed`, cada uno con diff y verificación aprobada;
 - el mapa incluya los cambios descubiertos;
 - el workspace haya pasado **una sola vez** la verificación ejecutable integral (tests/build del proyecto: la corre la máquina, no tu juicio);
-- `hrp review gate "$run_id"` pase (código 0): una ejecución con hallazgos vivos de la revisión no puede darse por cerrada.
+- `hrp review gate "$run_id"` pase (código 0): una ejecución con hallazgos vivos o sin mayoría auditora no puede darse por cerrada.
 
 **El base no se re-verifica.** El cierre no incluye releer tus propios diffs ni una pasada de auto-auditoría: el mismo modelo que escribió el código tiene sus mismos puntos ciegos y esa relectura cuesta casi tanto como la autoría. La pasada final de calidad pertenece a los revisores (ver «Diversidad del revisor»). Resolver los hallazgos del debate y correr el gate son cierre administrativo, no re-verificación.
 
@@ -535,6 +535,7 @@ El humano convierte en revisor a cualquier modelo con sesión —preferentemente
 - audita buscando **errores de integración entre nodos, contratos rotos, desviaciones entre la spec aprobada y el diff aplicado, y casos borde sin cubrir**;
 - reporta cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer SU_NOMBRE`;
 - debate las respuestas del base con `hrp finding reply <finding-id> --author SU_NOMBRE --body ...`, con argumentos técnicos y citas al diff;
+- reabre un cierre con `hrp finding reopen <finding-id> --author SU_NOMBRE --body RAZON` cuando tenga evidencia nueva de que el debate no quedó resuelto;
 - sólo publica `phase completed` cuando `--reviewed` cubre **los nodos que no escribió él** y `--remaining` queda vacío; después vuelve a `hrp wait approval`, porque una corrección completada puede abrir otra pasada;
 - **nunca edita código**: su salida son hallazgos y debate;
 - si no encuentra nada real, lo dice; inventar hallazgos para rellenar contamina el debate y el registro.
@@ -547,9 +548,10 @@ Quien autoriza los cambios del debate es el **agente base**; el humano es monito
 
 - `hrp wait approval` avisa cuando hay hallazgos cuyo último turno no es del base; atenderlos tiene prioridad sobre iniciar nodos nuevos.
 - Cada hallazgo se **resuelve con autoridad propia**: si procede, el base lo acepta creando el nodo de corrección como trabajo descubierto (`hrp node discover`) y lo vincula con `hrp finding accept <id> --resolution-node NODO` — **la aceptación autoriza el nodo de corrección** (queda aprobado en el acto, sin clic humano); si no procede, lo **rechaza** con `hrp finding reject`, también frente a revisores sin sesión, dejando la razón técnica en el hilo (spec, requisito o evidencia ejecutable, nunca autoridad).
+- Cualquier auditor puede reabrir un hallazgo cerrado con `hrp finding reopen <id> --author SU_NOMBRE --body RAZON`; el hallazgo vuelve a `open`, bloquea `review gate` y exige que el base responda con evidencia.
 - `hrp finding escalate` es un **recurso opcional** para dudas genuinas que el base no puede resolver con evidencia (ambigüedad del requisito, decisiones de producto); ya no es la salida obligada del desacuerdo.
 - `hrp finding reject` exige `--author` y `--body`: la razón del descarte queda en el hilo antes del cambio de estado. Un rechazo sin argumento técnico verificable es un abuso de la autoridad del base.
-- La implementación completa no equivale al cierre: el base permanece en `hrp wait approval` mientras cualquier elemento de `run.auditors` siga en `waiting`, `reviewing` o `failed`. `hrp review gate` falla tanto por hallazgos vivos como por `pendingAuditors`, y sólo pasa cuando todos publicaron `completed`.
+- La implementación completa no equivale al cierre: el base permanece atento hasta que no haya hallazgos vivos y el censo auditor alcance mayoría simple (`floor(run.auditors.length / 2) + 1` votos `phase completed`). `pendingAuditors` lista todos los auditores sin voto como dato informativo; `pendingAuditorVotes` es el número que todavía bloquea la mayoría. `hrp review gate` falla por hallazgos vivos o por votos faltantes, no por unanimidad obligatoria.
 - El gate humano **inicial** del grafo se mantiene: la autoridad del base cubre el ciclo de revisión, no el plan de la ejecución.
 
 ### El humano como monitor: la segunda corrida
@@ -696,7 +698,7 @@ Como ejecutor, trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está di
 
 Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones y ejecuta sólo un nodo a la vez. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
 
-Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE` y debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...`. Como revisor nunca edites código ajeno y no inventes hallazgos: decir que no encontraste nada es una respuesta valiosa. Nunca audites tus propios nodos: el auditor no es el autor, y la cobertura que exige el cierre se cuenta sólo sobre los nodos escritos por otros.
+Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE`, debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...` y reabre cierres con `hrp finding reopen <finding-id> --author TU_NOMBRE --body RAZON` si tienes evidencia nueva. Como revisor nunca edites código ajeno y no inventes hallazgos: decir que no encontraste nada es una respuesta valiosa. Nunca audites tus propios nodos: el auditor no es el autor, y la cobertura que exige el cierre se cuenta sólo sobre los nodos escritos por otros.
 
 Antes de finalizar, consulta el estado, confirma que todos los nodos tengan diff y verificación aprobada, atiende los debates que te mencionen y verifica el cierre con `hrp review gate <run-id>`.
 ```
@@ -726,4 +728,4 @@ Un adaptador para Codex, Claude, Gemini u otro agente es compatible cuando:
 
 ## Alcance actual de v3
 
-HRP 3.0 es local y añade, sobre el ciclo v2 (gate de aprobación humana, asignación de nodos por agente, ejecución serializada, delegación a Ollama Cloud), la revisión multi-modelo: hallazgos con hilo de debate entre revisor y base, arbitraje humano en el panel y `review gate` que impide cerrar una ejecución con hallazgos vivos. No incluye heartbeat, autenticación, identidad verificada de agentes (la declaración `--agent` es de buena fe) ni adaptadores oficiales por proveedor. Esas capacidades pueden añadirse alrededor del protocolo sin cambiar la identidad de los nodos ni la evidencia requerida.
+HRP 3.0 es local y añade, sobre el ciclo v2 (gate de aprobación humana, asignación de nodos por agente, ejecución serializada, delegación a Ollama Cloud), la revisión multi-modelo: hallazgos con hilo de debate entre revisor y base, reapertura con evidencia, arbitraje humano en el panel y `review gate` que impide cerrar una ejecución con hallazgos vivos o sin mayoría auditora. No incluye heartbeat, autenticación, identidad verificada de agentes (la declaración `--agent` es de buena fe) ni adaptadores oficiales por proveedor. Esas capacidades pueden añadirse alrededor del protocolo sin cambiar la identidad de los nodos ni la evidencia requerida.

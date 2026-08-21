@@ -457,6 +457,69 @@ describe("HrpStore", () => {
       expect(store.pendingAuditors(run.id)).toHaveLength(0);
     });
 
+    it("separates auditors without a vote from votes needed for majority", () => {
+      const { store, run } = reviewFixture();
+      store.setRunAuditors(run.id, ["claude", "codex", "antigravity"]);
+      const complete = (agent: string) => store.setAgentState(run.id, {
+        agent,
+        phase: "completed",
+        summary: "Auditoría terminada",
+        completed: 1,
+        total: 1,
+        reviewedNodeIds: ["uno"],
+        remainingNodeIds: [],
+      });
+
+      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["claude", "codex", "antigravity"]);
+      expect(store.getRun(run.id)).toMatchObject({ pendingAuditorCount: 3, pendingAuditorVotes: 2 });
+      expect(store.pendingAuditorVotes(run.id)).toBe(2);
+
+      complete("claude");
+      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["codex", "antigravity"]);
+      expect(store.getRun(run.id)).toMatchObject({ pendingAuditorCount: 2, pendingAuditorVotes: 1 });
+      expect(store.pendingAuditorVotes(run.id)).toBe(1);
+
+      complete("antigravity");
+      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["codex"]);
+      expect(store.getRun(run.id)).toMatchObject({ pendingAuditorCount: 1, pendingAuditorVotes: 0 });
+      expect(store.pendingAuditorVotes(run.id)).toBe(0);
+    });
+
+    it("keeps auditor coverage when a finding is rejected or reopened", () => {
+      const { store, run } = reviewFixture();
+      store.setRunAuditors(run.id, ["claude", "codex", "antigravity"]);
+      for (const agent of ["claude", "codex", "antigravity"]) {
+        store.setAgentState(run.id, {
+          agent,
+          phase: "completed",
+          summary: "Auditoría terminada",
+          completed: 1,
+          total: 1,
+          reviewedNodeIds: ["uno"],
+          remainingNodeIds: [],
+        });
+      }
+      const finding = store.createFinding(run.id, { reviewer: "claude", severity: "major", title: "Contrato roto", body: "Detalle" });
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+      expect(store.pendingAuditorVotes(run.id)).toBe(0);
+
+      store.addFindingMessage(finding.id, "codex", "No procede por contrato X.");
+      const rejected = store.setFindingStatus(finding.id, "rejected");
+      expect(rejected.status).toBe("rejected");
+      expect(store.runReviewGate(run.id)).toHaveLength(0);
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+      expect(store.pendingAuditorVotes(run.id)).toBe(0);
+      expect(store.getRunDetail(run.id)?.agentStates.filter((state) => state.phase === "completed")).toHaveLength(3);
+
+      store.addFindingMessage(finding.id, "antigravity", "Reabro: falta cubrir el caso Y.");
+      const reopened = store.setFindingStatus(finding.id, "open");
+      expect(reopened.status).toBe("open");
+      expect(store.runReviewGate(run.id).map((pending) => pending.id)).toEqual([finding.id]);
+      expect(store.getRun(run.id)?.openFindings).toBe(1);
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+      expect(store.pendingAuditorVotes(run.id)).toBe(0);
+    });
+
     it("keeps the published coverage when a later status omits it", () => {
       const { store, run } = reviewFixture();
       store.setRunAuditors(run.id, ["claude"]);

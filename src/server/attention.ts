@@ -1,4 +1,4 @@
-import type { RunDetail } from "../shared/protocol.js";
+import { computeAuditorConsensus, type RunDetail } from "../shared/protocol.js";
 
 // Señales que una ejecución puede dar a un agente concreto, declaradas en
 // orden de prioridad: las cuatro primeras exigen acción inmediata, las
@@ -33,8 +33,10 @@ export type Attention = {
   // Sigue viva y volverá a tener trabajo para él: conviene seguir atento.
   waiting: boolean;
   directive: string;
-  // Auditores que aún no cierran su pasada; alimenta el aviso de espera.
+  // Auditores que aún no cierran su pasada; lista informativa completa.
   pendingAuditors: string[];
+  // Votos OK que faltan para alcanzar mayoría; este número bloquea el cierre.
+  pendingAuditorVotes: number;
 };
 
 const flags: Record<AttentionKind, { actionable: boolean; terminal: boolean; waiting: boolean }> = {
@@ -75,9 +77,9 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   const auditorState = isAuditor ? detail.agentStates.find((state) => state.agent === agent) : undefined;
   // Hallazgos que impiden cerrar: los mismos que bloquean 'hrp review gate'.
   const liveFindings = detail.findings.filter((finding) => finding.status === "open" || finding.status === "debating" || finding.status === "escalated");
-  const pendingAuditors = allCompleted
-    ? run.auditors.filter((auditor) => detail.agentStates.find((state) => state.agent === auditor)?.phase !== "completed")
-    : run.auditors;
+  const auditorConsensus = computeAuditorConsensus(detail.run.auditors, allCompleted ? detail.agentStates : []);
+  const pendingAuditors = auditorConsensus.pendingAuditors;
+  const pendingAuditorVotes = auditorConsensus.pendingAuditorVotes;
   const decide = (kind: AttentionKind, directive: string): Attention => ({
     runId: run.id,
     projectId: run.projectId,
@@ -85,6 +87,7 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
     kind,
     directive,
     pendingAuditors,
+    pendingAuditorVotes,
     ...flags[kind],
   });
 
@@ -102,7 +105,7 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
     })
     : [];
   if (debates.length && run.control === "active") {
-    return decide("findings", `Hallazgos por atender (${debates.length}): ${debates.map((finding) => finding.id).join(", ")}. Lee cada uno con 'hrp finding show <id>' y responde con 'hrp finding reply <id> --author ${agent} --body ...'; acepta creando un nodo de corrección (hrp node discover + hrp finding accept --resolution-node ID) o rebate con argumentos técnicos; tras dos rondas sin acuerdo, 'hrp finding escalate <id>'.`);
+    return decide("findings", `Hallazgos por atender (${debates.length}): ${debates.map((finding) => finding.id).join(", ")}. Lee cada uno con 'hrp finding show <id>' y responde con 'hrp finding reply <id> --author ${agent} --body ...'; acepta creando un nodo de corrección (hrp node discover + hrp finding accept --resolution-node ID), rebate con argumentos técnicos o reabre un cierre con 'hrp finding reopen <id> --author ${agent} --body RAZON'. Tras dos rondas sin evidencia nueva, 'hrp finding escalate <id>'.`);
   }
 
   // Al terminar la implementación, una sesión revisora que estaba bloqueada
@@ -117,7 +120,7 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
     const remaining = (auditorState?.remainingNodeIds ?? []).filter((nodeId) => auditableIds.has(nodeId));
     const pendientes = remaining.length ? remaining : auditable.map((node) => node.id);
     const propios = detail.nodes.length - auditable.length;
-    return decide("audit", `Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${reviewed.length} --total ${auditable.length}${reviewedFlag} --remaining ${pendientes.join(",")}', obtén el contexto con 'hrp review pack ${run.id}', registra o debate hallazgos y, al cubrir esos ${auditable.length} nodos, cierra con phase completed llevando --reviewed con ellos y --remaining vacío.${propios ? ` Tus ${propios} nodos propios quedan fuera: no te autoaudites.` : ""}`);
+    return decide("audit", `Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${reviewed.length} --total ${auditable.length}${reviewedFlag} --remaining ${pendientes.join(",")}', obtén el contexto con 'hrp review pack ${run.id}', registra o debate hallazgos y, si estás conforme, vota OK cerrando con phase completed llevando --reviewed con ellos y --remaining vacío. Si un cierre previo no te convence, usa 'hrp finding reopen <id> --author ${agent} --body RAZON'.${propios ? ` Tus ${propios} nodos propios quedan fuera: no te autoaudites.` : ""}`);
   }
 
   // El workspace ejecuta un nodo a la vez, así que mientras haya uno en vuelo
@@ -170,15 +173,15 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   }
 
   if (allCompleted && run.baseAgent === agent) {
-    if (pendingAuditors.length) {
-      return decide("auditors", `Implementación terminada; esperando auditores: ${pendingAuditors.join(", ")}.`);
+    if (pendingAuditorVotes > 0) {
+      return decide("auditors", `Implementación terminada; faltan ${pendingAuditorVotes} ${pendingAuditorVotes === 1 ? "voto" : "votos"} de auditoría para mayoría. Sin voto todavía: ${pendingAuditors.join(", ")}.`);
     }
     // 'gate' es una orden accionable, así que solo se emite mientras quede algo
     // que cerrar. Una ejecución terminada sin hallazgos vivos ya no reclama
     // nada: si siguiera pidiendo el gate, el despertador nunca dejaría en paz
     // al agente por trabajo que no existe.
     if (liveFindings.length) {
-      return decide("gate", "Implementación y auditorías terminadas; ejecuta 'hrp review gate' antes de cerrar.");
+      return decide("gate", "Implementación terminada; ejecuta 'hrp review gate' para ver los hallazgos vivos que aún bloquean el cierre.");
     }
     return decide("done", "La ejecución ya está completa.");
   }

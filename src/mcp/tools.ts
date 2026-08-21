@@ -324,6 +324,11 @@ export class HrpMcpClient {
       body: JSON.stringify({ status, ...(resolutionNodeId ? { resolutionNodeId } : {}) }),
     });
   }
+
+  async reopenFinding(findingId: string, author: string, body: string): Promise<unknown> {
+    await this.replyFinding(findingId, author, body);
+    return this.setFindingStatus(findingId, "open");
+  }
 }
 
 export const hrpToolDefinitions: McpToolDefinition[] = [
@@ -815,6 +820,19 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
     },
   },
   {
+    name: "hrp_finding_reopen",
+    description: "Reabre un hallazgo cerrado con autor y razón técnica para reiniciar el consenso de auditoría.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        findingId: { type: "string", description: "Identificador del hallazgo." },
+        author: { type: "string", description: "Agente que reabre el debate." },
+        body: { type: "string", description: "Razón técnica de la reapertura." },
+      },
+      required: ["findingId", "author", "body"],
+    },
+  },
+  {
     name: "hrp_finding_escalate",
     description: "Escala al humano un hallazgo que los agentes no pueden resolver.",
     inputSchema: {
@@ -966,6 +984,9 @@ export async function executeHrpTool(
     case "hrp_finding_reject":
       await client.replyFinding(String(args.findingId), String(args.author), String(args.body));
       return client.setFindingStatus(String(args.findingId), "rejected");
+
+    case "hrp_finding_reopen":
+      return client.reopenFinding(String(args.findingId), String(args.author), String(args.body));
 
     case "hrp_finding_escalate":
       return client.setFindingStatus(String(args.findingId), "escalated");

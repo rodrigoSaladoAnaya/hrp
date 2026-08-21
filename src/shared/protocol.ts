@@ -30,9 +30,11 @@ export type RunSummary = {
   // Auditores elegidos por el humano antes de autorizar el grafo. La lista se
   // congela al comenzar para que la política de revisión no cambie a mitad.
   auditors: string[];
-  // Auditores seleccionados que aún no publican phase completed. El catálogo lo
-  // usa para no marcar como pendiente una ejecución ya revisada por todos.
+  // Auditores seleccionados que aún no publican phase completed.
   pendingAuditorCount: number;
+  // Votos OK que aún faltan para alcanzar la mayoría simple del censo auditor.
+  // Este es el dato que bloquea el cierre; pendingAuditorCount es informativo.
+  pendingAuditorVotes?: number;
   nodeCount: number;
   completedCount: number;
   // Nodos que aún esperan la aprobación humana: alimenta los avisos del árbol
@@ -148,6 +150,35 @@ export type AgentWorkState = {
   startedAt?: string;
   updatedAt: string;
 };
+
+export type AuditorConsensus = {
+  requiredVotes: number;
+  completedVotes: number;
+  pendingAuditors: string[];
+  pendingAuditorVotes: number;
+};
+
+export function auditMajority(total: number): number {
+  return total > 0 ? Math.floor(total / 2) + 1 : 0;
+}
+
+export function computeAuditorConsensus(
+  auditors: string[],
+  agentStates: Pick<AgentWorkState, "agent" | "phase">[],
+): AuditorConsensus {
+  const completed = new Set(agentStates
+    .filter((state) => state.phase === "completed")
+    .map((state) => state.agent));
+  const pendingAuditors = auditors.filter((auditor) => !completed.has(auditor));
+  const completedVotes = auditors.length - pendingAuditors.length;
+  const requiredVotes = auditMajority(auditors.length);
+  return {
+    requiredVotes,
+    completedVotes,
+    pendingAuditors,
+    pendingAuditorVotes: Math.max(requiredVotes - completedVotes, 0),
+  };
+}
 
 export type RunDetail = {
   run: RunSummary;

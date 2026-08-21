@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
+  computeAuditorConsensus,
   type AgentWorkState,
   type AgentWorkPhase,
   type Activity,
@@ -943,15 +944,17 @@ export class HrpStore {
     return this.listFindings(runId).filter((finding) => ["open", "debating", "escalated"].includes(finding.status));
   }
 
-  // Un auditor seleccionado sólo libera el cierre cuando publica explícitamente
-  // su cobertura completa. Waiting, reviewing y failed siguen siendo bloqueos.
+  // Lista informativa de auditores seleccionados que aún no votan OK. El dato
+  // que bloquea el cierre es pendingAuditorVotes: la mayoría puede estar lista
+  // aunque esta lista aún tenga minoría sin votar.
   pendingAuditors(runId: string): AgentWorkState[] {
     const detail = this.getRunDetail(runId);
     if (!detail) throw new Error(`Unknown run: ${runId}`);
+    const pendingNames = new Set(computeAuditorConsensus(detail.run.auditors, detail.agentStates).pendingAuditors);
     return detail.run.auditors.flatMap((agent) => {
       const state = detail.agentStates.find((candidate) => candidate.agent === agent);
-      if (state?.phase === "completed") return [];
-      return [state ?? {
+      if (!pendingNames.has(agent)) return [];
+      const synthetic: AgentWorkState = state ?? {
         agent,
         phase: "waiting",
         summary: "Auditoría pendiente de iniciar",
@@ -960,8 +963,15 @@ export class HrpStore {
         reviewedNodeIds: [],
         remainingNodeIds: detail.nodes.map((node) => node.id),
         updatedAt: detail.run.updatedAt,
-      }];
+      };
+      return [synthetic];
     });
+  }
+
+  pendingAuditorVotes(runId: string): number {
+    const detail = this.getRunDetail(runId);
+    if (!detail) throw new Error(`Unknown run: ${runId}`);
+    return computeAuditorConsensus(detail.run.auditors, detail.agentStates).pendingAuditorVotes;
   }
 
   addActivity(runId: string, type: ActivityType, message: string, detail?: string, nodeId?: string, agent?: string): Activity {
@@ -991,8 +1001,9 @@ export class HrpStore {
         : total > 0 && total === completed ? "completed" : "pending";
     const runId = String(row.id);
     const auditors = row.auditors_json ? JSON.parse(String(row.auditors_json)) as string[] : [];
-    const completedAuditors = new Set((this.database.prepare("SELECT agent FROM agent_states WHERE run_id = ? AND phase = 'completed'").all(runId) as Row[])
-      .map((state) => String(state.agent)));
+    const completedAuditorStates = (this.database.prepare("SELECT agent FROM agent_states WHERE run_id = ? AND phase = 'completed'").all(runId) as Row[])
+      .map((state) => ({ agent: String(state.agent), phase: "completed" as const }));
+    const auditorConsensus = computeAuditorConsensus(auditors, completedAuditorStates);
     return {
       id: runId, projectId: String(row.project_id), title: String(row.title), requirement: String(row.requirement),
       status, control: (row.control ? String(row.control) : "active") as RunControl,
@@ -1000,7 +1011,8 @@ export class HrpStore {
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
       auditors,
-      pendingAuditorCount: auditors.filter((auditor) => !completedAuditors.has(auditor)).length,
+      pendingAuditorCount: auditorConsensus.pendingAuditors.length,
+      pendingAuditorVotes: auditorConsensus.pendingAuditorVotes,
       nodeCount: total, completedCount: completed, awaitingApproval: Number(counts.awaitingApproval ?? 0),
       openFindings: Number(findingCounts.open ?? 0),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),

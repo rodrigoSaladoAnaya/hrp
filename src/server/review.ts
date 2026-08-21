@@ -79,6 +79,8 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string)
     "",
     `- Reporta: \`hrp finding add ${detail.run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE\``,
     "- Debate una respuesta del base: `hrp finding reply <finding-id> --body B --author TU_NOMBRE`",
+    "- Reabre un cierre con evidencia: `hrp finding reopen <finding-id> --author TU_NOMBRE --body RAZON`",
+    `- Si estás conforme, vota OK con \`hrp agent status ${detail.run.id} --agent TU_NOMBRE --phase completed --summary \"Auditoría terminada\" --completed N --total N --reviewed ID,ID --remaining \"\"\`; el gate cierra con mayoría simple de auditores.`,
     "- Si no encuentras nada, dilo explícitamente; no inventes hallazgos.",
     "",
     // El listado respeta el subárbol pedido: un pack limitado no expone nodos

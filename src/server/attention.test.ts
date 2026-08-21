@@ -161,6 +161,54 @@ describe("computeAttention", () => {
     expect(conHallazgo.actionable).toBe(true);
   });
 
+  it("el base no espera al auditor minoritario cuando ya hay mayoría", () => {
+    const nodes = [node({ id: "uno", status: "completed" })];
+    const agentStates = ["claude", "antigravity"].map((agent) => ({
+      agent,
+      phase: "completed" as const,
+      summary: "listo",
+      completed: 1,
+      total: 1,
+      reviewedNodeIds: ["uno"],
+      remainingNodeIds: [],
+      updatedAt: timestamp,
+    }));
+    const signal = computeAttention(detail({
+      nodes,
+      run: { auditors: ["claude", "antigravity", "ollama"], baseAgent: "codex" },
+      agentStates,
+    }), "codex");
+    expect(signal.kind).toBe("done");
+    expect(signal.pendingAuditors).toEqual(["ollama"]);
+    expect(signal.pendingAuditorVotes).toBe(0);
+    expect(signal.directive).not.toContain("ollama");
+  });
+
+  it("el base ve todos los auditores sin voto cuando aún falta mayoría", () => {
+    const nodes = [node({ id: "uno", status: "completed" })];
+    const agentStates = [{
+      agent: "claude",
+      phase: "completed" as const,
+      summary: "listo",
+      completed: 1,
+      total: 1,
+      reviewedNodeIds: ["uno"],
+      remainingNodeIds: [],
+      updatedAt: timestamp,
+    }];
+    const signal = computeAttention(detail({
+      nodes,
+      run: { auditors: ["claude", "antigravity", "ollama"], baseAgent: "codex" },
+      agentStates,
+    }), "codex");
+
+    expect(signal.kind).toBe("auditors");
+    expect(signal.pendingAuditors).toEqual(["antigravity", "ollama"]);
+    expect(signal.pendingAuditorVotes).toBe(1);
+    expect(signal.directive).toContain("faltan 1 voto");
+    expect(signal.directive).toContain("antigravity, ollama");
+  });
+
   it("la directiva de auditoría pide cobertura sólo sobre los nodos ajenos", () => {
     const signal = computeAttention(detail({
       nodes: [

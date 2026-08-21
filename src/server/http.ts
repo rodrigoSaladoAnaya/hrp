@@ -507,6 +507,7 @@ export function createApp(store: HrpStore) {
       response.json({
         pending: store.runReviewGate(request.params.runId),
         pendingAuditors: store.pendingAuditors(request.params.runId),
+        pendingAuditorVotes: store.pendingAuditorVotes(request.params.runId),
       });
     } catch (error) { next(error); }
   });

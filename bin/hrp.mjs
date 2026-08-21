@@ -421,6 +421,7 @@ Uso:
   hrp finding reply <finding-id> --author NOMBRE --body TEXTO
   hrp finding accept <finding-id> [--resolution-node ID]
   hrp finding reject <finding-id> --author NOMBRE --body RAZON
+  hrp finding reopen <finding-id> --author NOMBRE --body RAZON
   hrp finding escalate <finding-id>
   hrp state <run-id>
   hrp version
@@ -942,6 +943,14 @@ async function main() {
       const finding = await api(`/api/findings/${encodeURIComponent(first)}/messages`, { method: "POST", body: JSON.stringify({ author, body }) });
       return print(json ? finding : `Respuesta registrada; el hallazgo queda en ${finding.status}.`);
     }
+    if (action === "reopen") {
+      const author = value("--author");
+      const reason = value("--body");
+      if (!first || !author || !reason) throw new Error("Uso: hrp finding reopen <finding-id> --author NOMBRE --body RAZON");
+      await api(`/api/findings/${encodeURIComponent(first)}/messages`, { method: "POST", body: JSON.stringify({ author, body: reason }) });
+      const finding = await api(`/api/findings/${encodeURIComponent(first)}/status`, { method: "POST", body: JSON.stringify({ status: "open" }) });
+      return print(json ? finding : `Hallazgo reabierto: ${finding.title}`);
+    }
     if (action === "accept" || action === "reject" || action === "escalate") {
       if (!first) throw new Error(`Uso: hrp finding ${action} <finding-id>`);
       if (action === "reject") {
@@ -969,9 +978,11 @@ async function main() {
       return;
     }
     const pendingAuditors = gate.pendingAuditors;
-    if (!pending.length && !pendingAuditors.length) return print("Revisión limpia: sin hallazgos vivos y con todos los auditores terminados; la ejecución puede darse por cerrada.");
-    print(`La ejecución NO puede cerrarse: ${pending.length} ${pending.length === 1 ? "hallazgo vivo" : "hallazgos vivos"} y ${pendingAuditors.length} ${pendingAuditors.length === 1 ? "auditor pendiente" : "auditores pendientes"}.`);
+    const pendingAuditorVotes = typeof gate.pendingAuditorVotes === "number" ? gate.pendingAuditorVotes : pendingAuditors.length;
+    if (!pending.length && pendingAuditorVotes === 0) return print("Revisión limpia: sin hallazgos vivos y con mayoría de auditores conforme; la ejecución puede darse por cerrada.");
+    print(`La ejecución NO puede cerrarse: ${pending.length} ${pending.length === 1 ? "hallazgo vivo" : "hallazgos vivos"} y ${pendingAuditorVotes} ${pendingAuditorVotes === 1 ? "voto auditor pendiente" : "votos auditores pendientes"} para mayoría.`);
     for (const finding of pending) print(`[${finding.status}/${finding.severity}] ${finding.id} — ${finding.title}`);
+    if (pendingAuditors.length && pendingAuditorVotes === 0) print(`Auditores aún sin voto (no bloquean la mayoría): ${pendingAuditors.map((auditor) => auditor.agent).join(", ")}`);
     for (const auditor of pendingAuditors) print(`[${auditor.phase}] ${auditor.agent} — ${auditor.summary}`);
     process.exitCode = 1;
     return;
