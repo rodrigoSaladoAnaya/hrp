@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,24 @@ function fixture() {
   const run = store.createRun(project.id, "Theme", "Add a persistent theme");
   store.setRunAuditors(run.id, ["codex"]);
   return { store, run };
+}
+
+function git(workspace: string, args: string[]): string {
+  return execFileSync("git", args, {
+    cwd: workspace,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function initGitWorkspace(workspace: string): string {
+  git(workspace, ["init", "-b", "main"]);
+  git(workspace, ["config", "user.email", "hrp@example.test"]);
+  git(workspace, ["config", "user.name", "HRP Test"]);
+  writeFileSync(path.join(workspace, "README.md"), "baseline\n");
+  git(workspace, ["add", "README.md"]);
+  git(workspace, ["commit", "-m", "initial"]);
+  return git(workspace, ["branch", "--show-current"]);
 }
 
 describe("HrpStore", () => {
@@ -110,6 +129,107 @@ describe("HrpStore", () => {
   // Estas pruebas escriben archivos de verdad en el workspace temporal: toda la
   // detección compara huellas contra el disco, así que simularla no probaría nada.
   const workspaceOf = (store: HrpStore, projectId: string) => store.getProject(projectId)!.workspaceRoot;
+
+  it("does not create a safeguard branch when the Git workspace is clean", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    const initialBranch = initGitWorkspace(workspace);
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    store.startNode(run.id, "change", "codex");
+
+    expect(git(workspace, ["branch", "--show-current"])).toBe(initialBranch);
+    expect(store.getRun(run.id)?.changeBranch).toBeUndefined();
+    expect(store.getRunDetail(run.id)?.activity.some((event) => event.message.includes("Branch de salvaguarda"))).toBe(false);
+  });
+
+  it("creates and reuses a safeguard branch when a run has pending Git changes", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    initGitWorkspace(workspace);
+    store.publishGraph(run.id, { nodes: [
+      { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
+      { id: "second", file: "B.ts", symbol: "B.second", title: "Second", description: "Work", rationale: "Required", dependencies: ["first"] },
+    ] });
+    store.approveNodes(run.id);
+
+    // El cambio pendiente tiene que ser rastreado: los archivos sin seguimiento
+    // no producen branch porque cambiar de rama no los resguarda.
+    writeFileSync(path.join(workspace, "A.ts"), "baseline\n");
+    git(workspace, ["add", "A.ts"]);
+    git(workspace, ["commit", "-m", "track A"]);
+    writeFileSync(path.join(workspace, "A.ts"), "pending\n");
+    store.startNode(run.id, "first", "codex");
+
+    const branch = `hrp/run-${run.id}`;
+    expect(git(workspace, ["branch", "--show-current"])).toBe(branch);
+    expect(store.getRun(run.id)?.changeBranch).toBe(branch);
+    expect(git(workspace, ["status", "--porcelain"])).toContain("A.ts");
+
+    store.publishPatch(run.id, "first", "Created A", "diff --git a/A.ts b/A.ts\n--- /dev/null\n+++ b/A.ts\n+pending\n");
+    store.publishVerification(run.id, "first", { command: "npm test -- A.ts", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "first");
+    git(workspace, ["add", "A.ts"]);
+    git(workspace, ["commit", "-m", "save first node"]);
+    git(workspace, ["switch", "main"]);
+
+    store.startNode(run.id, "second", "codex");
+    expect(git(workspace, ["branch", "--show-current"])).toBe(branch);
+    expect(store.getRunDetail(run.id)?.activity.filter((event) => event.message.includes("Branch de salvaguarda"))).toHaveLength(2);
+  });
+
+  it("ignores untracked files when deciding whether the run needs a safeguard branch", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    const initialBranch = initGitWorkspace(workspace);
+    store.publishGraph(run.id, { nodes: [
+      { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+
+    writeFileSync(path.join(workspace, "scratch.tmp"), "untracked\n");
+    store.startNode(run.id, "change", "codex");
+
+    expect(git(workspace, ["branch", "--show-current"])).toBe(initialBranch);
+    expect(store.getRun(run.id)?.changeBranch).toBeUndefined();
+    expect(store.getRunDetail(run.id)?.activity.some((event) => event.message.includes("Branch de salvaguarda"))).toBe(false);
+  });
+
+  it("refuses to open a safeguard branch over another live run's pending changes", () => {
+    const { store, run } = fixture();
+    const workspace = workspaceOf(store, run.projectId);
+    initGitWorkspace(workspace);
+    writeFileSync(path.join(workspace, "A.ts"), "baseline\n");
+    git(workspace, ["add", "A.ts"]);
+    git(workspace, ["commit", "-m", "track A"]);
+
+    store.publishGraph(run.id, { nodes: [
+      { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(run.id);
+    writeFileSync(path.join(workspace, "A.ts"), "pending\n");
+    store.startNode(run.id, "first", "codex");
+
+    const branch = `hrp/run-${run.id}`;
+    expect(git(workspace, ["branch", "--show-current"])).toBe(branch);
+
+    // Segunda ejecución del mismo workspace mientras la primera sigue viva y sin
+    // commitear: su branch no debe nacer llevándose el trabajo ajeno.
+    const other = store.createRun(run.projectId, "Otro", "Otro requerimiento");
+    store.setRunAuditors(other.id, ["codex"]);
+    store.publishGraph(other.id, { nodes: [
+      { id: "second", file: "B.ts", symbol: "B.second", title: "Second", description: "Work", rationale: "Required", dependencies: [] },
+    ] });
+    store.approveNodes(other.id);
+
+    expect(() => store.startNode(other.id, "second", "codex")).toThrow(/belong to run/);
+    expect(git(workspace, ["branch", "--list", `hrp/run-${other.id}`])).toBe("");
+    expect(store.getRun(other.id)?.changeBranch).toBeUndefined();
+    expect(git(workspace, ["branch", "--show-current"])).toBe(branch);
+    expect(git(workspace, ["status", "--porcelain"])).toContain("A.ts");
+  });
 
   it("warns when the file changed beyond what the published diff declares", () => {
     const { store, run } = fixture();

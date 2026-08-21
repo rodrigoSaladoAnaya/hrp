@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -339,6 +340,9 @@ export class HrpStore {
     if (!runColumns.some((column) => String(column.name) === "auditors_json")) {
       this.database.exec("ALTER TABLE runs ADD COLUMN auditors_json TEXT NOT NULL DEFAULT '[]'");
     }
+    if (!runColumns.some((column) => String(column.name) === "change_branch")) {
+      this.database.exec("ALTER TABLE runs ADD COLUMN change_branch TEXT");
+    }
   }
 
   private registerAgent(runId: string, agent: string): void {
@@ -434,6 +438,95 @@ export class HrpStore {
   private hashWorkspaceFile(runId: string, file: string): string | undefined {
     const content = this.readWorkspaceFile(runId, file);
     return content === undefined ? undefined : createHash("sha256").update(content).digest("hex");
+  }
+
+  private gitOutput(project: Project, args: string[]): string | undefined {
+    try {
+      return execFileSync("git", args, {
+        cwd: project.workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  private requireGit(project: Project, args: string[]): string {
+    try {
+      return execFileSync("git", args, {
+        cwd: project.workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Git could not prepare the HRP safeguard branch: ${detail}`);
+    }
+  }
+
+  private runBranchName(runId: string): string {
+    return `hrp/run-${runId}`;
+  }
+
+  private activeRunOwningBranch(branch: string, run: RunSummary): RunSummary | undefined {
+    const row = this.database.prepare(
+      "SELECT id FROM runs WHERE change_branch = ? AND project_id = ? AND id != ?",
+    ).get(branch, run.projectId, run.id) as Row | undefined;
+    if (!row) return undefined;
+    const other = this.getRun(String(row.id));
+    if (!other) return undefined;
+    // Una ejecución terminada o detenida ya no reclama el workspace: su branch
+    // es un punto de partida legítimo para la siguiente.
+    return other.status === "completed" || other.control === "stopped" ? undefined : other;
+  }
+
+  private ensureRunBranchForPendingChanges(run: RunSummary, nodeId: string, agent?: string): void {
+    const project = this.getProject(run.projectId);
+    if (!project) return;
+    // Los archivos sin seguimiento no pertenecen a ninguna rama: viajan con el
+    // working tree se cambie o no de branch, así que contarlos sólo produciría
+    // ramas que no resguardan nada.
+    const status = this.gitOutput(project, ["status", "--porcelain", "--untracked-files=no"]);
+    if (status === undefined) return;
+    const hasPendingChanges = status.trim().length > 0;
+    const currentBranch = this.gitOutput(project, ["branch", "--show-current"])?.trim();
+    const actor = agent ?? run.baseAgent;
+
+    if (run.changeBranch) {
+      if (currentBranch === run.changeBranch) return;
+      if (!hasPendingChanges) {
+        this.requireGit(project, ["switch", run.changeBranch]);
+        this.addActivity(run.id, "note", `Branch de salvaguarda reutilizado: ${run.changeBranch}`,
+          `El árbol estaba limpio; HRP volvió al branch registrado para esta ejecución antes de iniciar ${nodeId}.`,
+          nodeId, actor);
+        return;
+      }
+      throw new Error(`Run ${run.id} already uses safeguard branch ${run.changeBranch}, but the workspace is on ${currentBranch || "detached HEAD"} with pending changes. Save or switch those changes before starting ${nodeId}`);
+    }
+
+    if (!hasPendingChanges) return;
+
+    // Otra ejecución viva puede haber dejado el workspace sobre su propio branch
+    // de salvaguarda con trabajo sin commitear. Crear aquí el branch de este run
+    // arrastraría esos cambios ajenos a la rama nueva, que es exactamente la
+    // mezcla entre ejecuciones que la salvaguarda existe para impedir.
+    const owner = currentBranch ? this.activeRunOwningBranch(currentBranch, run) : undefined;
+    if (owner) {
+      throw new Error(`Run ${run.id} cannot create its safeguard branch: the workspace is on ${currentBranch} with pending changes that belong to run ${owner.id}. Let that run finish or commit its work before starting ${nodeId}`);
+    }
+
+    const branch = this.runBranchName(run.id);
+    const exists = this.gitOutput(project, ["show-ref", "--verify", `refs/heads/${branch}`]) !== undefined;
+    if (currentBranch !== branch) {
+      this.requireGit(project, exists ? ["switch", branch] : ["switch", "-c", branch]);
+    }
+    const timestamp = now();
+    this.database.prepare("UPDATE runs SET change_branch = ?, updated_at = ? WHERE id = ?")
+      .run(branch, timestamp, run.id);
+    this.addActivity(run.id, "note", `${exists ? "Branch de salvaguarda reutilizado" : "Branch de salvaguarda creado"}: ${branch}`,
+      `HRP detectó cambios pendientes antes de iniciar ${nodeId} y dejó la ejecución en ${branch}.`,
+      nodeId, actor);
   }
 
   getProject(id: string): Project | undefined {
@@ -910,6 +1003,7 @@ export class HrpStore {
     if (conflict) {
       throw new Error(`Node ${nodeId} cannot run concurrently with ${conflict.running.id}: ${conflict.reason}. Wait for the conflicting node to finish`);
     }
+    this.ensureRunBranchForPendingChanges(run, nodeId, agent);
     this.updateNodeStatus(runId, nodeId, "running");
     // El arranque es el único instante en que HRP sabe qué contenía el archivo
     // antes de que el agente lo tocara. Sin esa foto no hay forma posterior de
@@ -1427,6 +1521,7 @@ export class HrpStore {
       status, control: (row.control ? String(row.control) : "active") as RunControl,
       graphVersion: Number(row.graph_version),
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
+      changeBranch: row.change_branch ? String(row.change_branch) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
       auditors,
       pendingAuditorCount: auditorConsensus.pendingAuditors.length,

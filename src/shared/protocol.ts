@@ -26,6 +26,8 @@ export type RunSummary = {
   control: RunControl;
   graphVersion: number;
   baseAgent?: string;
+  // Branch Git creado como salvaguarda cuando la ejecución encuentra cambios pendientes.
+  changeBranch?: string;
   seenAgents: string[];
   // Auditores elegidos por el humano antes de autorizar el grafo. La lista se
   // congela al comenzar para que la política de revisión no cambie a mitad.

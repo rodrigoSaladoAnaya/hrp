@@ -1325,7 +1325,17 @@ export function App() {
             <main className="workspace">
               <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : "Actividad de la ejecución"}>
                 <header className="stage-head">
-                  <div><h1>{detail.run.title}</h1><p>{detail.run.requirement}</p></div>
+                  <div>
+                    <h1>{detail.run.title}</h1>
+                    <p>{detail.run.requirement}</p>
+                    {detail.run.changeBranch && (
+                      <span
+                        className="activity-agent activity-agent-model"
+                        title={`Branch de salvaguarda: ${detail.run.changeBranch}`}
+                        aria-label={`Branch de salvaguarda: ${detail.run.changeBranch}`}
+                      >branch {detail.run.changeBranch}</span>
+                    )}
+                  </div>
                   <div className="stage-actions">
                     <RunControls run={detail.run} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
                     <div className="stage-count"><strong>{detail.run.completedCount}/{detail.run.nodeCount}</strong><span>operaciones terminadas</span></div>
