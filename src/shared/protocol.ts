@@ -30,6 +30,9 @@ export type RunSummary = {
   // Auditores elegidos por el humano antes de autorizar el grafo. La lista se
   // congela al comenzar para que la política de revisión no cambie a mitad.
   auditors: string[];
+  // Auditores seleccionados que aún no publican phase completed. El catálogo lo
+  // usa para no marcar como pendiente una ejecución ya revisada por todos.
+  pendingAuditorCount: number;
   nodeCount: number;
   completedCount: number;
   // Nodos que aún esperan la aprobación humana: alimenta los avisos del árbol

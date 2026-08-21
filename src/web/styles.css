@@ -18,6 +18,8 @@
   --failed: #a33a32;
   --focus: #087e96;
   --selected-border: #2f74b5;
+  --change-node-width: 272px;
+  --change-node-layout-height: 196px;
 }
 
 * { box-sizing: border-box; }
@@ -159,6 +161,45 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .help-panel ol, .help-panel ul { margin: 0; padding-left: 19px; }
 .help-panel code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .74rem; }
 
+.global-pending-wrap { position: relative; }
+.global-pending-toggle { position: relative; width: 42px; height: 34px; display: inline-grid; grid-template-columns: 16px auto; place-items: center; gap: 3px; border: 1px solid #5d6d66; border-radius: 999px; color: #dfe5e1; background: transparent; cursor: pointer; font-size: .68rem; font-weight: 850; }
+.global-pending-toggle:hover, .global-pending-toggle[aria-expanded="true"] { color: #17201e; background: #dfe5e1; }
+.global-pending-toggle.has-pending { border-color: #d1a347; color: #f4d58f; }
+.global-pending-toggle.has-pending:hover, .global-pending-toggle.has-pending[aria-expanded="true"] { color: #17201e; background: #f2d28b; }
+.global-pending-toggle .icon { width: 15px; height: 15px; }
+.global-pending-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(23,32,30,.28); }
+.global-pending-panel { position: absolute; top: 44px; right: 0; z-index: 41; width: min(760px, 92vw); max-height: min(680px, 82vh); display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; border: 1px solid #7c8983; border-radius: 4px; color: #17201e; background: #f5f4ec; box-shadow: 4px 9px 26px rgba(23,32,30,.32); }
+.global-pending-panel header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 15px 17px 13px; border-bottom: 1px solid #aab4ae; background: #eef1ec; }
+.global-pending-panel h3 { margin: 0 0 4px; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.08rem; font-weight: 700; }
+.global-pending-panel header p { margin: 0; color: #53615c; font-size: .78rem; line-height: 1.35; }
+.global-pending-panel header button { flex: none; width: 32px; height: 32px; border: 0; border-radius: 3px; color: #69766f; background: transparent; cursor: pointer; font-size: 1.1rem; }
+.global-pending-panel header button:hover { color: #fff; background: #a03c2c; }
+.global-pending-error { margin: 0; padding: 8px 13px; color: #7e2b25; background: #f3dfdc; font-size: .76rem; font-weight: 700; }
+.global-pending-list { min-height: 0; overflow: auto; display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.global-pending-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 14px; border-bottom: 1px solid #c3ccc6; }
+.global-pending-item.is-current { background: #fffaf0; box-shadow: inset 3px 0 0 #d1a347; }
+.global-pending-main { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 5px 9px; }
+.global-pending-state { width: max-content; padding: 2px 7px; border: 1px solid #97a29c; border-radius: 999px; color: #43514c; background: #e1e6e1; font-size: .6rem; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
+.global-pending-item.status-running .global-pending-state, .global-pending-item.control-paused .global-pending-state { border-color: #d9b98a; color: #6d4d05; background: #f7ecd7; }
+.global-pending-item.status-failed .global-pending-state { border-color: #d7a08f; color: #8c3029; background: #f6e0d8; }
+.global-pending-main strong { min-width: 0; overflow: hidden; font-size: .86rem; text-overflow: ellipsis; white-space: nowrap; }
+.global-pending-main small { grid-column: 2; overflow: hidden; color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
+.global-pending-reasons { grid-column: 2; display: flex; flex-wrap: wrap; gap: 5px; }
+.global-pending-reasons span { padding: 2px 7px; border-radius: 999px; color: #31413b; background: #dfe6df; font-size: .62rem; font-weight: 750; }
+.global-pending-attention { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid #b8c2bc; border-radius: 3px; background: #edf0eb; }
+.global-pending-attention span { color: #7a4a0a; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .65rem; font-weight: 850; white-space: nowrap; }
+.global-pending-attention p { min-width: 0; overflow: hidden; margin: 0; color: #4c5a55; font-size: .68rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.global-pending-actions { display: flex; align-items: center; gap: 7px; }
+.global-pending-actions button { min-height: 36px; padding: 0 11px; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .74rem; font-weight: 800; }
+.global-pending-actions button:hover:not(:disabled) { background: #dfe5e1; }
+.global-pending-actions button:disabled { opacity: .6; cursor: default; }
+.global-pending-actions .control-resume { border-color: #2d6a50; color: #fff; background: #2d6a50; }
+.global-pending-actions .control-stop { border-color: #a03c2c; color: #a03c2c; background: transparent; }
+.global-pending-actions .control-stop:hover:not(:disabled) { color: #fff; background: #a03c2c; }
+.global-pending-empty { display: grid; justify-items: center; gap: 6px; padding: 42px 20px 46px; color: #40504a; text-align: center; }
+.global-pending-empty .icon { width: 30px; height: 30px; color: #2d6a50; }
+.global-pending-empty p { max-width: 34ch; margin: 0; color: #58655f; font-size: .8rem; line-height: 1.4; }
+
 .app-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
 
 .project-tree { min-width: 0; min-height: 0; display: grid; grid-template-rows: 58px minmax(0, 1fr) auto; color: #17201e; background: #e7ebe7; border-right: 1px solid #7c8983; }
@@ -243,8 +284,8 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .change-node {
   position: relative;
   display: block;
-  width: 272px;
-  min-height: 148px;
+  width: var(--change-node-width);
+  min-height: var(--change-node-layout-height);
   padding: 13px 15px 12px;
   border: 2px solid #65726c;
   border-radius: 4px;
@@ -269,7 +310,7 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .discovered-label { flex: none; color: #785417; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .node-symbol { display: block; margin-top: 10px; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .88rem; text-overflow: ellipsis; white-space: nowrap; }
 .change-node p { min-height: 34px; margin: 5px 0 11px; color: #4d5b56; font-size: .79rem; line-height: 1.35; }
-.node-status-row { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.node-status-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 7px 8px; }
 .approval-label { flex: none; color: #8a4a12; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .suggested-label { flex: none; color: #3d5a8a; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .suggested-note { display: flex; margin: 0; color: #3d5a8a; font-size: .76rem; line-height: 1.4; }
@@ -311,7 +352,10 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .assign-row button:hover { background: #dfe5e1; }
 .node-agent-select { min-width: 0; max-width: 128px; margin-right: auto; padding: 3px 5px; border: 1px solid #b3bdb7; border-radius: 3px; color: #3f4c47; background: #eef0ea; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .64rem; }
 .node-agent-warning { display: inline-flex; align-items: center; gap: 3px; color: #8a4a12; font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-.node-tokens { flex: none; color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .62rem; }
+.token-cost-badge { display: inline-flex; flex: none; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid #c79d34; border-radius: 999px; color: #60440f; background: #fff2c4; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .62rem; font-weight: 750; line-height: 1.25; white-space: nowrap; }
+.token-cost-badge-muted { border-color: transparent; color: #58655f; background: transparent; font-weight: 650; }
+.node-tokens { max-width: 100%; }
+.inspector-token-cost { justify-self: end; }
 .inspector-signals { display: grid; justify-items: end; gap: 4px; }
 .inspector-executor { color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; }
 .node-agent-warning .icon { width: 12px; height: 12px; }

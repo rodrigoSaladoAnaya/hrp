@@ -13,6 +13,7 @@ function run(id: string, createdAt: string): RunSummary {
     graphVersion: 0,
     seenAgents: [],
     auditors: [],
+    pendingAuditorCount: 0,
     nodeCount: 0,
     completedCount: 0,
     awaitingApproval: 0,

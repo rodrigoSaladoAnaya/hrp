@@ -989,13 +989,18 @@ export class HrpStore {
     const status: NodeStatus = Number(counts.failed ?? 0) > 0 ? "failed"
       : Number(counts.running ?? 0) > 0 ? "running"
         : total > 0 && total === completed ? "completed" : "pending";
+    const runId = String(row.id);
+    const auditors = row.auditors_json ? JSON.parse(String(row.auditors_json)) as string[] : [];
+    const completedAuditors = new Set((this.database.prepare("SELECT agent FROM agent_states WHERE run_id = ? AND phase = 'completed'").all(runId) as Row[])
+      .map((state) => String(state.agent)));
     return {
-      id: String(row.id), projectId: String(row.project_id), title: String(row.title), requirement: String(row.requirement),
+      id: runId, projectId: String(row.project_id), title: String(row.title), requirement: String(row.requirement),
       status, control: (row.control ? String(row.control) : "active") as RunControl,
       graphVersion: Number(row.graph_version),
       baseAgent: row.base_agent ? String(row.base_agent) : undefined,
       seenAgents: row.seen_agents_json ? JSON.parse(String(row.seen_agents_json)) as string[] : [],
-      auditors: row.auditors_json ? JSON.parse(String(row.auditors_json)) as string[] : [],
+      auditors,
+      pendingAuditorCount: auditors.filter((auditor) => !completedAuditors.has(auditor)).length,
       nodeCount: total, completedCount: completed, awaitingApproval: Number(counts.awaitingApproval ?? 0),
       openFindings: Number(findingCounts.open ?? 0),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),

@@ -441,12 +441,16 @@ describe("HrpStore", () => {
       });
 
       expect(store.pendingAuditors(run.id).map((state) => state.phase)).toEqual(["waiting"]);
+      expect(store.getRun(run.id)?.pendingAuditorCount).toBe(1);
       progress("reviewing");
       expect(store.pendingAuditors(run.id).map((state) => state.phase)).toEqual(["reviewing"]);
+      expect(store.getRun(run.id)?.pendingAuditorCount).toBe(1);
       progress("failed");
       expect(store.pendingAuditors(run.id).map((state) => state.phase)).toEqual(["failed"]);
+      expect(store.getRun(run.id)?.pendingAuditorCount).toBe(1);
       progress("completed");
       expect(store.pendingAuditors(run.id)).toHaveLength(0);
+      expect(store.getRun(run.id)?.pendingAuditorCount).toBe(0);
 
       store.createFinding(run.id, { reviewer: "claude", severity: "major", title: "Contrato roto", body: "Detalle" });
       expect(store.runReviewGate(run.id)).toHaveLength(1);

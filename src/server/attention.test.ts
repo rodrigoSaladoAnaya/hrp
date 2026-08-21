@@ -38,6 +38,7 @@ function detail(partial: { nodes?: ChangeNode[]; run?: Partial<RunSummary>; find
     baseAgent: "claude",
     seenAgents: ["claude"],
     auditors: [],
+    pendingAuditorCount: partial.run?.auditors?.length ?? 0,
     nodeCount: nodes.length,
     completedCount: nodes.filter((candidate) => candidate.status === "completed").length,
     awaitingApproval: nodes.filter((candidate) => !candidate.approved).length,

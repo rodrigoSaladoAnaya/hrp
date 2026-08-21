@@ -22,6 +22,21 @@ type Catalog = { projects: ProjectWithRuns[] };
 type Health = { buildStale?: boolean };
 type ConnectionState = "connecting" | "connected" | "offline";
 type CatalogLoadOptions = { focus?: CatalogRunFocus; visibleProjectId?: string };
+type GlobalPendingEntry = {
+  project: ProjectWithRuns;
+  run: RunSummary;
+  reasons: string[];
+  priority: number;
+};
+type AttentionSignal = {
+  runId: string;
+  agent: string;
+  kind: string;
+  directive: string;
+  actionable: boolean;
+  waiting: boolean;
+  terminal: boolean;
+};
 type MapNodeData = {
   change: ChangeNode;
   isSelected: boolean;
@@ -33,9 +48,33 @@ type MapNodeData = {
 };
 
 const supportedAgents = ["claude", "codex", "antigravity", "ollama"] as const;
+const changeNodeWidthFallback = 272;
+const changeNodeLayoutHeightFallback = 196;
+
+function readCssPixels(property: string, fallback: number): number {
+  if (typeof window === "undefined") return fallback;
+  const value = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(property));
+  return Number.isFinite(value) ? value : fallback;
+}
 
 function formatTokens(tokens: number): string {
   return `~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens`;
+}
+
+function TokenCostBadge({ tokens, className = "" }: { tokens?: number; className?: string }) {
+  const hasReport = tokens != null;
+  const label = hasReport ? formatTokens(tokens) : "? tokens";
+  return (
+    <span
+      className={["token-cost-badge", !hasReport && "token-cost-badge-muted", className].filter(Boolean).join(" ")}
+      title={hasReport
+        ? `Tokens reportados por el agente: ${tokens}`
+        : "El agente completó este nodo sin reportar tokens; HRP no inventa estimaciones cuando el entorno no expone consumo real."}
+      aria-label={hasReport ? `Tokens reportados: ${label}` : "Tokens no reportados"}
+    >
+      {label}
+    </span>
+  );
 }
 
 function agentMissing(change: ChangeNode, baseAgent: string | undefined, seenAgents: string[], ollamaConfigured = false): boolean {
@@ -69,6 +108,25 @@ function sortRuns(runs: RunSummary[]): RunSummary[] {
 
 function awaitingApprovals(project: ProjectWithRuns): number {
   return project.runs.reduce((sum, run) => sum + run.awaitingApproval, 0);
+}
+
+function globalPendingEntries(projects: ProjectWithRuns[]): GlobalPendingEntry[] {
+  return projects.flatMap((project) => project.runs.map((run) => {
+    const reasons: string[] = [];
+    let priority = 0;
+    if (run.openFindings > 0) { reasons.push(`${run.openFindings} ${run.openFindings === 1 ? "hallazgo vivo" : "hallazgos vivos"}`); priority += 80; }
+    if (run.awaitingApproval > 0) { reasons.push(`${run.awaitingApproval} ${run.awaitingApproval === 1 ? "aprobación pendiente" : "aprobaciones pendientes"}`); priority += 70; }
+    if (run.status === "running") { reasons.push("hay trabajo en curso"); priority += 60; }
+    if (run.status === "failed") { reasons.push("hay un nodo fallido"); priority += 55; }
+    if (run.status === "pending" && run.nodeCount > 0) { reasons.push(`${run.completedCount}/${run.nodeCount} nodos completados`); priority += 40; }
+    if (run.status === "completed" && run.control === "active" && run.pendingAuditorCount > 0) { reasons.push(`${run.pendingAuditorCount} ${run.pendingAuditorCount === 1 ? "auditor pendiente" : "auditores pendientes"}`); priority += 35; }
+    if (run.status === "pending" && run.nodeCount === 0) { reasons.push("sin grafo publicado"); priority += 25; }
+    if (run.control === "paused") { reasons.push("pausada"); priority += 15; }
+    if (run.control === "active" && run.status !== "completed" && !reasons.length) { reasons.push("activa"); priority += 10; }
+    if (run.control === "stopped" || !reasons.length) return undefined;
+    return { project, run, reasons, priority } satisfies GlobalPendingEntry;
+  })).filter((entry): entry is GlobalPendingEntry => Boolean(entry))
+    .sort((left, right) => right.priority - left.priority || Date.parse(right.run.updatedAt) - Date.parse(left.run.updatedAt));
 }
 
 function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
@@ -148,7 +206,7 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
         ) : (change.executedBy ?? change.assignee ?? data.baseAgent) && (
           <span className="node-assignee" title={`${change.status === "completed" ? "Implementado" : "En ejecución"} por ${change.executedBy ?? change.assignee ?? data.baseAgent}`}>{change.executedBy ?? change.assignee ?? data.baseAgent}</span>
         )}
-        {change.tokens != null && <span className="node-tokens" title={`Consumo reportado por el agente: ${change.tokens} tokens`}>{formatTokens(change.tokens)}</span>}
+        {change.status === "completed" && <TokenCostBadge tokens={change.tokens} className="node-tokens" />}
         {missing && <span className="node-agent-warning" title={`${change.assignee} no se ha presentado en esta ejecución`}><Icon name="warning"/>sin señal</span>}
         <StatusSignal status={change.status}/>
       </div>
@@ -173,9 +231,11 @@ const graphAriaLabels: Partial<AriaLabelConfig> = {
 };
 
 function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, ollamaConfigured: boolean, onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
+  const nodeWidth = readCssPixels("--change-node-width", changeNodeWidthFallback);
+  const nodeHeight = readCssPixels("--change-node-layout-height", changeNodeLayoutHeightFallback);
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "LR", ranksep: 86, nodesep: 46, marginx: 44, marginy: 44 });
-  for (const change of changes) graph.setNode(change.id, { width: 272, height: 148 });
+  for (const change of changes) graph.setNode(change.id, { width: nodeWidth, height: nodeHeight });
   for (const change of changes) for (const dependency of change.dependencies) graph.setEdge(dependency, change.id);
   dagre.layout(graph);
   const byId = new Map(changes.map((change) => [change.id, change]));
@@ -184,7 +244,7 @@ function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run:
     return {
       id: change.id,
       type: "change",
-      position: { x: point.x - 136, y: point.y - 74 },
+      position: { x: point.x - nodeWidth / 2, y: point.y - nodeHeight / 2 },
       data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], ollamaConfigured, onSelect, onAssign },
     };
   });
@@ -244,7 +304,7 @@ function Inspector({ node, nodes, activity, runId, baseAgent, seenAgents, ollama
           {(node.status === "running" || node.status === "completed") && (node.executedBy ?? node.assignee ?? baseAgent) && (
             <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.executedBy ?? node.assignee ?? baseAgent}</span>
           )}
-          {node.tokens != null && <span className="inspector-executor" title={`Consumo reportado por el agente: ${node.tokens} tokens`}>{formatTokens(node.tokens)}</span>}
+          {node.status === "completed" && <TokenCostBadge tokens={node.tokens} className="inspector-token-cost" />}
         </div>
       </header>
 
@@ -924,6 +984,16 @@ export function App() {
     await loadCatalog();
   }, [projectId, loadCatalog]);
 
+  const setRunControl = useCallback(async (run: RunSummary, control: "active" | "paused" | "stopped") => {
+    const response = await fetch(`/api/runs/${run.id}/control`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ control }) });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? "No se pudo actualizar el control de la ejecución");
+    }
+    await loadCatalog({ visibleProjectId: projectId });
+    if (run.id === runId) await loadDetail(run.id);
+  }, [projectId, runId, loadCatalog, loadDetail]);
+
   const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, ollama?.configured ?? false, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, ollama?.configured, assignAgent]);
 
   // El layout se re-acomoda cuando aparecen o desaparecen nodos (descubiertos,
@@ -946,6 +1016,7 @@ export function App() {
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
   const auditorsReady = Boolean(detail?.run.auditors.length) && (!detail?.run.auditors.includes("ollama") || Boolean(ollama?.configured));
+  const globalPending = useMemo(() => globalPendingEntries(catalog.projects), [catalog.projects]);
 
   // paused = aprobar sin arrancar: el plan queda autorizado pero ningún agente
   // puede iniciar nodos hasta reanudar — tiempo para asignar y conectar agentes.
@@ -981,7 +1052,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <TopBar connectionState={connectionState} buildStale={buildStale} project={project} run={detail?.run} progress={progress} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/>
+      <TopBar connectionState={connectionState} buildStale={buildStale} project={project} run={detail?.run} progress={progress} ollama={ollama} pendingEntries={globalPending} currentRunId={runId} onPendingOpenRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }} onPendingControl={setRunControl} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/>
       <div className="app-body">
         <ProjectTree
           projects={catalog.projects}
@@ -1182,7 +1253,138 @@ function HelpPanel() {
   );
 }
 
-function TopBar({ connectionState, buildStale, project, run, progress = 0, ollama, onOllamaSaved }: { connectionState: ConnectionState; buildStale: boolean; project?: Project; run?: RunSummary; progress?: number; ollama?: OllamaSettingsView; onOllamaSaved?: () => void }) {
+function GlobalPendingPanel({ entries, currentRunId, onOpenRun, onControl }: {
+  entries: GlobalPendingEntry[];
+  currentRunId: string;
+  onOpenRun: (projectId: string, runId: string) => void;
+  onControl: (run: RunSummary, control: "active" | "paused" | "stopped") => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busyRunId, setBusyRunId] = useState("");
+  const [error, setError] = useState("");
+  const [attentionByRun, setAttentionByRun] = useState<Record<string, AttentionSignal[]>>({});
+  const [loadingAttention, setLoadingAttention] = useState(false);
+  const pendingRunKey = useMemo(() => entries.map((entry) => entry.run.id).sort().join("|"), [entries]);
+  const toggleButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusOnCloseRef = useRef(false);
+  const closePanel = useCallback(() => {
+    restoreFocusOnCloseRef.current = true;
+    setOpen(false);
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    closeButtonRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closePanel(); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (restoreFocusOnCloseRef.current) {
+        restoreFocusOnCloseRef.current = false;
+        toggleButtonRef.current?.focus();
+      }
+    };
+  }, [open, closePanel]);
+  useEffect(() => {
+    if (!open || !pendingRunKey) { setAttentionByRun({}); return; }
+    let cancelled = false;
+    const runIds = new Set(pendingRunKey.split("|"));
+    setLoadingAttention(true);
+    Promise.all(supportedAgents.map(async (agent) => {
+      const response = await fetch(`/api/attention?agent=${encodeURIComponent(agent)}&waitMs=0`);
+      if (!response.ok) return [];
+      const payload = await response.json() as { runs?: AttentionSignal[] };
+      return (payload.runs ?? []).filter((signal) => runIds.has(signal.runId));
+    })).then((groups) => {
+      if (cancelled) return;
+      const next: Record<string, AttentionSignal[]> = {};
+      for (const signal of groups.flat()) {
+        next[signal.runId] = [...(next[signal.runId] ?? []), signal];
+      }
+      setAttentionByRun(next);
+    }).catch(() => {
+      if (!cancelled) setAttentionByRun({});
+    }).finally(() => {
+      if (!cancelled) setLoadingAttention(false);
+    });
+    return () => { cancelled = true; };
+  }, [open, pendingRunKey]);
+  const runControl = async (entry: GlobalPendingEntry, control: "active" | "paused" | "stopped") => {
+    if (control === "stopped" && !window.confirm(`¿Detener "${entry.run.title}"? Dejará de despertar a los agentes hasta que la reanudes desde su ejecución.`)) return;
+    setBusyRunId(entry.run.id);
+    setError("");
+    try {
+      await onControl(entry.run, control);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo actualizar la ejecución");
+    } finally {
+      setBusyRunId("");
+    }
+  };
+  return (
+    <div className="global-pending-wrap">
+      <button ref={toggleButtonRef} type="button" className={`global-pending-toggle ${entries.length ? "has-pending" : ""}`} aria-expanded={open} aria-label="Ver pendientes globales" title="Ver pendientes globales" onClick={() => setOpen((value) => !value)}>
+        <Icon name="activity"/>
+        <span>{entries.length}</span>
+      </button>
+      {open && (
+        <>
+          <div className="global-pending-backdrop" onClick={closePanel}/>
+          <section className="global-pending-panel" role="dialog" aria-modal="true" aria-label="Pendientes globales de HRP">
+            <header>
+              <div><h3>Pendientes globales</h3><p>{entries.length ? "Ejecuciones que aún pueden despertar hooks o pedir intervención." : "No hay ejecuciones vivas que reclamen atención."}</p></div>
+              <button ref={closeButtonRef} type="button" aria-label="Cerrar pendientes globales" onClick={closePanel}>×</button>
+            </header>
+            {error && <p className="global-pending-error" role="alert">{error}</p>}
+            {entries.length ? (
+              <ol className="global-pending-list">
+                {entries.map((entry) => (
+                  <li key={entry.run.id} className={`global-pending-item control-${entry.run.control} status-${entry.run.status} ${entry.run.id === currentRunId ? "is-current" : ""}`}>
+                    <div className="global-pending-main">
+                      {(() => {
+                        const signals = (attentionByRun[entry.run.id] ?? []).filter((candidate) => candidate.actionable || (candidate.waiting && !candidate.terminal));
+                        const signal = signals.find((candidate) => candidate.actionable) ?? signals.find((candidate) => candidate.waiting) ?? signals[0];
+                        return (
+                          <div className="global-pending-attention">
+                            <span>{loadingAttention ? "attention..." : signal ? `${signal.agent}: ${signal.kind}` : "sin señal attention"}</span>
+                            {signal && <p title={signal.directive}>{signal.directive}</p>}
+                          </div>
+                        );
+                      })()}
+                      <span className="global-pending-state">{entry.run.control === "paused" ? "Pausada" : statusCopy[entry.run.status]}</span>
+                      <strong>{entry.run.title}</strong>
+                      <small title={entry.project.workspaceRoot}>{entry.project.name} · {entry.project.workspaceRoot}</small>
+                      <div className="global-pending-reasons">{entry.reasons.map((reason) => <span key={reason}>{reason}</span>)}</div>
+                    </div>
+                    <div className="global-pending-actions">
+                      <button type="button" onClick={() => { onOpenRun(entry.project.id, entry.run.id); closePanel(); }}>Abrir</button>
+                      {entry.run.control === "paused" && <button type="button" className="control-resume" disabled={busyRunId === entry.run.id} onClick={() => { runControl(entry, "active").catch(() => undefined); }}>Reanudar</button>}
+                      {entry.run.control !== "stopped" && <button type="button" className="control-stop" disabled={busyRunId === entry.run.id} onClick={() => { runControl(entry, "stopped").catch(() => undefined); }}>{busyRunId === entry.run.id ? "Deteniendo" : "Detener"}</button>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : <div className="global-pending-empty"><Icon name="check"/><strong>Todo cerrado</strong><p>Los hooks no deberían encontrar ejecuciones vivas en este workspace.</p></div>}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TopBar({ connectionState, buildStale, project, run, progress = 0, ollama, pendingEntries = [], currentRunId = "", onPendingOpenRun, onPendingControl, onOllamaSaved }: {
+  connectionState: ConnectionState;
+  buildStale: boolean;
+  project?: Project;
+  run?: RunSummary;
+  progress?: number;
+  ollama?: OllamaSettingsView;
+  pendingEntries?: GlobalPendingEntry[];
+  currentRunId?: string;
+  onPendingOpenRun?: (projectId: string, runId: string) => void;
+  onPendingControl?: (run: RunSummary, control: "active" | "paused" | "stopped") => Promise<void>;
+  onOllamaSaved?: () => void;
+}) {
   const connectionCopy = buildStale ? "Reinicia HRP" : connectionState === "connected" ? "En vivo" : connectionState === "offline" ? "Sin conexión" : "Conectando";
   const connectionClass = buildStale ? "offline" : connectionState;
   return (
@@ -1194,6 +1396,7 @@ function TopBar({ connectionState, buildStale, project, run, progress = 0, ollam
       </div>
       {/* Una sola celda del grid: la barra conserva sus 4 hijos originales. */}
       <div className="topbar-tools">
+        {onPendingOpenRun && onPendingControl && <GlobalPendingPanel entries={pendingEntries} currentRunId={currentRunId} onOpenRun={onPendingOpenRun} onControl={onPendingControl}/>}
         <OllamaSettingsPanel ollama={ollama} onSaved={onOllamaSaved}/>
         <HelpPanel/>
       </div>
