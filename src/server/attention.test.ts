@@ -278,6 +278,38 @@ describe("computeAttention", () => {
     expect(signal.directive).not.toContain("--remaining cuatro,uno,dos,tres");
   });
 
+  it("conserva cobertura preservada por el reset aunque el auditor vuelva a waiting", () => {
+    const nodes = [
+      node({ id: "uno", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:00:00.000Z" }),
+      node({ id: "dos", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:10:00.000Z" }),
+      node({ id: "tres", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:20:00.000Z" }),
+      node({ id: "cuatro", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:30:00.000Z" }),
+    ];
+    const agentStates = [{
+      agent: "claude",
+      phase: "waiting" as const,
+      summary: "Nueva pasada de auditoría pendiente",
+      completed: 3,
+      total: 4,
+      reviewedNodeIds: ["uno", "dos", "tres"],
+      remainingNodeIds: ["cuatro"],
+      startedAt: "2026-08-21T00:25:00.000Z",
+      updatedAt: "2026-08-21T00:31:00.000Z",
+    }];
+
+    const signal = computeAttention(detail({
+      nodes,
+      run: { auditors: ["claude"], baseAgent: "codex" },
+      agentStates,
+    }), "claude");
+
+    expect(signal.kind).toBe("audit");
+    expect(signal.directive).toContain("--completed 3");
+    expect(signal.directive).toContain("--reviewed uno,dos,tres");
+    expect(signal.directive).toContain("--remaining cuatro");
+    expect(signal.directive).not.toContain("--remaining cuatro,uno,dos,tres");
+  });
+
   it("la directiva de auditoría pide cobertura sólo sobre los nodos ajenos", () => {
     const signal = computeAttention(detail({
       nodes: [

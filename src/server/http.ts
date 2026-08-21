@@ -413,6 +413,7 @@ export function createApp(store: HrpStore) {
             total: auditable.length,
             reviewedNodeIds,
             remainingNodeIds,
+            startedAt: reviewedNodeIds.length ? previous?.startedAt : undefined,
           });
         }
         broadcast(run.projectId, run.id, "node-completed");
