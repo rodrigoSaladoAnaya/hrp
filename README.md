@@ -63,7 +63,7 @@ run_json=$(hrp run create \
 
 run_id=$(printf '%s' "$run_json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).id")
 
-hrp graph publish "$run_id" graph.json
+hrp graph publish "$run_id" graph.json --agent codex
 hrp node start "$run_id" settings-contract
 hrp patch publish "$run_id" settings-contract \
   --summary "Se añadió el contrato de preferencias" \
@@ -90,7 +90,7 @@ hrp attach [workspace] [--start]
 hrp project list
 hrp project remove <project-id> --yes
 hrp run create|list|delete
-hrp graph publish <run-id> <graph.json>
+hrp graph publish <run-id> <graph.json> --agent <nombre>
 hrp node discover|approve|assign|start|complete
 hrp node retry <run-id> <node-id>
 hrp patch publish

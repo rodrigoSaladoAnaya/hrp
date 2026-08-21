@@ -190,10 +190,10 @@ export class HrpMcpClient {
     }
   }
 
-  async publishGraph(runId: string, nodes: ChangeNodeInput[]): Promise<unknown> {
+  async publishGraph(runId: string, nodes: ChangeNodeInput[], agent?: string): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/graph`, {
       method: "POST",
-      body: JSON.stringify({ nodes }),
+      body: JSON.stringify(agent ? { nodes, agent } : { nodes }),
     });
   }
 
@@ -491,8 +491,12 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
             required: ["id", "file", "symbol", "title", "description", "rationale", "dependencies"],
           },
         },
+        agent: {
+          type: "string",
+          description: "Identidad del agente que publica (claude, codex...). Sin ella el run puede quedarse sin modelo base y sus nodos sin dueño.",
+        },
       },
-      required: ["runId", "nodes"],
+      required: ["runId", "nodes", "agent"],
     },
   },
   {
@@ -907,7 +911,14 @@ export async function executeHrpTool(
       });
 
     case "hrp_publish_graph":
-      return client.publishGraph(String(args.runId), args.nodes as ChangeNodeInput[]);
+      if (typeof args.agent !== "string" || !args.agent.trim()) {
+        throw new Error("hrp_publish_graph requiere agent para fijar el modelo base de la ejecución");
+      }
+      return client.publishGraph(
+        String(args.runId),
+        args.nodes as ChangeNodeInput[],
+        args.agent,
+      );
 
     case "hrp_discover_node":
       return client.discoverNode(String(args.runId), args.node as ChangeNodeInput);

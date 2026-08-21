@@ -35,7 +35,7 @@ const nodes = [
   { id: "dependency-test", file: "src/server/store.test.ts", symbol: "dependency order", title: "Probar el orden causal", description: "Impedir que una operación comience cuando sus dependencias no terminaron.", rationale: "Las conexiones del mapa deben representar una restricción real, no decoración.", dependencies: ["graph-store"] },
 ];
 
-await api(`/api/runs/${run.id}/graph`, { method: "POST", body: JSON.stringify({ nodes }) });
+await api(`/api/runs/${run.id}/graph`, { method: "POST", body: JSON.stringify({ nodes, agent: "claude" }) });
 await api(`/api/runs/${run.id}/approve`, { method: "POST", body: "{}" });
 
 for (const completed of [
