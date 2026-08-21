@@ -167,9 +167,13 @@ export function auditMajority(total: number): number {
   return total > 0 ? Math.floor(total / 2) + 1 : 0;
 }
 
+export function auditorIdentity(agent: string | undefined): string | undefined {
+  return agent?.startsWith("ollama:") ? "ollama" : agent;
+}
+
 export function nodeCoverageIsCurrent(auditor: string, startedAt: string | undefined, node: AuditableChange): boolean {
   if (!startedAt) return false;
-  return (node.executedBy ?? node.assignee) === auditor || node.updatedAt <= startedAt;
+  return auditorIdentity(node.executedBy ?? node.assignee) === auditorIdentity(auditor) || node.updatedAt <= startedAt;
 }
 
 export function auditorVoteIsCurrent(

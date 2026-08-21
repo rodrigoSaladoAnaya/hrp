@@ -268,6 +268,6 @@ No existe `run complete`; el estado se deriva de los nodos. Consulta `hrp state 
 - el workspace pasó **una sola vez** la verificación ejecutable integral (tests/build del proyecto — la corre la máquina, no tú);
 - la auditoría automática final corrió (revisa la Actividad), sus hallazgos quedaron resueltos por ti, y `hrp review gate "$run_id"` pasa.
 
-**Prohibido re-verificarte.** No releas tus propios diffs ni hagas una pasada de auto-auditoría al final: escribiste ese código y tienes sus mismos puntos ciegos; la pasada final de calidad es de los revisores pares (el auditor nunca es tu mismo modelo). Responder el debate y correr el gate no son re-verificación: son el cierre administrativo.
+**Prohibido re-verificarte.** No releas tus propios diffs ni los cuentes como cobertura revisada: escribiste ese código y tienes sus mismos puntos ciegos. Si también fuiste elegido como auditor, revisa sólo nodos ajenos; si no hay alcance, publica cobertura 0 y deja visible que esa ejecución necesita otro auditor para obtener revisión real. Responder el debate y correr el gate no son re-verificación: son el cierre administrativo.
 
 Después reporta al usuario el resultado como harías normalmente, mencionando que la evidencia quedó publicada en HRP.

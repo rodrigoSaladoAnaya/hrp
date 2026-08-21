@@ -1,4 +1,4 @@
-import { computeAuditorConsensus, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
+import { auditorIdentity, computeAuditorConsensus, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
 
 // Señales que una ejecución puede dar a un agente concreto, declaradas en
 // orden de prioridad: las cuatro primeras exigen acción inmediata, las
@@ -67,7 +67,7 @@ export function nodesForAgent(detail: RunDetail, agent: string) {
 // prohíbe auditarse a sí mismo. Un agente que implementa y audita en la misma
 // ejecución cierra su pasada sobre este subconjunto, no sobre el run entero.
 export function auditableNodes(detail: RunDetail, agent: string) {
-  return detail.nodes.filter((node) => (node.executedBy ?? node.assignee) !== agent);
+  return detail.nodes.filter((node) => auditorIdentity(node.executedBy ?? node.assignee) !== auditorIdentity(agent));
 }
 
 export function computeAttention(detail: RunDetail, agent: string): Attention {

@@ -1,6 +1,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { findingSeverities, PROTOCOL_VERSION, type ChangeNode, type FindingSeverity } from "../shared/protocol.js";
+import { auditableNodes } from "./attention.js";
 import { HrpStore } from "./store.js";
 
 // La respuesta de Ollama Cloud puede tardar minutos con paquetes grandes; el
@@ -47,12 +48,17 @@ function fenceFor(content: string): string {
 // Paquete autocontenido para convertir a cualquier modelo en revisor: el humano
 // lo copia a la otra sesión y esta obtiene todo el contexto del run con la
 // evidencia por nodo, sin acceso previo al proyecto.
-export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string): string {
+export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string, nodeIds?: string[]): string {
   const detail = store.getRunDetail(runId);
   if (!detail) throw new Error(`Unknown run: ${runId}`);
   const byId = new Map(detail.nodes.map((node) => [node.id, node]));
   let scope = detail.nodes;
-  if (nodeId) {
+  if (nodeIds) {
+    const unknown = nodeIds.filter((id) => !byId.has(id));
+    if (unknown.length) throw new Error(`Unknown nodes: ${unknown.join(", ")}`);
+    const keep = new Set(nodeIds);
+    scope = detail.nodes.filter((node) => keep.has(node.id));
+  } else if (nodeId) {
     if (!byId.has(nodeId)) throw new Error(`Unknown node: ${nodeId}`);
     const keep = new Set<string>();
     const visit = (id: string) => {
@@ -85,7 +91,8 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeId?: string)
     "",
     // El listado respeta el subárbol pedido: un pack limitado no expone nodos
     // ajenos, y el título avisa al revisor que existe grafo fuera de su alcance.
-    nodeId ? "## Grafo del subárbol (hay más nodos en el run, fuera de tu alcance)" : "## Grafo del run",
+    nodeIds ? "## Grafo del alcance de auditoría (hay más nodos en el run, fuera de tu alcance)"
+      : nodeId ? "## Grafo del subárbol (hay más nodos en el run, fuera de tu alcance)" : "## Grafo del run",
     "",
     ...scope.map((node) => `- ${node.id} [${node.status}] ${node.file} · ${node.symbol}${node.dependencies.length ? ` ← depende de: ${node.dependencies.join(", ")}` : ""}`),
   ];
@@ -193,7 +200,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     // La selección es por ejecución: configurar Ollama no lo convierte en
     // auditor global ni dispara trabajo que el humano no eligió.
     if (!detail.run.auditors.includes("ollama")) return undefined;
-    const coveredNodeIds = detail.nodes.filter((node) => node.status === "completed").map((node) => node.id);
+    const coveredNodeIds = auditableNodes(detail, "ollama").filter((node) => node.status === "completed").map((node) => node.id);
     const auditStartedAt = new Date().toISOString();
     const publishProgress = (
       phase: "waiting" | "reviewing" | "completed" | "failed",
@@ -234,23 +241,24 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
       store.createFinding(runId, { reviewer: "hrp", severity: "major", title, body });
       return 1;
     };
+    if (coveredNodeIds.length === 0) {
+      store.addActivity(runId, "note", "Auditoría sin alcance para ollama: no hay operaciones ajenas que revisar", undefined, undefined, "ollama");
+      publishProgress("completed", "Auditoría terminada sin alcance", {
+        detail: "Ollama coincide con el agente que ejecutó las operaciones completadas; HRP no envió sus propios diffs como auditoría.",
+        completed: 0,
+        reviewedNodeIds: [],
+        remainingNodeIds: [],
+      });
+      finish(marker);
+      return { created: 0 };
+    }
     if (!settings.apiKey) {
       store.addActivity(runId, "note", "Auditoría automática omitida: ollama no está configurado", undefined, undefined, "ollama");
       publishProgress("failed", "No se pudo iniciar la auditoría", { detail: "Falta configurar la API key de Ollama Cloud." });
       finish(marker);
       return undefined;
     }
-    if (detail.run.baseAgent && detail.run.baseAgent === `ollama:${settings.model}`) {
-      store.addActivity(runId, "note", "Auditoría automática omitida: el auditor no puede ser el mismo modelo que el base", undefined, undefined, "ollama");
-      publishProgress("failed", "Auditor inválido", { detail: "El modelo auditor coincide con el modelo base de la ejecución." });
-      const created = blockingOmission(
-        "Auditoría pendiente: el auditor no puede ser el mismo modelo que el base",
-        `El agente base de esta ejecución es ${detail.run.baseAgent} y coincide con el modelo de auditoría configurado. La regla de diversidad exige otro modelo: configura uno distinto en ollama o usa un revisor con sesión (hrp review pack) y resuelve este hallazgo con esa evidencia.`,
-      );
-      finish(marker);
-      return { created };
-    }
-    const pack = buildReviewPack(store, runId);
+    const pack = buildReviewPack(store, runId, undefined, coveredNodeIds);
     if (pack.length > 200_000) {
       store.addActivity(runId, "note", "Auditoría automática omitida: el paquete excede 200KB; audita por subárbol con 'hrp ollama review --node'", undefined, undefined, "ollama");
       publishProgress("failed", "El paquete excede el límite de Ollama", { detail: "Divide la auditoría por subárboles para cubrir el grafo completo." });
@@ -321,7 +329,8 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     }
     if (!Array.isArray(parsed)) throw new Error("la respuesta del revisor no es un arreglo");
     // Todo-o-nada: el lote completo se valida antes de registrar el primero.
-    const validNodes = new Set(detail.nodes.map((node) => node.id));
+    const allNodeIds = new Set(detail.nodes.map((node) => node.id));
+    const validNodes = new Set(coveredNodeIds);
     for (const item of parsed as Array<{ severity?: string; title?: string; body?: string; node?: string }>) {
       if (!item || typeof item.title !== "string" || !item.title || typeof item.body !== "string" || !item.body || !findingSeverities.includes(item.severity as FindingSeverity)) {
         throw new Error(`hallazgo con formato inválido: ${JSON.stringify(item).slice(0, 160)}`);
@@ -332,14 +341,18 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     let created = 0;
     store.database.transaction(() => {
       for (const item of parsed as Array<{ severity: FindingSeverity; title: string; body: string; node?: string }>) {
-        const findingBody = item.node && !validNodes.has(item.node)
-          ? `${item.body}\n(El revisor refirió el nodo "${item.node}", que no existe en el run.)` : item.body;
+        const nodeInScope = item.node ? validNodes.has(item.node) : false;
+        const findingBody = item.node && !nodeInScope
+          ? allNodeIds.has(item.node)
+            ? `${item.body}\n(El revisor refirió el nodo "${item.node}", que existe en el run pero queda fuera del alcance auditable de ollama.)`
+            : `${item.body}\n(El revisor refirió el nodo "${item.node}", que no existe en el run.)`
+          : item.body;
         store.createFinding(runId, {
           reviewer: `ollama:${model}`,
           severity: item.severity,
           title: item.title,
           body: findingBody,
-          nodeId: item.node && validNodes.has(item.node) ? item.node : undefined,
+          nodeId: nodeInScope ? item.node : undefined,
         });
         created += 1;
       }
@@ -359,7 +372,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
       store.addActivity(runId, "note", `Auditoría automática falló: ${message}`, undefined, undefined, "ollama");
       if (store.getRun(runId)?.auditors.includes("ollama")) {
         const failedDetail = store.getRunDetail(runId);
-        const remaining = failedDetail?.nodes.filter((node) => node.status === "completed").map((node) => node.id) ?? [];
+        const remaining = failedDetail ? auditableNodes(failedDetail, "ollama").filter((node) => node.status === "completed").map((node) => node.id) : [];
         store.setAgentState(runId, {
           agent: "ollama",
           phase: "failed",

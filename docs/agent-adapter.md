@@ -511,10 +511,10 @@ Confirma —leyendo el JSON de `hrp state`, no releyendo tu trabajo— que:
 Lo que la v3.1 elimina es que **la misma sesión que escribió el código se audite a sí misma**: comparte los puntos ciegos de la autoría y su relectura cuesta casi tanto como escribirla. A partir de ahí, la diversidad tiene grados:
 
 1. **Preferente** — un modelo distinto al base. Aporta diversidad de modelo y de contexto; es lo que cubre la auditoría automática de Ollama Cloud.
-2. **Aceptable** — otra sesión del mismo modelo que el base. No comparte el contexto de autoría y sí detecta errores de integración y desviaciones spec↔diff, pero es un escalón más débil: quien revise así debe declararlo en el hallazgo (por ejemplo, `--reviewer claude-revisor`).
-3. **Prohibida** — la sesión autora auditando su propio trabajo, en cualquier forma.
+2. **Aceptable** — el agente base o una sesión del mismo modelo como auditor de nodos ajenos. No aporta la misma diversidad de modelo, pero sí puede revisar integración y desviaciones spec↔diff de trabajo escrito por otros agentes; si revisa una sesión distinta del mismo modelo, decláralo en el hallazgo (por ejemplo, `--reviewer claude-revisor`).
+3. **Prohibida** — contar como cobertura revisada los nodos escritos por el mismo agente auditor. Si el auditor resulta ser autor de todo, su pasada cierra con cobertura 0 y deja una nota visible de “auditoría sin alcance”; esa ejecución necesita otro auditor para obtener revisión real.
 
-Cuando el humano sólo dispone de sesiones del modelo base, la combinación correcta es el auditor automático de ollama —que aporta la diversidad de modelo— más un revisor con sesión del nivel 2, que aporta la de contexto. Los auditores elegidos para la ejecución quedan registrados en `run.auditors`.
+Cuando el humano sólo dispone de sesiones del modelo base, la combinación correcta es elegir también un auditor que no haya escrito esos nodos: el auditor automático de ollama si no fue quien ejecutó el trabajo, u otra sesión del nivel 2 que aporte diversidad de contexto. Los auditores elegidos para la ejecución quedan registrados en `run.auditors`; la cobertura efectiva siempre se calcula sobre el subconjunto ajeno.
 
 ## Revisión multi-modelo (protocolo v3)
 
