@@ -485,6 +485,40 @@ describe("HrpStore", () => {
       expect(store.pendingAuditorVotes(run.id)).toBe(0);
     });
 
+    it("does not count auditor votes that predate a later auditable node", () => {
+      const { store, run } = fixture();
+      store.setRunAuditors(run.id, ["claude", "codex", "antigravity"]);
+      store.publishGraph(run.id, { nodes: [
+        { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+        { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Correction", rationale: "Required", dependencies: ["uno"] },
+      ] });
+      store.approveNodes(run.id);
+      for (const [id, file] of [["uno", "A.ts"], ["dos", "B.ts"]] as const) {
+        store.startNode(run.id, id, "codex");
+        store.publishPatch(run.id, id, "Cambio", `diff --git a/${file} b/${file}\n@@\n+ok`);
+        store.publishVerification(run.id, id, { command: "npm test", output: "ok", exitCode: 0 });
+        store.completeNode(run.id, id);
+      }
+      store.database.prepare("UPDATE nodes SET updated_at = ? WHERE run_id = ? AND id = ?").run("2026-08-21T00:00:00.000Z", run.id, "uno");
+      store.database.prepare("UPDATE nodes SET updated_at = ? WHERE run_id = ? AND id = ?").run("2026-08-21T01:00:00.000Z", run.id, "dos");
+      for (const agent of ["claude", "antigravity"]) {
+        store.setAgentState(run.id, {
+          agent,
+          phase: "completed",
+          summary: "Auditoría terminada antes de la corrección",
+          completed: 1,
+          total: 1,
+          reviewedNodeIds: ["uno"],
+          remainingNodeIds: [],
+          startedAt: "2026-08-21T00:30:00.000Z",
+        });
+      }
+
+      expect(store.pendingAuditors(run.id).map((state) => state.agent)).toEqual(["claude", "antigravity"]);
+      expect(store.getRun(run.id)).toMatchObject({ pendingAuditorCount: 2, pendingAuditorVotes: 1 });
+      expect(store.pendingAuditorVotes(run.id)).toBe(1);
+    });
+
     it("keeps auditor coverage when a finding is rejected or reopened", () => {
       const { store, run } = reviewFixture();
       store.setRunAuditors(run.id, ["claude", "codex", "antigravity"]);

@@ -158,16 +158,37 @@ export type AuditorConsensus = {
   pendingAuditorVotes: number;
 };
 
+type AuditableChange = Pick<ChangeNode, "assignee" | "executedBy" | "updatedAt">;
+type ConsensusAgentState =
+  Pick<AgentWorkState, "agent" | "phase">
+  & Partial<Pick<AgentWorkState, "startedAt" | "updatedAt">>;
+
 export function auditMajority(total: number): number {
   return total > 0 ? Math.floor(total / 2) + 1 : 0;
 }
 
+export function nodeCoverageIsCurrent(auditor: string, startedAt: string | undefined, node: AuditableChange): boolean {
+  if (!startedAt) return false;
+  return (node.executedBy ?? node.assignee) === auditor || node.updatedAt <= startedAt;
+}
+
+export function auditorVoteIsCurrent(
+  auditor: string,
+  state: ConsensusAgentState | undefined,
+  nodes: AuditableChange[] = [],
+): boolean {
+  if (state?.phase !== "completed") return false;
+  const startedAt = state.startedAt ?? state.updatedAt;
+  return nodes.every((node) => nodeCoverageIsCurrent(auditor, startedAt, node));
+}
+
 export function computeAuditorConsensus(
   auditors: string[],
-  agentStates: Pick<AgentWorkState, "agent" | "phase">[],
+  agentStates: ConsensusAgentState[],
+  nodes: AuditableChange[] = [],
 ): AuditorConsensus {
   const completed = new Set(agentStates
-    .filter((state) => state.phase === "completed")
+    .filter((state) => auditorVoteIsCurrent(state.agent, state, nodes))
     .map((state) => state.agent));
   const pendingAuditors = auditors.filter((auditor) => !completed.has(auditor));
   const completedVotes = auditors.length - pendingAuditors.length;

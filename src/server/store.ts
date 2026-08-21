@@ -950,7 +950,7 @@ export class HrpStore {
   pendingAuditors(runId: string): AgentWorkState[] {
     const detail = this.getRunDetail(runId);
     if (!detail) throw new Error(`Unknown run: ${runId}`);
-    const pendingNames = new Set(computeAuditorConsensus(detail.run.auditors, detail.agentStates).pendingAuditors);
+    const pendingNames = new Set(computeAuditorConsensus(detail.run.auditors, detail.agentStates, detail.nodes).pendingAuditors);
     return detail.run.auditors.flatMap((agent) => {
       const state = detail.agentStates.find((candidate) => candidate.agent === agent);
       if (!pendingNames.has(agent)) return [];
@@ -971,7 +971,7 @@ export class HrpStore {
   pendingAuditorVotes(runId: string): number {
     const detail = this.getRunDetail(runId);
     if (!detail) throw new Error(`Unknown run: ${runId}`);
-    return computeAuditorConsensus(detail.run.auditors, detail.agentStates).pendingAuditorVotes;
+    return computeAuditorConsensus(detail.run.auditors, detail.agentStates, detail.nodes).pendingAuditorVotes;
   }
 
   addActivity(runId: string, type: ActivityType, message: string, detail?: string, nodeId?: string, agent?: string): Activity {
@@ -1001,9 +1001,20 @@ export class HrpStore {
         : total > 0 && total === completed ? "completed" : "pending";
     const runId = String(row.id);
     const auditors = row.auditors_json ? JSON.parse(String(row.auditors_json)) as string[] : [];
-    const completedAuditorStates = (this.database.prepare("SELECT agent FROM agent_states WHERE run_id = ? AND phase = 'completed'").all(runId) as Row[])
-      .map((state) => ({ agent: String(state.agent), phase: "completed" as const }));
-    const auditorConsensus = computeAuditorConsensus(auditors, completedAuditorStates);
+    const auditorStates = (this.database.prepare("SELECT agent, phase, started_at, updated_at FROM agent_states WHERE run_id = ?").all(runId) as Row[])
+      .map((state) => ({
+        agent: String(state.agent),
+        phase: String(state.phase) as AgentWorkPhase,
+        startedAt: state.started_at ? String(state.started_at) : undefined,
+        updatedAt: state.updated_at ? String(state.updated_at) : undefined,
+      }));
+    const nodeChanges = (this.database.prepare("SELECT assignee, executed_by, updated_at FROM nodes WHERE run_id = ?").all(runId) as Row[])
+      .map((node) => ({
+        assignee: node.assignee ? String(node.assignee) : undefined,
+        executedBy: node.executed_by ? String(node.executed_by) : undefined,
+        updatedAt: String(node.updated_at),
+      }));
+    const auditorConsensus = computeAuditorConsensus(auditors, auditorStates, nodeChanges);
     return {
       id: runId, projectId: String(row.project_id), title: String(row.title), requirement: String(row.requirement),
       status, control: (row.control ? String(row.control) : "active") as RunControl,

@@ -209,6 +209,75 @@ describe("computeAttention", () => {
     expect(signal.directive).toContain("antigravity, ollama");
   });
 
+  it("no cierra con votos auditores anteriores a un nodo auditable más reciente", () => {
+    const nodes = [
+      node({ id: "uno", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:00:00.000Z" }),
+      node({ id: "dos", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T01:00:00.000Z" }),
+    ];
+    const agentStates = ["claude", "antigravity"].map((agent) => ({
+      agent,
+      phase: "completed" as const,
+      summary: "listo",
+      completed: 1,
+      total: 1,
+      reviewedNodeIds: ["uno"],
+      remainingNodeIds: [],
+      startedAt: "2026-08-21T00:30:00.000Z",
+      updatedAt: "2026-08-21T00:45:00.000Z",
+    }));
+
+    const baseSignal = computeAttention(detail({
+      nodes,
+      run: { auditors: ["claude", "antigravity", "ollama"], baseAgent: "codex" },
+      agentStates,
+    }), "codex");
+    expect(baseSignal.kind).toBe("auditors");
+    expect(baseSignal.pendingAuditors).toEqual(["claude", "antigravity", "ollama"]);
+    expect(baseSignal.pendingAuditorVotes).toBe(2);
+
+    const auditorSignal = computeAttention(detail({
+      nodes,
+      run: { auditors: ["claude", "antigravity", "ollama"], baseAgent: "codex" },
+      agentStates,
+    }), "claude");
+    expect(auditorSignal.kind).toBe("audit");
+    expect(auditorSignal.directive).toContain("--reviewed uno");
+    expect(auditorSignal.directive).toContain("--remaining dos");
+  });
+
+  it("conserva cobertura parcial vigente mientras el auditor sigue reviewing", () => {
+    const nodes = [
+      node({ id: "uno", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:00:00.000Z" }),
+      node({ id: "dos", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:10:00.000Z" }),
+      node({ id: "tres", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:20:00.000Z" }),
+      node({ id: "cuatro", status: "completed", executedBy: "codex", updatedAt: "2026-08-21T00:30:00.000Z" }),
+    ];
+    const agentStates = [{
+      agent: "claude",
+      phase: "reviewing" as const,
+      summary: "pasada parcial",
+      completed: 3,
+      total: 4,
+      reviewedNodeIds: ["uno", "dos", "tres"],
+      remainingNodeIds: ["cuatro"],
+      startedAt: "2026-08-21T00:25:00.000Z",
+      updatedAt: "2026-08-21T00:26:00.000Z",
+    }];
+
+    const signal = computeAttention(detail({
+      nodes,
+      run: { auditors: ["claude"], baseAgent: "codex" },
+      agentStates,
+    }), "claude");
+
+    expect(signal.kind).toBe("audit");
+    expect(signal.directive).toContain("--completed 3");
+    expect(signal.directive).toContain("--total 4");
+    expect(signal.directive).toContain("--reviewed uno,dos,tres");
+    expect(signal.directive).toContain("--remaining cuatro");
+    expect(signal.directive).not.toContain("--remaining cuatro,uno,dos,tres");
+  });
+
   it("la directiva de auditoría pide cobertura sólo sobre los nodos ajenos", () => {
     const signal = computeAttention(detail({
       nodes: [

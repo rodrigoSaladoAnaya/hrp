@@ -1,4 +1,4 @@
-import { computeAuditorConsensus, type RunDetail } from "../shared/protocol.js";
+import { computeAuditorConsensus, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
 
 // Señales que una ejecución puede dar a un agente concreto, declaradas en
 // orden de prioridad: las cuatro primeras exigen acción inmediata, las
@@ -77,7 +77,7 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   const auditorState = isAuditor ? detail.agentStates.find((state) => state.agent === agent) : undefined;
   // Hallazgos que impiden cerrar: los mismos que bloquean 'hrp review gate'.
   const liveFindings = detail.findings.filter((finding) => finding.status === "open" || finding.status === "debating" || finding.status === "escalated");
-  const auditorConsensus = computeAuditorConsensus(detail.run.auditors, allCompleted ? detail.agentStates : []);
+  const auditorConsensus = computeAuditorConsensus(detail.run.auditors, allCompleted ? detail.agentStates : [], detail.nodes);
   const pendingAuditors = auditorConsensus.pendingAuditors;
   const pendingAuditorVotes = auditorConsensus.pendingAuditorVotes;
   const decide = (kind: AttentionKind, directive: string): Attention => ({
@@ -110,15 +110,22 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
 
   // Al terminar la implementación, una sesión revisora que estaba bloqueada
   // recibe una instrucción accionable. No se apropia de nodos del agente base.
-  if (allCompleted && isAuditor && auditorState?.phase !== "completed") {
+  if (allCompleted && isAuditor && (auditorState?.phase !== "completed" || pendingAuditors.includes(agent))) {
     // La cobertura se declara sobre lo ajeno: pedirle los propios sería pedirle
     // que se autoaudite, y el gate luego rechazaría ese cierre.
     const auditable = auditableNodes(detail, agent);
     const auditableIds = new Set(auditable.map((node) => node.id));
-    const reviewed = (auditorState?.reviewedNodeIds ?? []).filter((nodeId) => auditableIds.has(nodeId));
+    const reviewed = (auditorState?.reviewedNodeIds ?? []).filter((nodeId) => {
+      const node = auditable.find((candidate) => candidate.id === nodeId);
+      const startedAt = auditorState?.startedAt ?? auditorState?.updatedAt;
+      return node && auditableIds.has(nodeId) && nodeCoverageIsCurrent(agent, startedAt, node);
+    });
     const reviewedFlag = reviewed.length ? ` --reviewed ${reviewed.join(",")}` : "";
-    const remaining = (auditorState?.remainingNodeIds ?? []).filter((nodeId) => auditableIds.has(nodeId));
-    const pendientes = remaining.length ? remaining : auditable.map((node) => node.id);
+    const remaining = new Set((auditorState?.remainingNodeIds ?? []).filter((nodeId) => auditableIds.has(nodeId)));
+    for (const node of auditable) {
+      if (!reviewed.includes(node.id)) remaining.add(node.id);
+    }
+    const pendientes = [...remaining];
     const propios = detail.nodes.length - auditable.length;
     return decide("audit", `Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${reviewed.length} --total ${auditable.length}${reviewedFlag} --remaining ${pendientes.join(",")}', obtén el contexto con 'hrp review pack ${run.id}', registra o debate hallazgos y, si estás conforme, vota OK cerrando con phase completed llevando --reviewed con ellos y --remaining vacío. Si un cierre previo no te convence, usa 'hrp finding reopen <id> --author ${agent} --body RAZON'.${propios ? ` Tus ${propios} nodos propios quedan fuera: no te autoaudites.` : ""}`);
   }
