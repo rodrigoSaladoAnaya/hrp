@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dagre from "@dagrejs/dagre";
 import {
   Background,
@@ -13,6 +13,7 @@ import {
   type Node,
   type NodeProps,
   type ReactFlowInstance,
+  type Viewport,
 } from "@xyflow/react";
 import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
@@ -38,6 +39,18 @@ type AttentionSignal = {
   waiting: boolean;
   terminal: boolean;
 };
+type GraphMagnifierState = {
+  active: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+type GraphPointerState = Omit<GraphMagnifierState, "active"> & {
+  inside: boolean;
+  clientX: number;
+  clientY: number;
+};
 type MapNodeData = {
   change: ChangeNode;
   isSelected: boolean;
@@ -51,6 +64,8 @@ type MapNodeData = {
 const supportedAgents = ["claude", "codex", "antigravity", "ollama"] as const;
 const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
+const graphMagnifierScale = 1.65;
+const graphMagnifierSize = 236;
 
 function readCssPixels(property: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
@@ -865,14 +880,90 @@ export function App() {
   const currentProjectId = useRef(projectId);
   const currentRunId = useRef(runId);
   const flowInstance = useRef<ReactFlowInstance<Node<MapNodeData>, Edge> | null>(null);
+  const flowWrapRef = useRef<HTMLDivElement | null>(null);
   const graphViewports = useRef(new Map<string, StoredGraphViewport>());
   const appliedGraphViewportKey = useRef("");
   const pendingGraphFitCancel = useRef<(() => void) | undefined>(undefined);
   const graphViewportUserMoved = useRef(false);
+  const graphViewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const graphMagnifierRect = useRef<DOMRect | undefined>(undefined);
+  const graphPointer = useRef<GraphPointerState>({ inside: false, clientX: 0, clientY: 0, x: 0, y: 0, width: 0, height: 0 });
+  const graphMagnifierActive = useRef(false);
+  const [graphViewport, setGraphViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const [graphMagnifier, setGraphMagnifier] = useState<GraphMagnifierState>({ active: false, x: 0, y: 0, width: 0, height: 0 });
   const cancelPendingGraphFit = useCallback(() => {
     pendingGraphFitCancel.current?.();
     pendingGraphFitCancel.current = undefined;
   }, []);
+  const setGraphMagnifierSnapshot = useCallback((next: GraphMagnifierState) => {
+    graphMagnifierActive.current = next.active;
+    setGraphMagnifier((current) => (
+      current.active === next.active
+      && current.x === next.x
+      && current.y === next.y
+      && current.width === next.width
+      && current.height === next.height
+    ) ? current : next);
+  }, []);
+  const hideGraphMagnifier = useCallback(() => {
+    if (!graphMagnifierActive.current) return;
+    setGraphMagnifierSnapshot({ ...graphPointer.current, active: false });
+  }, [setGraphMagnifierSnapshot]);
+  const updateGraphViewport = useCallback((viewport: Viewport) => {
+    graphViewportRef.current = viewport;
+    if (graphMagnifierActive.current) setGraphViewport(viewport);
+  }, []);
+  const resetGraphPointer = useCallback(() => {
+    graphMagnifierRect.current = undefined;
+    graphPointer.current = { inside: false, clientX: 0, clientY: 0, x: 0, y: 0, width: 0, height: 0 };
+  }, []);
+  const readGraphPointer = useCallback((target: HTMLDivElement, clientX: number, clientY: number): GraphPointerState => {
+    const rect = graphMagnifierRect.current ?? target.getBoundingClientRect();
+    const pointer = {
+      inside: true,
+      clientX,
+      clientY,
+      x: Math.min(Math.max(clientX - rect.left, 0), rect.width),
+      y: Math.min(Math.max(clientY - rect.top, 0), rect.height),
+      width: rect.width,
+      height: rect.height,
+    };
+    graphPointer.current = pointer;
+    return pointer;
+  }, []);
+  const refreshGraphPointer = useCallback((target = flowWrapRef.current): GraphPointerState => {
+    if (!target) {
+      resetGraphPointer();
+      return graphPointer.current;
+    }
+    graphMagnifierRect.current = target.getBoundingClientRect();
+    if (!graphPointer.current.inside) return graphPointer.current;
+    return readGraphPointer(target, graphPointer.current.clientX, graphPointer.current.clientY);
+  }, [readGraphPointer, resetGraphPointer]);
+  const showGraphMagnifier = useCallback((pointer = graphPointer.current) => {
+    if (!pointer.inside || !flowWrapRef.current) return;
+    setGraphViewport(graphViewportRef.current);
+    setGraphMagnifierSnapshot({ ...pointer, active: true });
+  }, [setGraphMagnifierSnapshot]);
+  const enterGraphMagnifier = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    graphMagnifierRect.current = event.currentTarget.getBoundingClientRect();
+    readGraphPointer(event.currentTarget, event.clientX, event.clientY);
+  }, [readGraphPointer]);
+  const updateGraphMagnifier = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const active = event.metaKey || event.ctrlKey;
+    const pointer = readGraphPointer(event.currentTarget, event.clientX, event.clientY);
+    if (!active) { hideGraphMagnifier(); return; }
+    showGraphMagnifier(pointer);
+  }, [hideGraphMagnifier, readGraphPointer, showGraphMagnifier]);
+  const leaveGraphMagnifier = useCallback(() => {
+    resetGraphPointer();
+    hideGraphMagnifier();
+  }, [hideGraphMagnifier, resetGraphPointer]);
+  const setFlowWrapElement = useCallback((element: HTMLDivElement | null) => {
+    flowWrapRef.current = element;
+    resetGraphPointer();
+    if (!element) hideGraphMagnifier();
+  }, [hideGraphMagnifier, resetGraphPointer]);
 
   const loadCatalog = useCallback(async ({ focus, visibleProjectId }: CatalogLoadOptions = {}) => {
     try {
@@ -1025,6 +1116,22 @@ export function App() {
   // solo cuando cambia el conjunto de ids, no en cada refresco de estado.
   const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
   const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey) showGraphMagnifier(refreshGraphPointer());
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!event.metaKey && !event.ctrlKey) hideGraphMagnifier();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", hideGraphMagnifier);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", hideGraphMagnifier);
+    };
+  }, [hideGraphMagnifier, refreshGraphPointer, showGraphMagnifier]);
   const applyGraphViewport = useCallback((duration = 320) => {
     const instance = flowInstance.current;
     if (!instance) return;
@@ -1061,16 +1168,45 @@ export function App() {
   useEffect(() => {
     if (flowMounted) return;
     cancelPendingGraphFit();
+    resetGraphPointer();
+    hideGraphMagnifier();
     flowInstance.current = null;
     appliedGraphViewportKey.current = "";
     graphViewportUserMoved.current = false;
-  }, [cancelPendingGraphFit, flowMounted]);
+  }, [cancelPendingGraphFit, flowMounted, hideGraphMagnifier, resetGraphPointer]);
+  useEffect(() => {
+    if (!flowMounted || !flowWrapRef.current) return;
+    const target = flowWrapRef.current;
+    const refresh = () => {
+      const pointer = refreshGraphPointer(target);
+      if (graphMagnifierActive.current) showGraphMagnifier(pointer);
+    };
+    refresh();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(refresh);
+    observer?.observe(target);
+    window.addEventListener("resize", refresh);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", refresh);
+    };
+  }, [flowMounted, refreshGraphPointer, showGraphMagnifier]);
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
   const auditorsReady = Boolean(detail?.run.auditors.length) && (!detail?.run.auditors.includes("ollama") || Boolean(ollama?.configured));
   const globalPending = useMemo(() => globalPendingEntries(catalog.projects), [catalog.projects]);
+  const graphMagnifierStyle: CSSProperties = {
+    left: graphMagnifier.x,
+    top: graphMagnifier.y,
+    width: graphMagnifierSize,
+    height: graphMagnifierSize,
+  };
+  const graphMagnifierContentStyle: CSSProperties = {
+    width: graphMagnifier.width,
+    height: graphMagnifier.height,
+    transform: `translate(${graphMagnifierSize / 2 - graphMagnifier.x * graphMagnifierScale}px, ${graphMagnifierSize / 2 - graphMagnifier.y * graphMagnifierScale}px) scale(${graphMagnifierScale})`,
+  };
 
   // paused = aprobar sin arrancar: el plan queda autorizado pero ningún agente
   // puede iniciar nodos hasta reanudar — tiempo para asignar y conectar agentes.
@@ -1160,7 +1296,16 @@ export function App() {
                 {view === "findings" ? (
                   <FindingsPanel findings={detail.findings} nodes={detail.nodes} runId={detail.run.id} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
                 ) : view === "map" ? (
-                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; appliedGraphViewportKey.current = ""; applyGraphViewport(0); }} onMoveStart={(event) => { if (event) { graphViewportUserMoved.current = true; cancelPendingGraphFit(); } }} onMoveEnd={(_event, viewport) => { if (shouldPersistGraphViewport({ nodeSetKey, runId, userMoved: graphViewportUserMoved.current })) graphViewports.current.set(runId, { nodeSetKey, viewport }); graphViewportUserMoved.current = false; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
+                  detail.nodes.length ? <div className={`flow-wrap ${graphMagnifier.active ? "is-magnifying" : ""}`} ref={setFlowWrapElement} onPointerEnter={enterGraphMagnifier} onPointerMove={updateGraphMagnifier} onPointerLeave={leaveGraphMagnifier}>
+                    <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; updateGraphViewport(instance.getViewport()); appliedGraphViewportKey.current = ""; applyGraphViewport(0); }} onViewportChange={updateGraphViewport} onMoveStart={(event) => { if (event) { graphViewportUserMoved.current = true; cancelPendingGraphFit(); } }} onMoveEnd={(_event, viewport) => { updateGraphViewport(viewport); if (shouldPersistGraphViewport({ nodeSetKey, runId, userMoved: graphViewportUserMoved.current })) graphViewports.current.set(runId, { nodeSetKey, viewport }); graphViewportUserMoved.current = false; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow>
+                    {graphMagnifier.active && (
+                      <div className="graph-magnifier" style={graphMagnifierStyle} aria-hidden="true" inert>
+                        <div className="graph-magnifier__content" style={graphMagnifierContentStyle}>
+                          <ReactFlow className="graph-magnifier__flow" nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} viewport={graphViewport} zoomOnScroll={false} zoomOnPinch={false} zoomOnDoubleClick={false} panOnDrag={false} panOnScroll={false} preventScrolling={false} ariaLabelConfig={graphAriaLabels} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/></ReactFlow>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>

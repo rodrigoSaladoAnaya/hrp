@@ -267,10 +267,47 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .stage-count strong { color: #2d423b; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
 .stage-count span { color: #53615c; font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 
-.flow-wrap { flex: 1; min-height: 0; }
+.flow-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .map-stage .map-empty, .map-stage .ledger-empty, .map-stage .findings-empty { flex: 1; }
 .react-flow__pane { cursor: grab; }
 .react-flow__pane:active { cursor: grabbing; }
+.flow-wrap.is-magnifying > .react-flow .react-flow__pane { cursor: zoom-in; }
+.graph-magnifier {
+  position: absolute;
+  z-index: 8;
+  overflow: hidden;
+  border: 2px solid rgba(248, 246, 236, .96);
+  border-radius: 50%;
+  background: var(--field);
+  box-shadow:
+    0 0 0 1px rgba(23,32,30,.44),
+    0 9px 28px rgba(23,32,30,.34),
+    inset 0 0 0 1px rgba(255,255,255,.62);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+.graph-magnifier::after {
+  position: absolute;
+  inset: 9px;
+  border: 1px solid rgba(248,246,236,.68);
+  border-radius: inherit;
+  content: "";
+}
+.graph-magnifier__content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+.graph-magnifier__flow {
+  width: 100%;
+  height: 100%;
+  background: var(--field);
+}
+.graph-magnifier .react-flow__pane { cursor: inherit; }
+.graph-magnifier .change-node {
+  box-shadow: 5px 8px 18px rgba(23,32,30,.22);
+}
 .react-flow__controls { overflow: hidden; border: 1px solid #75817c; border-radius: 3px; box-shadow: 2px 4px 12px rgba(30,42,38,.14); }
 .react-flow__controls-button { width: 44px; height: 44px; border-bottom-color: #b3bdb7; background: #f5f4ec; }
 .react-flow__controls-button:hover { background: #fff; }
@@ -582,6 +619,7 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
   .content-toolbar nav button { flex: 1; }
   .workspace { display: block; }
   .map-stage { height: 62vh; min-height: 520px; border-right: 0; border-bottom: 1px solid #6d7974; }
+  .graph-magnifier { transform: translate(-50%, -50%) scale(.82); }
   .stage-head { min-height: 100px; padding: 14px; }
   .stage-head h1 { font-size: 1.02rem; }
   .stage-head p { display: -webkit-box; overflow: hidden; font-size: .76rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -661,6 +699,6 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .react-flow__edge.animated path, .loading-route span:nth-child(2), .agent-activity-row i { animation: none; }
-  .change-node, .progress-track span, .agent-review-progress span { transition: none; }
+  .change-node, .graph-magnifier, .progress-track span, .agent-review-progress span { transition: none; }
   .change-node:hover { transform: none; }
 }
