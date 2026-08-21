@@ -85,7 +85,7 @@ El comando imprime la URL exacta del proyecto y la ejecución creada.
 ## Comandos principales
 
 ```text
-hrp service start|status|stop
+hrp service start|status|stop|restart
 hrp attach [workspace] [--start]
 hrp project list
 hrp project remove <project-id> --yes

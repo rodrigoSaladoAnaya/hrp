@@ -158,8 +158,22 @@ function writeHookParks(sessionId, parks) {
   } catch { /* el contador es una salvaguarda, nunca un motivo de fallo */ }
 }
 
+// El estado del servicio se lee entero, no como booleano: el pid y buildStale
+// que publica health son la única forma de reconocer al demonio vivo cuando el
+// pidfile se perdió, y de saber que corre un build anterior al compilado.
+async function serviceHealth() {
+  return fetch(`${url}/api/health`)
+    .then((response) => response.ok ? response.json() : null)
+    .catch(() => null);
+}
+
 async function healthy() {
-  return fetch(`${url}/api/health`).then((response) => response.ok).catch(() => false);
+  return Boolean(await serviceHealth());
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
 function reportSkillSync() {
@@ -167,11 +181,16 @@ function reportSkillSync() {
   if (updated.length) print(`Skills sincronizadas con esta versión de HRP: ${updated.join(", ")}`);
 }
 
+// El servicio se autodiagnostica obsoleto en health; sin repetirlo aquí, un
+// build recién compilado parece roto mientras el demonio viejo sigue sirviendo.
+const staleBuildWarning = "Atención: el servicio corre un build anterior al compilado. Recógelo con 'hrp service restart'.";
+
 async function startService(workspace) {
-  if (await healthy()) {
+  const running = await serviceHealth();
+  if (running) {
     if (workspace) await api("/api/projects", { method: "POST", body: JSON.stringify({ workspaceRoot: workspace }) });
     reportSkillSync();
-    print(`HRP ya está activo: ${url}`);
+    print(`HRP ya está activo: ${url}${running.buildStale ? `\n${staleBuildWarning}` : ""}`);
     return;
   }
   const entry = path.join(root, "dist/server/server/index.js");
@@ -198,15 +217,36 @@ async function startService(workspace) {
 
 async function stopService() {
   const pidPath = path.join(dataDir, "runtime", "server.pid");
-  if (!existsSync(pidPath)) {
+  const recorded = existsSync(pidPath) ? Number(readFileSync(pidPath, "utf8").trim()) : Number.NaN;
+  // El pidfile es un recuerdo, no una prueba: un pid grabado puede haber sido
+  // reciclado por otro proceso. Quien responde en el puerto sí demuestra su
+  // identidad, así que health manda y nunca se envía una señal a un pid que no
+  // se pueda atribuir al servicio configurado.
+  const health = await serviceHealth();
+  if (!health) {
+    if (processAlive(recorded)) {
+      throw new Error(`Nada responde en ${url}, pero el pidfile registra el proceso ${recorded} todavía vivo. No puedo demostrar que sea HRP, así que no le envío ninguna señal. Compruébalo y ciérralo tú:\n  ps -p ${recorded} -o command=\n  kill ${recorded}`);
+    }
+    try { unlinkSync(pidPath); } catch { /* no había pidfile que limpiar */ }
     print("El servicio ya está detenido.");
     return;
   }
-  const pid = Number(readFileSync(pidPath, "utf8"));
-  try { process.kill(pid, "SIGTERM"); } catch { /* already stopped */ }
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    try { process.kill(pid, 0); } catch { break; }
+  if (health.product !== "hrp") {
+    throw new Error(`En ${url} responde algo que no es HRP; no voy a detener nada.`);
+  }
+  if (!processAlive(health.pid)) {
+    throw new Error(`Hay un servicio HRP respondiendo en ${url} que no publica un pid utilizable: es un build anterior a esta versión. Ciérralo a mano y repite el comando:\n  kill $(lsof -ti tcp:${port})`);
+  }
+  const pid = health.pid;
+  try { process.kill(pid, "SIGTERM"); } catch { /* ya estaba muerto */ }
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (!processAlive(pid) && !(await healthy())) break;
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // El éxito se declara sobre el puerto, no sobre la señal: si algo sigue
+  // sirviendo, el pidfile debe quedarse como evidencia de lo que se intentó.
+  if (await healthy()) {
+    throw new Error(`Envié SIGTERM al proceso ${pid}, pero ${url} sigue respondiendo. Revisa qué quedó sirviendo antes de arrancar otro servicio:\n  lsof -nP -iTCP:${port} -sTCP:LISTEN`);
   }
   try { unlinkSync(pidPath); } catch { /* no-op */ }
   print("HRP detenido.");
@@ -388,7 +428,7 @@ function help() {
   console.log(`Human Review Protocol CLI v${localVersion()}
 
 Uso:
-  hrp service <start|status|stop> [workspace]
+  hrp service <start|status|stop|restart> [workspace]
   hrp attach [workspace] [--start]
   hrp project list
   hrp project remove <project-id> --yes
@@ -452,11 +492,28 @@ async function main() {
   if (group === "service") {
     if (action === "start") return startService(first);
     if (action === "stop") return stopService();
+    // Reiniciar es la operación que de verdad recoge un build recién compilado;
+    // encadenarla a mano es donde se perdía el relevo cuando 'stop' no detectaba
+    // al demonio. Detener algo que ya no corre no es un error aquí.
+    if (action === "restart") {
+      await stopService();
+      return startService(first);
+    }
     if (action === "status") {
-      const isHealthy = await healthy();
-      const projects = isHealthy ? (await api("/api/projects")).projects.length : 0;
-      print(isHealthy ? { status: "running", url, dataDir, projects } : { status: "stopped", url, dataDir });
-      process.exitCode = isHealthy ? 0 : 1;
+      const running = await serviceHealth();
+      const projects = running ? (await api("/api/projects")).projects.length : 0;
+      print(running
+        ? {
+          status: "running",
+          url,
+          dataDir,
+          projects,
+          pid: running.pid ?? null,
+          buildStale: Boolean(running.buildStale),
+          ...(running.buildStale ? { hint: staleBuildWarning } : {}),
+        }
+        : { status: "stopped", url, dataDir });
+      process.exitCode = running ? 0 : 1;
       return;
     }
   }
