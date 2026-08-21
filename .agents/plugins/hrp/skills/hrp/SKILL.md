@@ -29,7 +29,13 @@ This skill defines how Antigravity integrates with HRP v3 following `docs/agent-
    - Nodes published with `publishGraph` start unapproved (`approved: false`) and require a human click before starting.
    - Discovered nodes (added with `hrp node discover` during an active run) start **approved automatically**: implement them immediately without waiting for a human click.
    - The agent MUST declare its identity (`--agent antigravity` or `{ agent: "antigravity" }`) and respect assignments made by the user.
-   - Only ONE node may be in progress (`running`) at a time per execution.
+   - Several nodes may be `running` at once, but only the ones HRP accepts as compatible: start is rejected when the
+     candidate depends on a running node, when a running node depends on it, when both modify the same file, or when one
+     modifies a file the other declared as approved context. The same agent never holds two running nodes at once.
+   - If `start` rejects a node because of a conflict, do not touch the workspace: wait for the next HRP signal.
+   - While another node is running, the verification command must name this node's file, symbol or id. A project-wide
+     command (a full build or test suite) also reads what the other node is editing, so HRP rejects it until the
+     workspace is yours alone.
 
 4. **Exclusive Diff & Attribution**:
    - The diff published for a node must be attributable strictly to the declared file/symbol of that node.
