@@ -16,6 +16,7 @@ import {
 } from "@xyflow/react";
 import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
+import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -835,7 +836,7 @@ export function App() {
   const [runId, setRunId] = useState(() => new URLSearchParams(location.search).get("run") ?? "");
   const [detail, setDetail] = useState<RunDetail>();
   const [selectedId, setSelectedId] = useState<string>();
-  const [view, setView] = useState<"map" | "activity" | "findings">("map");
+  const [view, setView] = useState<GraphView>("map");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [buildStale, setBuildStale] = useState(false);
   const [ollama, setOllama] = useState<OllamaSettingsView>();
@@ -849,6 +850,14 @@ export function App() {
   const currentProjectId = useRef(projectId);
   const currentRunId = useRef(runId);
   const flowInstance = useRef<ReactFlowInstance<Node<MapNodeData>, Edge> | null>(null);
+  const graphViewports = useRef(new Map<string, StoredGraphViewport>());
+  const appliedGraphViewportKey = useRef("");
+  const pendingGraphFitCancel = useRef<(() => void) | undefined>(undefined);
+  const graphViewportUserMoved = useRef(false);
+  const cancelPendingGraphFit = useCallback(() => {
+    pendingGraphFitCancel.current?.();
+    pendingGraphFitCancel.current = undefined;
+  }, []);
 
   const loadCatalog = useCallback(async ({ focus, visibleProjectId }: CatalogLoadOptions = {}) => {
     try {
@@ -1000,17 +1009,47 @@ export function App() {
   // grafo republicado) y el contenido puede quedar fuera del viewport: reencuadra
   // solo cuando cambia el conjunto de ids, no en cada refresco de estado.
   const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
-  useEffect(() => {
-    if (!nodeSetKey) return;
+  const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
+  const applyGraphViewport = useCallback((duration = 320) => {
+    const instance = flowInstance.current;
+    if (!instance) return;
+    const action = decideGraphViewportAction({ appliedKey: appliedGraphViewportKey.current, nodeSetKey, runId, saved: graphViewports.current.get(runId) });
+    if (action.kind === "skip") return;
+    cancelPendingGraphFit();
+    appliedGraphViewportKey.current = action.graphKey;
+    if (action.kind === "restore") {
+      void instance.setViewport(action.viewport, { duration: 0 });
+      return;
+    }
     // ReactFlow ingiere el layout nuevo de forma asíncrona: un solo fitView puede
     // ejecutarse contra los límites viejos y dejar el grafo fuera de vista.
     // Encuadra en el siguiente frame y reintenta una vez ya asentado el render.
-    const fit = () => { flowInstance.current?.fitView({ padding: 0.22, maxZoom: 1, duration: 320 }); };
+    let cancelled = false;
+    const fit = () => { if (!cancelled) flowInstance.current?.fitView({ padding: 0.22, maxZoom: 1, duration }); };
     let frame2 = 0;
     const frame1 = requestAnimationFrame(() => { frame2 = requestAnimationFrame(fit); });
     const settle = setTimeout(fit, 400);
-    return () => { cancelAnimationFrame(frame1); cancelAnimationFrame(frame2); clearTimeout(settle); };
-  }, [nodeSetKey]);
+    const cancel = () => {
+      cancelled = true;
+      cancelAnimationFrame(frame1);
+      cancelAnimationFrame(frame2);
+      clearTimeout(settle);
+    };
+    pendingGraphFitCancel.current = cancel;
+    return cancel;
+  }, [cancelPendingGraphFit, nodeSetKey, runId]);
+  useEffect(() => {
+    if (!nodeSetKey) return;
+    return applyGraphViewport();
+  }, [applyGraphViewport, nodeSetKey]);
+  useEffect(() => () => cancelPendingGraphFit(), [cancelPendingGraphFit]);
+  useEffect(() => {
+    if (flowMounted) return;
+    cancelPendingGraphFit();
+    flowInstance.current = null;
+    appliedGraphViewportKey.current = "";
+    graphViewportUserMoved.current = false;
+  }, [cancelPendingGraphFit, flowMounted]);
   const selectedNode = detail?.nodes.find((node) => node.id === selectedId);
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
@@ -1106,7 +1145,7 @@ export function App() {
                 {view === "findings" ? (
                   <FindingsPanel findings={detail.findings} nodes={detail.nodes} runId={detail.run.id} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
                 ) : view === "map" ? (
-                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} fitView fitViewOptions={{ padding: 0.22, maxZoom: 1 }} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
+                  detail.nodes.length ? <div className="flow-wrap"><ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; appliedGraphViewportKey.current = ""; applyGraphViewport(0); }} onMoveStart={(event) => { if (event) { graphViewportUserMoved.current = true; cancelPendingGraphFit(); } }} onMoveEnd={(_event, viewport) => { if (shouldPersistGraphViewport({ nodeSetKey, runId, userMoved: graphViewportUserMoved.current })) graphViewports.current.set(runId, { nodeSetKey, viewport }); graphViewportUserMoved.current = false; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow></div>
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
