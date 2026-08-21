@@ -192,8 +192,26 @@ describe("HrpStore", () => {
       id: "extra", file: "config.json", symbol: "feature.enabled", title: "Enable feature", description: "Add config", rationale: "Discovered constraint", dependencies: ["base"],
     });
     expect(node.discovered).toBe(true);
-    expect(node.approved).toBe(false);
     expect(store.getRunDetail(run.id)?.activity.some((event) => event.type === "inspect")).toBe(true);
+  });
+
+  it("approves discovered work on the spot while the initial graph keeps the human gate", () => {
+    const { store, run } = fixture();
+    store.publishGraph(run.id, { nodes: [
+      { id: "base", file: "A.ts", symbol: "A.base", title: "Base", description: "Base work", rationale: "Start", dependencies: [] },
+    ] }, "claude");
+    // El plan lo aprueba el humano; lo que aparece mientras se implementa, no:
+    // frenar cada descubrimiento en un clic es lo que dejaba ciegos a los agentes.
+    expect(store.getRunDetail(run.id)?.nodes[0].approved).toBe(false);
+    expect(() => store.startNode(run.id, "base", "claude")).toThrow(/approval/i);
+
+    const discovered = store.addDiscoveredNode(run.id, {
+      id: "extra", file: "B.ts", symbol: "B.extra", title: "Extra", description: "Add", rationale: "Found", dependencies: [],
+    });
+    expect(discovered.approved).toBe(true);
+    expect(discovered.assignee).toBe("claude");
+    expect(store.getRunDetail(run.id)?.activity.some((event) => event.message.includes("Aprobado automáticamente"))).toBe(true);
+    expect(store.startNode(run.id, "extra", "claude").status).toBe("running");
   });
 
   it("records the graph publisher as base agent and assigns discovered work to it", () => {

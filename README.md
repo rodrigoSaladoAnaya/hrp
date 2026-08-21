@@ -25,20 +25,21 @@ También puedes iniciar y detener el servicio con:
 ./scripts/stop.sh
 ```
 
-Para instalar o actualizar la integración completa de Codex (skill, CLI, plugin y MCP):
+Para instalar o actualizar la integración completa de los agentes soportados:
 
 ```sh
-./scripts/install-codex.sh
+hrp agent install all
 ```
 
 Comprueba el resultado:
 
 ```sh
-codex plugin list
-codex mcp list
+hrp agent status
 ```
 
-Debes ver `hrp@hrp-local` instalado y un servidor MCP `hrp` habilitado. Abre una tarea nueva de Codex y usa `Usa $hrp:use-hrp para esta tarea.` Las tareas que ya estaban abiertas no recargan plugins. La skill prefiere las herramientas `hrp_*` y conserva el CLI como alternativa; no instala dependencias ni archivos dentro del proyecto observado.
+También puedes instalar un modelo concreto con `hrp agent install claude`, `hrp agent install codex` o `hrp agent install antigravity`. Cada instalador deja su skill al día, registra el MCP `hrp` y configura el despertador nativo del entorno: hook `Stop`/`SessionStart` en Claude Code y Codex, y la herramienta bloqueante `hrp_attention` en Antigravity.
+
+En Codex debes ver `hrp@hrp-local` instalado, `hooks.json` materializado en la caché del plugin y un servidor MCP `hrp` habilitado. Abre una tarea nueva y usa `Usa $hrp:use-hrp para esta tarea.` Las tareas que ya estaban abiertas no recargan plugins, hooks ni skills; cierra la GUI con Cmd+Q y vuelve a abrirla cuando reinstales. La skill prefiere las herramientas `hrp_*` y conserva el CLI como alternativa; no instala dependencias ni archivos dentro del proyecto observado.
 
 No ejecutes `codex plugin marketplace add` contra la raíz del repositorio. El instalador registra automáticamente el marketplace válido que vive en `integrations/codex`.
 
@@ -96,18 +97,21 @@ hrp patch publish
 hrp verify run
 hrp activity publish
 hrp state <run-id>
+hrp attention --agent <nombre> --wait 600
+hrp agent install <claude|codex|antigravity|all>
+hrp agent status
 ```
 
 Consulta [docs/protocol.md](docs/protocol.md) para el contrato y el formato del grafo. Para conectar Codex, Claude, Gemini u otro agente, usa el manual autocontenido [docs/agent-adapter.md](docs/agent-adapter.md).
 
 ## Alcance de esta etapa
 
-- Todo nodo nuevo requiere aprobación humana antes de comenzar.
+- El grafo inicial requiere aprobación humana antes de comenzar; los nodos descubiertos dentro de una ejecución ya aprobada nacen aprobados automáticamente.
 - No existen los modos heredados `REVISAR`, `OBSERVAR` o `AUTO`; la aprobación es un gate único y explícito.
 - El humano puede asignar nodos a agentes y sólo se ejecuta un nodo a la vez por ejecución.
 - No se captura cadena de pensamiento; sólo intención y justificación operativa.
 - Un nodo sólo termina cuando tiene diff y verificación aprobada.
 - Un nodo fallido se corrige y reintenta dentro de la misma ejecución; `hrp node retry` conserva el intento anterior en Actividad.
-- Los cambios descubiertos durante la ejecución se agregan al mismo mapa.
+- Los cambios descubiertos durante la ejecución se agregan al mismo mapa y se implementan en cuanto sus dependencias estén listas.
 
 La implementación anterior está congelada en [`deprecated/v1`](deprecated/v1) y no participa en v2.

@@ -101,7 +101,7 @@ HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al
 
 ### 2b. Espera la aprobación humana (protocolo 3.0)
 
-Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Tras publicar el grafo, espera el clic del humano con el comando bloqueante:
+Los nodos del **grafo inicial** nacen **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Lo que **descubras** después ya no pasa por ese gate. Tras publicar el grafo, espera el clic del humano con el comando bloqueante:
 
 ```sh
 hrp wait approval "$run_id" --agent claude --timeout 300
@@ -191,7 +191,7 @@ hrp node discover "$run_id" /ruta/temporal/discovered.json
 
 **Firmas o contexto, siempre.** Si la spec delegada menciona símbolos que viven en **otros archivos** (funciones, tipos, formatos), incluye su contrato exacto en la descripción o declara esos archivos en `"contextFiles": ["ruta.ts"]` del nodo: `exec` los adjunta como referencia de solo lectura. Un modelo al que le ordenas usar algo que no puede ver no se detiene: lo inventa. El contexto es semántica aprobada — cambiarlo republica el nodo al gate del humano.
 
-**No detengas la implementación por un descubierto.** El nodo descubierto espera la aprobación humana antes de poder iniciarse, pero esa espera no debe frenar el flujo: publícalo y continúa de inmediato con los nodos ya aprobados cuyas dependencias estén completas. Ejecuta `hrp wait approval` solo cuando ya no te quede ningún nodo aprobado disponible, agrupando en una sola espera todos los descubiertos pendientes.
+**El descubierto nace aprobado.** `hrp node discover` lo devuelve con `approved: true` y ya asignado (a ti, o al agente sugerido), así que impleméntalo en cuanto sus dependencias estén completas: no esperes un segundo clic ni agrupes esperas por descubiertos. El gate humano cubre el plan, no cada consecuencia de implementarlo.
 
 Después síguele el ciclo normal start → patch → verify → complete (con la sección 3b si quedó asignado a ollama). Si el descubrimiento cambia dependencias de nodos aún pendientes, vuelve a publicar el grafo completo actualizado. Nunca cambies la semántica de un nodo ya terminado.
 
@@ -224,11 +224,29 @@ El gate humano inicial del grafo sigue vigente: tu autoridad cubre el ciclo de r
 
 Si el humano te convierte en **revisor** de otro agente, mantén `hrp wait approval <run-id> --agent claude` hasta recibir **Auditoría disponible**; los nodos sin asignación pertenecen al base y no debes reclamarlos. Publica `hrp agent status` con `phase reviewing` antes de obtener `hrp review pack`, y actualiza `--completed`, `--reviewed` y `--remaining` mientras auditas integración entre nodos, contratos rotos y desviaciones spec↔diff. Reporta con `hrp finding add`, debate con `hrp finding reply` y nunca edites código. Publica `phase completed` sólo al cubrir todos los nodos; después vuelve a esperar porque una corrección puede exigir otra pasada. Si no encuentras nada real, dilo — no inventes hallazgos ni marques cobertura que no realizaste.
 
+## No te quedes ciego: espera en lugar de terminar el turno
+
+Mientras la ejecución siga viva, terminar tu turno es quedarte ciego: nadie puede devolverte el control salvo tu propio entorno. En vez de cerrar, estaciónate en la señal de HRP:
+
+```sh
+hrp attention --agent claude --wait 600      # bloquea hasta que haya algo para ti
+```
+
+Sale con código 0 e imprime la directiva accionable cuando hay trabajo (nodos iniciables, hallazgos por responder, auditoría disponible o cierre pendiente), y con código 3 si el plazo se agota sin novedad — en cuyo caso vuelve a ejecutarlo. Acepta `--run <id>` para una ejecución concreta y `--workspace <ruta>` para todas las del proyecto; `--json` entrega la señal completa (`kind`, `actionable`, `waiting`, `terminal`, `directive`).
+
+Además, el instalador deja un **hook `Stop` nativo** en Claude Code: si intentas terminar el turno mientras HRP tiene trabajo, el hook lo impide y te entrega la directiva. No lo esquives — es la red que permite al humano desatenderse. Si el hook te retiene sin trabajo inmediato, estaciónate con el comando de arriba en lugar de cerrar.
+
+Confirma que tu integración está al día (skill, MCP y hook) con:
+
+```sh
+hrp agent install claude    # idempotente; 'hrp agent status' muestra qué hay instalado
+```
+
 ## Control humano: pausada o detenida
 
 El humano puede pausar, detener o reanudar la ejecución (panel o `hrp run pause|resume|stop`). El servidor rechaza `node start` en esos estados para todos los agentes; no es un error tuyo:
 
-- Rechazo por **pausa** (`Run is paused by the human…`): espera sin abandonar — sondea `hrp state <run-id> --json` (campo `run.control`) o deja corriendo `hrp wait approval`, y al reanudarse retoma exactamente donde ibas.
+- Rechazo por **pausa** (`Run is paused by the human…`): espera sin abandonar — deja corriendo `hrp attention --agent claude --wait 600` o `hrp wait approval`, y al reanudarse **relee `hrp state <run-id> --json` antes de retomar**: la pausa es justo el momento en que el humano puede reconfigurar quién implementa cada nodo y quién audita, así que el nodo que creías tuyo puede haber cambiado de dueño (incluso uno que tenías en curso, que vuelve a `pending` con otro asignado).
 - Rechazo por **detención** (`Run was stopped by the human…`): cierra ordenadamente — no inicies más nodos, conserva lo completado y reporta al humano el avance y lo pendiente.
 
 ## Reanudación

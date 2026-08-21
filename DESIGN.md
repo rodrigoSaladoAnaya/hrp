@@ -145,6 +145,28 @@ El movimiento sirve sólo para indicar actividad:
 
 No se usan animaciones de entrada, fondos decorativos en movimiento ni efectos que compitan con la lectura causal.
 
+## Despertador de agentes
+
+Un agente que termina su turno deja de existir para HRP. El problema real que resuelve esta parte del diseño es que el humano no pueda desatenderse: los modelos se quedaban ciegos y había que pedirles a mano que retomaran.
+
+**La decisión: el despertador es nativo de cada agente, sobre una única señal del servidor.** El servidor calcula qué debe hacer cada agente (`computeAttention`) y lo publica en `GET /api/attention`, con long-poll sobre el mismo emisor que alimenta el panel. Encima de esa señal, cada entorno usa el mecanismo que tiene:
+
+| Entorno | Despertador |
+| --- | --- |
+| Claude Code | Hook `Stop` nativo: al intentar terminar el turno, HRP responde `{"decision":"block","reason":…}` y la sesión continúa. |
+| Codex | El mismo esquema de hooks, declarado en el plugin (`hooks.json`). |
+| Antigravity | Sin hooks: herramienta MCP bloqueante `hrp_attention`, donde la sesión se estaciona en vez de cerrar. |
+
+**Por qué no hay un demonio global.** Se evaluó levantar un worker que escuchara los eventos por agente. Un proceso externo puede enterarse de todo y no puede hacer nada con ello: no existe forma de devolverle el turno a una sesión de agente desde fuera; sólo su propio entorno puede. Un demonio habría duplicado el estado del servicio y seguido dependiendo del hook o de la herramienta MCP para el último tramo, así que se descartó a favor de una sola señal servida por HTTP.
+
+**Límites conocidos.** El hook actúa al terminar el turno: una sesión ya cerrada no se puede despertar —al abrir la siguiente, el hook `SessionStart` inyecta las ejecuciones vivas del workspace para que retome—. Y ningún entorno recarga hooks, MCP o skills en sesiones abiertas.
+
+**Antibucle.** Retener una sesión indefinidamente sería el defecto simétrico. El hook cuenta las esperas consecutivas sin señal por `session_id` y, tras 40, suelta la sesión con un `systemMessage`. La señal, además, nunca ordena lo imposible: no anuncia nodos con dependencias abiertas, ni trabajo ajeno mientras otro nodo está en vuelo, ni el cierre de una ejecución que ya no tiene nada que cerrar.
+
+## Reconfiguración en caliente
+
+Un agente puede quedarse sin presupuesto a mitad de una ejecución, y con él se va su trabajo asignado y su turno de auditoría. La pausa es el punto de control donde el humano rehace el reparto: mientras `run.control` es `paused`, puede cambiar la lista de auditores —congelada mientras la ejecución corre— y reasignar nodos, incluido el que quedó en vuelo, que vuelve a `pending` conservando el diff y la verificación del intento como evidencia. Cada cambio queda en Actividad con su antes y después, y los demás agentes se enteran por la misma señal: su espera despierta con el cambio y la directiva de pausa les ordena releer el estado antes de retomar.
+
 ## Límites actuales
 
 HRP v3 es una superficie local y de un solo usuario. Esta versión:

@@ -392,7 +392,13 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
     if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
     feedbackTimer.current = setTimeout(() => setCopyFeedback(undefined), 2000);
   };
-  const selectionLocked = nodes.some((node) => node.approved);
+  // La selección se congela con el grafo aprobado para que la política de
+  // revisión no cambie a mitad, pero la pausa es una decisión deliberada del
+  // humano: ahí puede reconfigurar quién audita (p. ej. retirar a un agente
+  // que se quedó sin presupuesto y que bloquearía el cierre para siempre).
+  const approvalStarted = nodes.some((node) => node.approved);
+  const reconfigurable = approvalStarted && run.control === "paused";
+  const selectionLocked = approvalStarted && !reconfigurable;
   const toggleAuditor = async (agent: string, selected: boolean) => {
     const next = selected ? [...run.auditors, agent] : run.auditors.filter((candidate) => candidate !== agent);
     setSelectionBusy(agent);
@@ -408,7 +414,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
   return (
     <section className="agent-dock" aria-label="Agentes de la ejecución">
       <header className="agent-dock-head">
-        <div><strong>Agentes</strong><span>{selectionLocked ? "Auditores fijados para esta ejecución" : "Elige quién audita antes de aprobar"}</span></div>
+        <div><strong>Agentes</strong><span>{selectionLocked ? "Auditores fijados; pausa la ejecución para cambiarlos" : reconfigurable ? "Ejecución pausada: puedes reconfigurar quién audita" : "Elige quién audita antes de aprobar"}</span></div>
         <b>{run.auditors.length} aud.</b>
       </header>
       {selectionError && <p className="agent-dock-error" role="alert">{selectionError}</p>}
@@ -447,7 +453,7 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
                 {state && state.total > 0 && <b>{state.completed}/{state.total}</b>}
                 {elapsed && <time>{elapsed}</time>}
               </button>
-              <label className="auditor-toggle" title={isOllama && !ollama?.configured ? "Configura Ollama Cloud antes de elegirlo" : selectionLocked ? "La selección se bloquea al aprobar el grafo" : `${selectedAuditor ? "Quitar" : "Usar"} ${agent} como auditor`}>
+              <label className="auditor-toggle" title={isOllama && !ollama?.configured ? "Configura Ollama Cloud antes de elegirlo" : selectionLocked ? "La selección se bloquea mientras la ejecución corre; pausa la ejecución para cambiarla" : `${selectedAuditor ? "Quitar" : "Usar"} ${agent} como auditor`}>
                 <input type="checkbox" aria-label={`Usar ${agent}${isOllama && ollama?.configured ? ` (${ollama.model})` : ""} como auditor`} checked={selectedAuditor} disabled={selectionLocked || Boolean(selectionBusy) || (isOllama && !ollama?.configured)} onChange={(event) => { toggleAuditor(agent, event.target.checked).catch(() => undefined); }}/>
                 <span>Audita</span>
               </label>

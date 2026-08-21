@@ -26,8 +26,8 @@ This skill defines how Antigravity integrates with HRP v3 following `docs/agent-
    - Do NOT emit internal chain of thought, private reasoning, or raw credentials.
 
 3. **Approval Gate & Identity (Protocol v3)**:
-   - All published and discovered nodes start unapproved (`approved: false`).
-   - The agent MUST check state (`hrp_get_state` / `hrp state`) and wait for human approval before calling start.
+   - Nodes published with `publishGraph` start unapproved (`approved: false`) and require a human click before starting.
+   - Discovered nodes (added with `hrp node discover` during an active run) start **approved automatically**: implement them immediately without waiting for a human click.
    - The agent MUST declare its identity (`--agent antigravity` or `{ agent: "antigravity" }`) and respect assignments made by the user.
    - Only ONE node may be in progress (`running`) at a time per execution.
 
@@ -104,15 +104,27 @@ Before modifying files, inspect the codebase and plan granular operations:
 
 Declaring `--agent antigravity` registers you as the run's **base model** when you are the first publisher: unassigned nodes belong to you by default, and any node discovered during execution is auto-assigned to the base model so the run never stalls waiting for an agent that does not know new work exists.
 
-### 4. Wait for Human Approval
+### 4. Wait for Human Approval (initial graph only)
 
-Nodes start unapproved. Wait for the human's click with the blocking command:
+Graph nodes start unapproved. Stay parked on the MCP blocking tool until work is available:
 
+- Using MCP tools (preferred — blocks without ending the turn):
+  ```
+  hrp_attention({ agent: "antigravity", waitSeconds: 600 })
+  ```
+  Call it in a loop: it returns as soon as HRP signals work or the timer expires, then call again if no actionable work is ready yet.
+- Using CLI fallback:
+  ```sh
+  hrp attention --agent antigravity --wait 600
+  ```
+  It exits as soon as HRP has a signal for your identity; on timeout, call it again instead of ending the turn. On older HRP installs that do not have `hrp attention`, use `hrp wait approval "$run_id" --agent antigravity --timeout 300` only for compatibility with the initial approval gate.
+
+**Never end your turn while an active run still has work for you.** Park on `hrp_attention` instead of returning control to the user. Approval is a human control: call `hrp_approve_nodes` (or `hrp node approve "$run_id"`) only when the user explicitly asks to approve nodes, never by inferring permission from general task autonomy.
+
+Verify your installation is up to date before starting work:
 ```sh
-hrp wait approval "$run_id" --agent antigravity --timeout 300
+hrp agent install antigravity
 ```
-
-It exits successfully as soon as approved work is available for your identity; on timeout it fails with a retryable error — run it again or hand the panel URL to the human. Without the CLI, poll `hrp_get_state` until the target node has `approved: true`. Approval is a human control: call `hrp_approve_nodes` (or `hrp node approve "$run_id"`) only when the user explicitly asks to approve nodes, never by inferring permission from general task autonomy.
 
 ### 5. Execute Each Node
 
@@ -150,7 +162,9 @@ If verification fails:
 If an unforeseen required operation is discovered during execution:
 - MCP: `hrp_discover_node(runId, nodeObject)`
 - CLI: `hrp node discover "$run_id" discovered-node.json`
-- Proceed with the regular lifecycle (`approve -> start -> patch -> verify -> complete`) for the discovered node.
+
+Discovered nodes are **approved automatically** (the human already approved the intent of the run). Do NOT wait for a human click — proceed immediately with `start → patch → verify → complete` as soon as the node's dependencies are met. Do not group discovered nodes into a single wait; implement each one as soon as it is ready.
+
 
 ### 8. Secondary Activity
 
@@ -160,10 +174,10 @@ Publish technical inspections or notes when relevant:
 
 ### 9. Review Another Agent
 
-When `antigravity` is selected in `run.auditors`, keep `hrp wait approval <run-id> --agent antigravity` active until it reports **Auditoría disponible**. Unassigned nodes belong to the base model; never claim or edit them as a reviewer. Publish `hrp agent status` with `phase reviewing` before reading `hrp review pack`, then update `--completed`, `--reviewed`, and `--remaining` as coverage advances.
+When `antigravity` is selected in `run.auditors`, park on `hrp_attention` (or `hrp attention --agent antigravity --wait 600`) until it reports **Auditoría disponible**. Unassigned nodes belong to the base model; never claim or edit them as a reviewer. Publish `hrp agent status` with `phase reviewing` before reading `hrp review pack`, then update `--completed`, `--reviewed`, and `--remaining` as coverage advances.
 
-Audit integration boundaries, broken contracts, approved-spec versus diff deviations, and missing edge cases. Report real problems with `hrp finding add`, debate with `hrp finding reply`, and never edit the workspace. Publish `phase completed` only after every node is covered, then return to `hrp wait approval` because a completed correction can request another pass. Do not invent findings or coverage.
+Audit integration boundaries, broken contracts, approved-spec versus diff deviations, and missing edge cases. Report real problems with `hrp finding add`, debate with `hrp finding reply`, and never edit the workspace. Publish `phase completed` only after every node is covered, then return to parking on `hrp_attention` because a completed correction can request another pass. Do not invent findings or coverage.
 
 ### 10. Final Verification
 
-As the base model, check `hrp_get_state` (or `hrp state "$run_id" --json`) to confirm all nodes are `completed`, with attributable diffs and passing verifications. Remain in `hrp wait approval` until every selected auditor publishes `phase completed`, then require `hrp review gate` to pass without live findings or `pendingAuditors`. Run a comprehensive workspace test suite before handing off.
+As the base model, check `hrp_get_state` (or `hrp state "$run_id" --json`) to confirm all nodes are `completed`, with attributable diffs and passing verifications. Remain parked on `hrp_attention` until every selected auditor publishes `phase completed`, then require `hrp review gate` to pass without live findings or `pendingAuditors`. Run a comprehensive workspace test suite before handing off.

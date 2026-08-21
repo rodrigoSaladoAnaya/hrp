@@ -60,7 +60,7 @@ Usa identificadores estables con letras, números, `_` o `-`; rutas relativas al
 
 ## 3. Esperar aprobación y respetar asignaciones
 
-Todo nodo nuevo queda con `approved: false`. Espera el visto bueno del humano con el comando bloqueante:
+Todo nodo del grafo inicial queda con `approved: false`. Espera el visto bueno del humano con el comando bloqueante:
 
 ```sh
 hrp wait approval "$run_id" --agent codex --timeout 300
@@ -72,7 +72,17 @@ Continúa sólo cuando el nodo tenga `approved: true` y esté sin asignar o asig
 
 Republicar el grafo devuelve a aprobación los nodos no completados. Hazlo sólo cuando cambie realmente el mapa y avisa al humano.
 
+Los nodos descubiertos dentro de una ejecución ya aprobada nacen `approved: true` y se implementan en cuanto sus dependencias estén completas. No vuelvas a pedir aprobación humana para ellos.
+
 Antes de elegir trabajo, consulta `run.baseAgent` en el estado. Si es `codex`, también te corresponden los nodos sin asignar y los delegados a `ollama`; si es otro agente, sólo te corresponden los nodos cuyo `assignee` sea `codex`.
+
+Después del gate inicial, la espera normal no es terminar el turno: usa la herramienta MCP bloqueante `hrp_attention` o, si no está disponible, el CLI:
+
+```sh
+hrp attention --agent codex --wait 600
+```
+
+El plugin de Codex instala un hook `Stop` en `hooks.json`: antes de cerrar, consulta HRP y bloquea la parada cuando hay trabajo accionable o cuando debes quedarte estacionado esperando la siguiente señal. El hook `SessionStart` añade contexto al abrir una sesión si el workspace tiene ejecuciones HRP relevantes.
 
 ## 4. Ejecutar un nodo
 
@@ -121,9 +131,9 @@ Con MCP usa `hrp_retry_node` declarando `agent: "codex"`.
 
 ## 6. Trabajo descubierto
 
-No escondas trabajo imprevisto dentro del nodo activo. Publica otro nodo con `hrp node discover` o `hrp_discover_node`; enlaza dependencias reales y vuelve a esperar aprobación humana para ese nodo.
+No escondas trabajo imprevisto dentro del nodo activo. Publica otro nodo con `hrp node discover` o `hrp_discover_node`; enlaza dependencias reales. El descubierto queda aprobado automáticamente dentro de la ejecución ya aprobada, así que inícialo cuando sus dependencias estén listas.
 
-Si el descubrimiento exige cambiar dependencias de nodos pendientes, republica el mapa completo y explica que los nodos no completados requerirán aprobación otra vez.
+Si el descubrimiento exige cambiar dependencias de nodos pendientes del grafo inicial, republica el mapa completo y explica que los nodos no completados de esa republicación requerirán aprobación otra vez.
 
 ## 7. Revisión multi-modelo
 
@@ -141,7 +151,7 @@ hrp finding show <finding-id>
 - Hallazgo inválido: `hrp finding reject <finding-id> --author codex --body "Razón técnica verificable"`.
 - Duda que no puede resolverse con evidencia: `hrp finding escalate <finding-id>`.
 
-Al completarse todos los nodos, el servidor ejecuta la auditoría final automáticamente. Espera sus resultados con `hrp wait approval`, resuelve todo hallazgo vivo y confirma:
+Al completarse todos los nodos, el servidor ejecuta la auditoría final automáticamente. Mantente atento con `hrp_attention` o `hrp attention --agent codex --wait 600`, resuelve todo hallazgo vivo y confirma:
 
 ```sh
 hrp review gate "$run_id"
@@ -153,9 +163,9 @@ Si `run.baseAgent` pertenece a Claude u otro agente, completa sólo los nodos as
 
 ### Codex como revisor
 
-Si estás seleccionado en `run.auditors`, deja `hrp wait approval <run-id> --agent codex` activo. Al recibir **Auditoría disponible**, no reclames nodos sin asignación: publica `hrp agent status <run-id> --agent codex --phase reviewing ...`, genera `hrp review pack <run-id>` y busca errores de integración, contratos rotos y desviaciones entre spec y diff. Durante pasadas largas actualiza `--completed`, `--reviewed` y `--remaining` para que el humano vea la cobertura real.
+Si estás seleccionado en `run.auditors`, mantén activa la espera con `hrp_attention` o `hrp attention --agent codex --wait 600`. Al recibir **Auditoría disponible**, no reclames nodos sin asignación: publica `hrp agent status <run-id> --agent codex --phase reviewing ...`, genera `hrp review pack <run-id>` y busca errores de integración, contratos rotos y desviaciones entre spec y diff. Durante pasadas largas actualiza `--completed`, `--reviewed` y `--remaining` para que el humano vea la cobertura real.
 
-Registra problemas con `hrp finding add` y debate con `hrp finding reply`; no edites el workspace ni inventes hallazgos para rellenar. Cuando todos los nodos estén cubiertos, publica `phase completed` con todos sus IDs en `--reviewed` y sin `--remaining`. Después vuelve a `hrp wait approval`: si el base completa una corrección, HRP restablece el auditor a `waiting` y solicita otra pasada. Nunca publiques `completed` sólo porque aún no existen hallazgos.
+Registra problemas con `hrp finding add` y debate con `hrp finding reply`; no edites el workspace ni inventes hallazgos para rellenar. Cuando todos los nodos estén cubiertos, publica `phase completed` con todos sus IDs en `--reviewed` y sin `--remaining`. Después vuelve a la espera con `hrp_attention` o `hrp attention`: si el base completa una corrección, HRP restablece el auditor a `waiting` y solicita otra pasada. Nunca publiques `completed` sólo porque aún no existen hallazgos.
 
 ## 8. Control, reanudación y cierre
 

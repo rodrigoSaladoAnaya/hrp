@@ -89,6 +89,13 @@ class MockHrpMcpClient extends HrpMcpClient {
   override async publishActivity(runId: string, params: unknown): Promise<unknown> {
     return { id: 1, runId, ...(params as object) };
   }
+
+  attentionCalls: unknown[] = [];
+
+  override async attention(params: { agent: string; runId?: string; workspace?: string; waitSeconds?: number }): Promise<Record<string, unknown>> {
+    this.attentionCalls.push(params);
+    return { runId: params.runId ?? "run-100", agent: params.agent, kind: "work", actionable: true, terminal: false, waiting: false, directive: "Aprobado: 1 nodo disponible (uno)", pendingAuditors: [], runs: [] };
+  }
 }
 
 describe("HrpMcpServer", () => {
@@ -150,6 +157,42 @@ describe("HrpMcpServer", () => {
     expect(tools.some((tool) => tool.name === "hrp_finding_accept")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_reject")).toBe(true);
     expect(tools.some((tool) => tool.name === "hrp_finding_escalate")).toBe(true);
+  });
+
+  it("expone hrp_attention como el despertador de los entornos sin hooks", async () => {
+    const server = new HrpMcpServer(new MockHrpMcpClient());
+    const response = await server.handleMessage({ jsonrpc: "2.0", id: 30, method: "tools/list", params: {} });
+    const tools = (response?.result as { tools: typeof hrpToolDefinitions }).tools;
+    const attention = tools.find((tool) => tool.name === "hrp_attention");
+    expect(attention).toBeDefined();
+    expect(attention?.inputSchema.required).toEqual(["agent"]);
+    expect(Object.keys(attention?.inputSchema.properties ?? {})).toEqual(expect.arrayContaining(["agent", "runId", "workspace", "waitSeconds"]));
+    // La descripción es lo único que le dice al modelo que puede quedarse
+    // esperando en vez de terminar el turno: si se pierde, se pierde el hábito.
+    expect(attention?.description).toMatch(/bloqueante/i);
+    const discover = tools.find((tool) => tool.name === "hrp_discover_node");
+    expect(discover?.description).toMatch(/aprobado autom/i);
+  });
+
+  it("delega hrp_attention en el cliente con la espera pedida", async () => {
+    const mockClient = new MockHrpMcpClient();
+    const server = new HrpMcpServer(mockClient);
+    const response = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 31,
+      method: "tools/call",
+      params: { name: "hrp_attention", arguments: { agent: "codex", runId: "run-100", waitSeconds: 120 } },
+    });
+    expect((response?.result as { isError: boolean }).isError).toBe(false);
+    expect(mockClient.attentionCalls).toEqual([{ agent: "codex", runId: "run-100", workspace: undefined, waitSeconds: 120 }]);
+    const payload = JSON.parse((response?.result as { content: { text: string }[] }).content[0].text);
+    expect(payload.actionable).toBe(true);
+    expect(payload.directive).toContain("nodo disponible");
+
+    // Sin waitSeconds la espera por omisión es larga: el sentido de la
+    // herramienta es que el agente se quede colgado hasta que haya trabajo.
+    await server.handleMessage({ jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "hrp_attention", arguments: { agent: "codex" } } });
+    expect((mockClient.attentionCalls[1] as { waitSeconds: number }).waitSeconds).toBe(300);
   });
 
   it("executes tools/call for key HRP operations", async () => {

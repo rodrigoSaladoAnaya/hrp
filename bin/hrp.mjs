@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const argv = process.argv.slice(2);
@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--body", "--reviewer", "--author", "--resolution-node"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -86,6 +86,71 @@ function printOllamaResult(result) {
   // El desglose va a stderr para poder canalizar la respuesta limpia a un archivo.
   process.stderr.write(`# ${result.model} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens\n`);
   process.stdout.write(result.content.endsWith("\n") ? result.content : `${result.content}\n`);
+}
+
+// Consulta la señal de HRP para un agente. Las esperas largas se parten en
+// tramos porque el fetch de Node aborta a los 300s de espera de cabeceras: el
+// servidor no responde hasta tener algo que decir, así que un --wait 600 en una
+// sola petición moriría por timeout del cliente, no del protocolo.
+const attentionChunkMs = 240_000;
+
+async function attention({ agent, runId, workspace, waitSeconds = 0 }) {
+  const deadline = Date.now() + Math.min(Math.max(Number(waitSeconds) || 0, 0), 600) * 1000;
+  let networkFailures = 0;
+  for (;;) {
+    const remaining = Math.max(deadline - Date.now(), 0);
+    const params = new URLSearchParams({ agent });
+    if (runId) params.set("runId", runId);
+    if (workspace) params.set("workspace", path.resolve(workspace));
+    if (remaining > 0) params.set("waitMs", String(Math.min(remaining, attentionChunkMs)));
+    let signal;
+    try {
+      signal = await api(`/api/attention?${params}`);
+      networkFailures = 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.startsWith(`HRP no responde en ${url}:`) || networkFailures >= 5) throw error;
+      networkFailures += 1;
+      process.stderr.write(`Fallo transitorio de HRP; reintento ${networkFailures}/5 en 3s: ${message}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      continue;
+    }
+    if (signal.actionable || signal.terminal || Date.now() >= deadline) return signal;
+  }
+}
+
+// --- Despertador nativo -------------------------------------------------
+// Los hooks de Claude Code y de Codex comparten esquema: reciben el evento por
+// stdin y responden por stdout. Un hook Stop que devuelve {"decision":"block"}
+// impide que la sesión termine, así que es el único punto donde HRP puede
+// devolverle el turno a un agente sin que el humano se lo pida.
+const hookWaitMs = Math.min(Math.max(Number(process.env.HRP_HOOK_WAIT_MS ?? 15000), 0), 120_000);
+const hookMaxParks = Math.max(Number(process.env.HRP_HOOK_MAX_PARKS ?? 40), 1);
+
+function readHookEvent() {
+  try {
+    if (process.stdin.isTTY) return {};
+    const raw = readFileSync(0, "utf8");
+    return raw.trim() ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function hookStateFile(sessionId) {
+  const safe = String(sessionId || "sin-sesion").replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
+  return path.join(dataDir, "runtime", "hooks", `${safe}.json`);
+}
+
+function readHookParks(sessionId) {
+  try { return Number(JSON.parse(readFileSync(hookStateFile(sessionId), "utf8")).parks) || 0; } catch { return 0; }
+}
+
+function writeHookParks(sessionId, parks) {
+  try {
+    const file = hookStateFile(sessionId);
+    mkdirSync(path.dirname(file), { recursive: true });
+    if (parks <= 0) rmSync(file, { force: true });
+    else writeFileSync(file, JSON.stringify({ parks, updatedAt: new Date().toISOString() }));
+  } catch { /* el contador es una salvaguarda, nunca un motivo de fallo */ }
 }
 
 async function healthy() {
@@ -251,6 +316,65 @@ function syncInstalledSkills() {
   return updated;
 }
 
+// Contrato de los instaladores por modelo: cada agente implementa el suyo en
+// bin/install/<agente>.mjs con 'export const agent' y
+// 'export async function install(context)' devolviendo
+// { agent, actions, warnings, verified }. El CLI solo fija el contrato,
+// entrega rutas absolutas (las GUIs no heredan el PATH) y evalúa el resultado.
+const installerAgents = ["claude", "codex", "antigravity"];
+
+function installerContext(name) {
+  return {
+    root,
+    nodePath: process.execPath,
+    cliPath: path.join(root, "bin/hrp.mjs"),
+    dataDir,
+    url,
+    log: (message) => process.stderr.write(`  ${message}\n`),
+    installSkill: (skillName = name) => {
+      const spec = skillAgents[skillName];
+      if (!spec) throw new Error(`No hay skill declarada para ${skillName}`);
+      return installSkill(skillName, spec);
+    },
+    skillState: (skillName = name) => {
+      const spec = skillAgents[skillName];
+      if (!spec) throw new Error(`No hay skill declarada para ${skillName}`);
+      return skillState(spec);
+    },
+  };
+}
+
+async function loadInstaller(name) {
+  if (!installerAgents.includes(name)) throw new Error(`Agente desconocido: ${name}. Usa ${installerAgents.join(", ")} o all`);
+  const modulePath = path.join(root, "bin/install", `${name}.mjs`);
+  if (!existsSync(modulePath)) throw new Error(`Falta el instalador de ${name}: ${modulePath}`);
+  const installer = await import(pathToFileURL(modulePath).href);
+  if (typeof installer.install !== "function") throw new Error(`${modulePath} no exporta install(context)`);
+  if (installer.agent && installer.agent !== name) throw new Error(`${modulePath} dice ser el instalador de ${installer.agent}, no de ${name}`);
+  return installer;
+}
+
+async function runInstaller(name) {
+  process.stderr.write(`Instalando la integración de ${name}...\n`);
+  try {
+    const installer = await loadInstaller(name);
+    const result = await installer.install(installerContext(name));
+    return { agent: name, actions: [], warnings: [], verified: false, ...result };
+  } catch (error) {
+    return { agent: name, actions: [], warnings: [error instanceof Error ? error.message : String(error)], verified: false };
+  }
+}
+
+async function installerStatus(name) {
+  try {
+    const installer = await loadInstaller(name);
+    if (typeof installer.status === "function") return { agent: name, ...(await installer.status(installerContext(name))) };
+    return { agent: name, skill: skillState(skillAgents[name]), installer: "presente" };
+  } catch (error) {
+    return { agent: name, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function localVersion() {
   try { return JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version; } catch { return "desconocida"; }
 }
@@ -266,6 +390,7 @@ Uso:
   hrp run create --title TEXTO --requirement TEXTO [--project ID]
   hrp run list [--project ID]
   hrp run pause|resume|stop <run-id>
+  hrp run auditors <run-id> <agente...>
   hrp run delete <run-id> --yes
   hrp graph publish <run-id> <graph.json> [--agent NOMBRE]
   hrp node discover <run-id> <node.json>
@@ -294,8 +419,12 @@ Uso:
   hrp finding escalate <finding-id>
   hrp state <run-id>
   hrp version
+  hrp attention [run-id] [--agent NOMBRE] [--run RUN_ID] [--workspace PATH] [--wait SEGUNDOS]
+  hrp hook <stop|session-start> --agent NOMBRE   (lee el evento por stdin; lo instalan los agentes)
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
-  hrp skills install <claude|codex|antigravity|all>
+  hrp agent install <claude|codex|antigravity|all>   (skill + MCP + despertador nativo del modelo)
+  hrp agent status                                   (qué quedó instalado por modelo)
+  hrp skills install <claude|codex|antigravity|all>  (solo la skill; lo instala 'agent install')
   hrp skills update
   hrp skills status
   hrp mcp
@@ -357,6 +486,20 @@ async function main() {
     const run = await api(`/api/runs/${encodeURIComponent(first)}/control`, { method: "POST", body: JSON.stringify({ control }) });
     return print(json ? run : `Ejecución "${run.title}": ${control === "active" ? "reanudada" : control === "paused" ? "pausada" : "detenida"}.`);
   }
+  if (group === "run" && action === "auditors") {
+    const auditors = args.slice(3);
+    if (!first || auditors.length === 0) throw new Error("Uso: hrp run auditors <run-id> <agente...>");
+    try {
+      const run = await api(`/api/runs/${encodeURIComponent(first)}/auditors`, { method: "PUT", body: JSON.stringify({ auditors }) });
+      return print(json ? run : `Auditores: ${run.auditors.join(", ") || "(ninguno)"}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/paus|pause|activa|active|congel/i.test(message)) {
+        throw new Error(`${message}. Pausa primero con 'hrp run pause ${first}' y vuelve a ejecutar el comando.`);
+      }
+      throw error;
+    }
+  }
   if (group === "run" && action === "delete") {
     if (!flag("--yes")) throw new Error("Confirma el borrado con --yes");
     await api(`/api/runs/${encodeURIComponent(first)}`, { method: "DELETE" });
@@ -414,6 +557,31 @@ async function main() {
       agent: value("--agent") ?? value("--author"),
     }) }));
   }
+  if (group === "agent" && action === "install") {
+    const names = !first || first === "all" ? installerAgents : [first];
+    for (const name of names) if (!installerAgents.includes(name)) throw new Error(`Agente desconocido: ${name}. Usa ${installerAgents.join(", ")} o all`);
+    const results = [];
+    for (const name of names) results.push(await runInstaller(name));
+    if (json) print({ results, verified: results.every((result) => result.verified) });
+    else {
+      for (const result of results) {
+        print(`${result.agent}: ${result.verified ? "instalado y verificado" : "REVISAR"}`);
+        for (const action of result.actions) print(`  · ${action}`);
+        for (const warning of result.warnings) print(`  ! ${warning}`);
+      }
+    }
+    if (!results.every((result) => result.verified)) process.exitCode = 1;
+    return;
+  }
+
+  // Sin run-id, 'agent status' reporta la instalación de cada modelo; con
+  // run-id conserva su significado de siempre: publicar la fase observable.
+  if (group === "agent" && action === "status" && !first) {
+    const estados = [];
+    for (const name of installerAgents) estados.push(await installerStatus(name));
+    return print(json ? estados : estados.map((estado) => `${estado.agent}: ${JSON.stringify({ ...estado, agent: undefined })}`).join("\n"));
+  }
+
   if (group === "agent" && action === "status") {
     const agent = value("--agent");
     const phase = value("--phase");
@@ -456,119 +624,125 @@ async function main() {
     }
     return;
   }
+  if (group === "hook") {
+    // Un hook jamás debe romper la sesión del agente: cualquier problema se
+    // reporta por stderr y se deja continuar como si HRP no existiera.
+    const agent = value("--agent", process.env.HRP_AGENT);
+    const event = readHookEvent();
+    const workspace = typeof event.cwd === "string" && event.cwd ? event.cwd : process.cwd();
+    const sessionId = event.session_id ?? event.sessionId;
+    try {
+      if (!agent) throw new Error("Falta --agent NOMBRE en el hook de HRP");
+      // Comprobación barata primero: sin servicio, el hook no puede costarle
+      // ni un segundo a una sesión que no tiene nada que ver con HRP.
+      if (!(await healthy())) return;
+      if (action === "session-start") {
+        const signal = await attention({ agent, workspace, waitSeconds: 0 });
+        if (!signal.runs?.length) return;
+        // El barrido ya viene ordenado por prioridad. Un workspace veterano
+        // acumula decenas de ejecuciones vivas: listarlas todas convierte el
+        // contexto en ruido, así que sólo entran las que reclaman algo y como
+        // mucho tres, diciendo cuántas quedaron fuera.
+        const relevantes = signal.runs.filter((candidate) => candidate.actionable || candidate.waiting);
+        if (!relevantes.length) return;
+        const visibles = relevantes.slice(0, 3);
+        const detalle = visibles.map((candidate) => `- ${candidate.runId} [${candidate.kind}]: ${candidate.directive}`).join("\n");
+        const resto = relevantes.length - visibles.length;
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: `HRP tiene ${relevantes.length} ${relevantes.length === 1 ? "ejecución viva" : "ejecuciones vivas"} en este workspace para ${agent}${resto > 0 ? ` (las ${visibles.length} más urgentes)` : ""}:\n${detalle}${resto > 0 ? `\n(+${resto} más; consúltalas con 'hrp attention --agent ${agent} --json')` : ""}\nRetoma con 'hrp attention --agent ${agent} --wait 600' o con la herramienta MCP hrp_attention; no abras una ejecución nueva para el mismo requerimiento.`,
+          },
+        }));
+        return;
+      }
+      if (action !== "stop") throw new Error("Uso: hrp hook <stop|session-start> --agent NOMBRE");
+
+      const signal = await attention({ agent, workspace, waitSeconds: Math.round(hookWaitMs / 1000) });
+      if (signal.actionable) {
+        writeHookParks(sessionId, 0);
+        process.stdout.write(JSON.stringify({
+          decision: "block",
+          reason: `HRP tiene trabajo para ti (${signal.kind}) en la ejecución ${signal.runId}: ${signal.directive}`,
+        }));
+        return;
+      }
+      if (!signal.waiting) {
+        writeHookParks(sessionId, 0);
+        return;
+      }
+      const parks = readHookParks(sessionId) + 1;
+      if (parks > hookMaxParks) {
+        writeHookParks(sessionId, 0);
+        process.stdout.write(JSON.stringify({
+          continue: true,
+          systemMessage: `HRP sigue sin señal para ${agent} después de ${hookMaxParks} esperas seguidas (${signal.directive}). Dejo de retener la sesión; retómala con 'hrp attention --agent ${agent} --wait 600'.`,
+        }));
+        return;
+      }
+      writeHookParks(sessionId, parks);
+      process.stdout.write(JSON.stringify({
+        decision: "block",
+        reason: `La ejecución ${signal.runId} sigue viva y todavía no hay trabajo para ti: ${signal.directive} No cierres el turno: ejecuta 'hrp attention --agent ${agent} --workspace ${workspace} --wait 600' y retoma en cuanto devuelva trabajo (espera ${parks}/${hookMaxParks}).`,
+      }));
+    } catch (error) {
+      process.stderr.write(`hrp hook: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+    return;
+  }
+
+  if (group === "attention") {
+    const agent = value("--agent", process.env.HRP_AGENT);
+    if (!agent) throw new Error("Falta --agent NOMBRE (o la variable HRP_AGENT): la señal de HRP siempre es para un agente concreto");
+    const signal = await attention({
+      agent,
+      runId: value("--run") ?? (action && action !== "wait" ? action : undefined),
+      workspace: value("--workspace"),
+      waitSeconds: Number(value("--wait", "0")),
+    });
+    if (json) print(signal);
+    else print(signal.directive);
+    // 0 = hay trabajo ahora; 3 = nada que hacer (esperando, detenida o completa).
+    if (!signal.actionable) process.exitCode = 3;
+    return;
+  }
+
   if (group === "wait" && action === "approval") {
     const timeoutSeconds = Number(value("--timeout", "300"));
-    const agent = value("--agent");
     const deadline = Date.now() + timeoutSeconds * 1000;
-    if (agent) {
-      // Anuncia presencia desde que comienza la espera: el panel deja de mostrar
-      // "sin señal" aunque el agente aún no haya iniciado ningún nodo.
-      await api(`/api/runs/${first}/agents`, { method: "POST", body: JSON.stringify({ agent }) }).catch(() => undefined);
-    }
+    // Sin --agent la espera es la del modelo base: la señal siempre pertenece a
+    // un agente concreto y el servidor la resuelve por identidad.
+    const agent = value("--agent") ?? (await api(`/api/runs/${first}`)).run.baseAgent;
+    if (!agent) throw new Error("Esta ejecución todavía no tiene modelo base; indica --agent NOMBRE");
+    // Anuncia presencia desde que comienza la espera: el panel deja de mostrar
+    // "sin señal" aunque el agente aún no haya iniciado ningún nodo.
+    await api(`/api/runs/${first}/agents`, { method: "POST", body: JSON.stringify({ agent }) }).catch(() => undefined);
     process.stderr.write("Esperando una señal accionable de HRP...\n");
-    let pausedNoted = false;
-    let auditorsNoted = false;
-    let implementationNoted = false;
-    let reviewPassNoted = false;
-    let waitReason = "approval";
-    let waitingAuditors = [];
-    let consecutiveNetworkFailures = 0;
-    const maxNetworkRetries = 5;
-    const networkRetryDelayMs = 3000;
+    let lastKind;
+    let pendingAuditors = [];
     while (Date.now() < deadline) {
-      let detail;
-      try {
-        detail = await api(`/api/runs/${first}`);
-        consecutiveNetworkFailures = 0;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const isNetworkFailure = message.startsWith(`HRP no responde en ${url}:`);
-        if (!isNetworkFailure) throw error;
-        if (consecutiveNetworkFailures >= maxNetworkRetries) {
-          process.stderr.write(`HRP no respondió después de ${maxNetworkRetries} reintentos; la espera termina.\n`);
-          throw error;
-        }
-        consecutiveNetworkFailures += 1;
-        process.stderr.write(`Fallo transitorio de HRP; reintento ${consecutiveNetworkFailures}/${maxNetworkRetries} en 3s: ${message}\n`);
-        await new Promise((resolve) => setTimeout(resolve, networkRetryDelayMs));
-        continue;
+      const remaining = Math.max(Math.ceil((deadline - Date.now()) / 1000), 0);
+      // El primer sondeo es inmediato para poder explicar por qué se espera;
+      // a partir de ahí el servidor avisa solo (long-poll) en vez de sondear.
+      const signal = await attention({ agent, runId: first, waitSeconds: lastKind === undefined ? 0 : remaining });
+      if (signal.actionable || signal.terminal) return print(signal.directive);
+      pendingAuditors = signal.pendingAuditors ?? [];
+      if (signal.kind !== lastKind) {
+        process.stderr.write(`${signal.directive}\n`);
+        lastKind = signal.kind;
       }
-      if (detail.run.control === "stopped") return print("La ejecución fue detenida por el humano; no inicies más nodos y reporta tu avance.");
-      if (detail.run.control === "paused" && !pausedNoted) {
-        process.stderr.write("Ejecución pausada por el humano; la espera continúa hasta que la reanude...\n");
-        pausedNoted = true;
-      }
-      // Un debate donde el último turno no es del base le exige respuesta antes
-      // que cualquier otro trabajo: la calidad del run depende de cerrarlo.
-      const debates = agent && detail.run.baseAgent === agent
-        ? (detail.findings ?? []).filter((finding) => {
-          if (finding.status !== "open" && finding.status !== "debating") return false;
-          const lastMessage = finding.messages[finding.messages.length - 1];
-          return !lastMessage || lastMessage.author !== agent;
-        })
-        : [];
-      if (debates.length && detail.run.control === "active") {
-        return print(`Hallazgos por atender (${debates.length}): ${debates.map((finding) => finding.id).join(", ")}. Lee cada uno con 'hrp finding show <id>' y responde con 'hrp finding reply <id> --author ${agent} --body ...'; acepta creando un nodo de corrección (hrp node discover + hrp finding accept --resolution-node ID) o rebate con argumentos técnicos; tras dos rondas sin acuerdo, 'hrp finding escalate <id>'.`);
-      }
-      const allCompleted = detail.nodes.length > 0 && detail.nodes.every((node) => node.status === "completed");
-      const isAuditor = Boolean(agent && detail.run.auditors.includes(agent));
-      const auditorState = isAuditor
-        ? detail.agentStates.find((state) => state.agent === agent)
-        : undefined;
-      // Al terminar la implementación, una sesión revisora que estaba bloqueada
-      // recibe una instrucción accionable. No se apropia de nodos del agente base.
-      if (allCompleted && isAuditor && auditorState?.phase !== "completed") {
-        const reviewedFlag = auditorState?.reviewedNodeIds.length
-          ? ` --reviewed ${auditorState.reviewedNodeIds.join(",")}`
-          : "";
-        const remaining = auditorState?.remainingNodeIds.length
-          ? auditorState.remainingNodeIds
-          : detail.nodes.map((node) => node.id);
-        return print(`Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${first} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${auditorState?.completed ?? 0} --total ${detail.nodes.length}${reviewedFlag} --remaining ${remaining.join(",")}', obtén el contexto con 'hrp review pack ${first}', registra o debate hallazgos y, al cubrir todos los nodos, cierra con phase completed llevando --reviewed con los ${detail.nodes.length} nodos y --remaining vacío.`);
-      }
-      // Los nodos sin asignación pertenecen exclusivamente al modelo base. Los
-      // asignados a ollama también los administra el base porque no abren sesión.
-      const mine = agent ? detail.nodes.filter((node) => node.assignee === agent
-        || (detail.run.baseAgent === agent && !node.assignee)
-        || (node.assignee === "ollama" && detail.run.baseAgent === agent)) : detail.nodes;
-      const ready = mine.filter((node) => node.approved && node.status !== "completed");
-      if (ready.length && detail.run.control === "active") return print(`Aprobado: ${ready.length} ${ready.length === 1 ? "nodo disponible" : "nodos disponibles"} (${ready.map((node) => node.id).join(", ")})`);
-      if (isAuditor && !allCompleted) {
-        waitReason = "implementation";
-        if (!implementationNoted) {
-          process.stderr.write("Auditor conectado; esperando que el agente base complete la implementación...\n");
-          implementationNoted = true;
-        }
-      }
-      if (allCompleted && agent === detail.run.baseAgent) {
-        const pendingAuditors = detail.run.auditors.filter((auditor) => detail.agentStates
-          .find((state) => state.agent === auditor)?.phase !== "completed");
-        if (!pendingAuditors.length) return print("Implementación y auditorías terminadas; ejecuta 'hrp review gate' antes de cerrar.");
-        waitReason = "auditors";
-        waitingAuditors = pendingAuditors;
-        if (!auditorsNoted) {
-          process.stderr.write(`Implementación terminada; esperando auditores: ${pendingAuditors.join(", ")}...\n`);
-          auditorsNoted = true;
-        }
-      } else if (allCompleted && isAuditor && auditorState?.phase === "completed") {
-        waitReason = "review-pass";
-        if (!reviewPassNoted) {
-          process.stderr.write("Auditoría terminada; esperando una corrección que requiera otra pasada...\n");
-          reviewPassNoted = true;
-        }
-      } else if (allCompleted && !isAuditor) {
-        return print("La ejecución ya está completa.");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
-    if (waitReason === "implementation") {
+    if (lastKind === "implementation") {
       throw new Error(`La implementación aún no termina después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; no necesitas pedir otra aprobación humana.`);
     }
-    if (waitReason === "auditors") {
-      throw new Error(`Siguen pendientes los auditores ${waitingAuditors.join(", ")} después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; review gate permanece bloqueado.`);
+    if (lastKind === "auditors") {
+      throw new Error(`Siguen pendientes los auditores ${pendingAuditors.join(", ")} después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; review gate permanece bloqueado.`);
     }
-    if (waitReason === "review-pass") {
+    if (lastKind === "review-pass") {
       throw new Error(`No hubo una nueva pasada de auditoría después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval' para seguir disponible.`);
+    }
+    if (lastKind === "blocked") {
+      throw new Error(`Tu trabajo aprobado sigue esperando prerrequisitos después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; no necesitas pedir otra aprobación humana.`);
     }
     throw new Error(`Sin aprobación después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval' o pide la aprobación al humano`);
   }

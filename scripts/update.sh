@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Actualiza HRP y las integraciones de los tres agentes a la última versión:
-# compila, reinicia el servicio, instala las skills de Claude y Antigravity,
-# y reinstala la integración completa de Codex (skill, CLI, plugin y MCP).
+# compila, reinicia el servicio e instala skill, MCP y despertador nativo de
+# Claude, Codex y Antigravity con el contrato uniforme de hrp agent install.
 
 set -euo pipefail
 
@@ -11,9 +11,7 @@ cd "$root"
 npm run build
 node bin/hrp.mjs service stop
 node bin/hrp.mjs service start
-node bin/hrp.mjs skills install claude
-node bin/hrp.mjs skills install antigravity
-"$root/scripts/install-codex.sh"
+node bin/hrp.mjs agent install all
 
 # Sincroniza la configuración de Antigravity en la carpeta local .agents/
 mkdir -p "$root/.agents/rules" "$root/.agents/skills/hrp" "$root/.agents/plugins/hrp/rules" "$root/.agents/plugins/hrp/skills/hrp"
@@ -31,4 +29,4 @@ manifest.version = version;
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 
-node bin/hrp.mjs skills status
+node bin/hrp.mjs agent status

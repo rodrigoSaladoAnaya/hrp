@@ -415,7 +415,15 @@ export class HrpStore {
     if (!run) throw new Error(`Unknown run: ${runId}`);
     const normalized = [...new Set(auditors.map((agent) => agent.trim()).filter(Boolean))];
     const approved = this.database.prepare("SELECT 1 FROM nodes WHERE run_id = ? AND approved = 1 LIMIT 1").get(runId);
-    if (approved) throw new Error("Auditors are locked after graph approval; choose them before starting the execution");
+    // La lista se congela mientras la ejecución corre para que la política de
+    // revisión no cambie a mitad, pero la pausa es una decisión deliberada del
+    // humano que ya detiene todo inicio de nodo: ahí sí puede reconfigurarla.
+    // Sin esto, un auditor que se queda sin presupuesto bloquea el cierre para
+    // siempre, porque nadie puede retirarlo.
+    if (approved && run.control !== "paused") {
+      throw new Error("Auditors are locked while the execution runs; pause it with 'hrp run pause' to reconfigure them");
+    }
+    const reconfiguring = Boolean(approved);
     const timestamp = now();
     this.database.prepare("UPDATE runs SET auditors_json = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(normalized), timestamp, runId);
@@ -424,7 +432,10 @@ export class HrpStore {
         .run(runId, removed);
     }
     const nodeIds = this.getRunDetail(runId)!.nodes.map((node) => node.id);
-    for (const agent of normalized) {
+    // Sólo se anuncia a los auditores nuevos. Reinicializar a los que ya
+    // estaban borraría la cobertura real de quien lleva media auditoría hecha,
+    // que es justo el caso al retirar a un compañero a mitad de la ejecución.
+    for (const agent of normalized.filter((candidate) => !run.auditors.includes(candidate))) {
       this.setAgentState(runId, {
         agent,
         phase: "waiting",
@@ -436,9 +447,18 @@ export class HrpStore {
         remainingNodeIds: nodeIds,
       });
     }
-    this.addActivity(runId, "run", normalized.length
-      ? `Auditores elegidos: ${normalized.join(", ")}`
-      : "Auditoría desactivada para esta ejecución", undefined, undefined, "human");
+    if (reconfiguring) {
+      // Un cambio de política a mitad del run se explica solo en el historial:
+      // quién auditaba antes, quién audita ahora.
+      this.addActivity(runId, "run", normalized.length
+        ? `Auditores reconfigurados por el humano: ${normalized.join(", ")}`
+        : "Auditoría desactivada por el humano durante la ejecución",
+      `Antes: ${run.auditors.length ? run.auditors.join(", ") : "sin auditores"}. La ejecución estaba pausada al reconfigurar.`, undefined, "human");
+    } else {
+      this.addActivity(runId, "run", normalized.length
+        ? `Auditores elegidos: ${normalized.join(", ")}`
+        : "Auditoría desactivada para esta ejecución", undefined, undefined, "human");
+    }
     return this.getRun(runId)!;
   }
 
@@ -581,6 +601,13 @@ export class HrpStore {
     const baseAgent = this.getRun(runId)?.baseAgent;
     const assignee = node.suggestedAgent ?? baseAgent;
     if (assignee) this.assignNode(runId, node.id, assignee);
+    // El humano ya aprobó la intención de esta ejecución: frenar cada
+    // descubrimiento en un clic es lo que dejaba a los agentes bloqueados y
+    // obligaba al humano a estar presente. El gate humano sigue vigente para
+    // el grafo inicial, que es donde se decide el plan.
+    this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?")
+      .run(now(), runId, node.id);
+    this.addActivity(runId, "node", `Aprobado automáticamente por ser trabajo descubierto: ${node.file} · ${node.symbol}`, "El grafo inicial conserva el gate humano; lo descubierto durante una ejecución ya aprobada no lo requiere.", node.id, assignee ?? baseAgent);
     return this.getNode(runId, node.id)!;
   }
 
@@ -628,14 +655,30 @@ export class HrpStore {
   assignNode(runId: string, nodeId: string, assignee: string | null): ChangeNode {
     const node = this.requireNode(runId, nodeId);
     if (node.status === "completed") throw new Error("Completed nodes cannot be reassigned");
-    if (node.status === "running") throw new Error("Running nodes cannot be reassigned; wait for the node to finish or fail");
+    const paused = this.getRun(runId)?.control === "paused";
+    // Un agente que se queda sin presupuesto deja su nodo en vuelo y bloquea la
+    // ejecución entera, porque sólo puede haber uno a la vez. Con la ejecución
+    // pausada el humano puede recuperarlo: el nodo vuelve a 'pending' y pierde
+    // su ejecutor, pero conserva el diff y la verificación del intento como
+    // evidencia de lo que alcanzó a hacer.
+    const recovering = node.status === "running";
+    if (recovering && !paused) {
+      throw new Error("Running nodes cannot be reassigned while the execution runs; pause it with 'hrp run pause' to take the node back");
+    }
     const normalized = assignee?.trim() || null;
     const timestamp = now();
     this.database.prepare("UPDATE nodes SET assignee = ?, updated_at = ? WHERE run_id = ? AND id = ?").run(normalized, timestamp, runId, nodeId);
+    if (recovering) {
+      this.database.prepare("UPDATE nodes SET status = 'pending', executed_by = NULL, updated_at = ? WHERE run_id = ? AND id = ?")
+        .run(timestamp, runId, nodeId);
+    }
     this.touchRun(runId, timestamp);
     this.addActivity(runId, "node", normalized
       ? `Asignado a ${normalized}: ${node.file} · ${node.symbol}`
-      : `Asignación retirada: ${node.file} · ${node.symbol}`, undefined, nodeId, "human");
+      : `Asignación retirada: ${node.file} · ${node.symbol}`,
+    recovering
+      ? `Estaba en curso con ${node.executedBy ?? node.assignee ?? "otro agente"} y el humano lo recuperó con la ejecución pausada: vuelve a pendiente conservando el diff y la verificación del intento.`
+      : undefined, nodeId, "human");
     return this.requireNode(runId, nodeId);
   }
 

@@ -198,7 +198,7 @@ Requisitos del grafo:
 
 ### 4b. Seleccionar auditores y esperar la aprobación humana
 
-Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza su inicio hasta que el humano da el visto bueno. Antes de aprobar, el panel pide elegir qué modelos auditarán esa ejecución en la sección **Agentes**. La selección es propia del run —configurar Ollama no lo vuelve auditor global— y se congela al aprobar el primer nodo para conservar una política estable durante toda la ejecución.
+Todo nodo del **grafo inicial** nace **sin aprobar** y el servidor rechaza su inicio hasta que el humano da el visto bueno. Lo que se **descubre** después, dentro de una ejecución ya aprobada, nace aprobado y asignado: el humano aprueba el plan, no cada consecuencia de implementarlo. Antes de aprobar, el panel pide elegir qué modelos auditarán esa ejecución en la sección **Agentes**. La selección es propia del run —configurar Ollama no lo vuelve auditor global— y se congela al aprobar el primer nodo para conservar una política estable durante toda la ejecución.
 
 Después de elegir al menos un auditor, el humano autoriza desde el panel (botón «Aprobar grafo» o la aprobación individual del inspector) o por CLI:
 
@@ -364,7 +364,7 @@ El nuevo nodo aparecerá en el mismo mapa con la etiqueta `Descubierto`. Despué
 
 **Triaje del ejecutor al descubrir.** Si Ollama Cloud está configurado (`hrp ollama status`), el agente base evalúa cada descubierto antes de publicarlo: el trabajo mecánico, repetitivo o completamente especificado por su descripción lleva `"suggestedAgent": "ollama"` (HRP lo pre-asigna a `ollama` y sigue el flujo de la sección «Delegación a Ollama Cloud»); el trabajo de diseño, seguridad o con ambigüedad se publica sin sugerencia y queda asignado al modelo base. El objetivo es que el modelo avanzado se reserve para las operaciones de alto valor.
 
-**La aprobación del descubierto no detiene la ejecución.** Publica el nodo descubierto y continúa de inmediato con los nodos ya aprobados cuyas dependencias estén completas; ejecuta `hrp wait approval` únicamente cuando no quede trabajo aprobado disponible, agrupando en una sola espera todos los descubiertos pendientes.
+**El descubierto nace aprobado.** `hrp node discover` devuelve el nodo con `approved: true` y asignado (al modelo base, o al agente sugerido con `suggestedAgent`), así que puede iniciarse en cuanto sus dependencias estén completas, sin un segundo clic humano. El gate humano sigue vigente sólo para el grafo inicial, que es donde se decide el plan; cada aprobación automática queda declarada en Actividad.
 
 Si el descubrimiento cambia las dependencias de nodos aún pendientes, vuelve a publicar el grafo completo con las relaciones actualizadas. No cambies silenciosamente la semántica de un nodo ya terminado.
 
@@ -387,6 +387,62 @@ run | graph | inspect | node | patch | verify | note
 ```
 
 No conviertas cada comando o lectura en actividad. Publica sólo evidencia que ayude a entender un cambio, una restricción o una decisión observable.
+
+## Mantenerse atento (el agente no debe quedarse ciego)
+
+Un agente que termina su turno deja de existir para HRP: nadie puede devolverle el control salvo su propio entorno. Por eso HRP publica una sola señal y cada modelo la consume por el camino que su entorno permite.
+
+### La señal
+
+`GET /api/attention?agent=<nombre>[&runId=][&workspace=][&waitMs=]` responde qué debe hacer ese agente **ahora**:
+
+```json
+{
+  "runId": "…", "projectId": "…", "agent": "codex",
+  "kind": "work", "actionable": true, "terminal": false, "waiting": false,
+  "directive": "Aprobado: 2 nodos disponibles (…)",
+  "pendingAuditors": [], "runs": [ … ]
+}
+```
+
+- `actionable`: hay trabajo ahora. Tipos: `findings` (un debate espera tu respuesta), `work` (nodos iniciables), `audit` (auditoría disponible), `gate` (queda algo que cerrar).
+- `waiting`: la ejecución sigue viva pero no hay nada para ti todavía (`paused`, `blocked` por prerrequisitos, `busy` por el nodo en vuelo de otro agente, `implementation`, `auditors`, `review-pass`). Conviene seguir esperando.
+- `terminal`: no habrá más señales (`stopped`, `done`).
+
+Con `waitMs` (hasta 600000) la petición se convierte en **long-poll**: el servidor no responde hasta que ocurre algo o se agota el plazo, así que la señal llega en el momento, sin sondear. Sin `runId` barre todas las ejecuciones donde ese agente participa; con `workspace` se limita a las del proyecto de esa carpeta (se compara por ruta canónica). Los resultados llegan ordenados por prioridad.
+
+### Cómo la consume cada modelo
+
+| Camino | Cuándo usarlo |
+| --- | --- |
+| `hrp attention --agent <nombre> [--run ID] [--workspace PATH] [--wait 600]` | Cualquier agente con terminal. Sale 0 con la directiva si hay trabajo, 3 si no. Es la forma de "estacionarse" dentro del turno en vez de terminarlo. |
+| Herramienta MCP `hrp_attention` | Entornos con MCP y sin hooks (Antigravity). Bloquea hasta 600 s dentro de la llamada. |
+| Hook `Stop` nativo (Claude Code y Codex) | El entorno ejecuta `hrp hook stop --agent <nombre>` al terminar el turno y HRP decide si lo deja terminar. |
+| `hrp wait approval <run-id> --agent <nombre>` | Espera clásica sobre una ejecución concreta; hoy consume el mismo long-poll. |
+
+### Contrato del hook
+
+`hrp hook <stop|session-start> --agent <nombre>` lee el evento por stdin (esquema de hooks de Claude Code, idéntico en Codex: `cwd`, `session_id`, `hook_event_name`, `stop_hook_active`) y responde por stdout:
+
+- Hay señal accionable → `{"decision":"block","reason":"<directiva>"}`: el entorno no deja terminar el turno y el agente retoma.
+- La ejecución sigue viva pero aún no hay trabajo → también bloquea, con la instrucción de esperar en `hrp attention --wait 600`. Tras 40 esperas seguidas sin señal suelta la sesión con un `systemMessage` (contador por `session_id`, configurable con `HRP_HOOK_MAX_PARKS`).
+- No hay ejecución viva, o quedó detenida o completa → no imprime nada y sale 0: la sesión termina normalmente.
+- `session-start` devuelve `hookSpecificOutput.additionalContext` con las ejecuciones vivas del workspace (las tres más urgentes) para que una sesión nueva sepa qué había pendiente.
+
+El hook comprueba `/api/health` antes que nada: sin servicio no le cuesta ni un segundo a una sesión ajena a HRP, y cualquier error se reporta por stderr sin bloquear.
+
+## Instalar la integración de un modelo
+
+Cada modelo tiene su propio instalador, porque cada entorno guarda skills, MCP y hooks en sitios distintos:
+
+```sh
+hrp agent install claude|codex|antigravity|all
+hrp agent status        # qué quedó instalado por modelo
+```
+
+Un instalador vive en `bin/install/<agente>.mjs`, exporta `agent` e `install(context)` y devuelve `{ agent, actions, warnings, verified }`; el CLI le entrega `{ root, nodePath, cliPath, dataDir, url, log, installSkill, skillState }` con rutas absolutas —las GUIs no heredan el `PATH` del shell— y sale con código 1 si algún instalador no queda verificado. Cada uno instala la skill, registra el servidor MCP (`hrp mcp`), monta el despertador que su entorno permita, limpia los restos de instalaciones anteriores y verifica el resultado en vez de darlo por hecho.
+
+Ningún entorno recarga skills, MCP ni hooks en sesiones ya abiertas: hay que abrir una sesión nueva (y en Codex, cerrar la GUI con Cmd+Q).
 
 ## Control humano de la ejecución (pausar, detener, reanudar)
 
@@ -479,9 +535,11 @@ El humano convierte en revisor a cualquier modelo con sesión —preferentemente
 - audita buscando **errores de integración entre nodos, contratos rotos, desviaciones entre la spec aprobada y el diff aplicado, y casos borde sin cubrir**;
 - reporta cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer SU_NOMBRE`;
 - debate las respuestas del base con `hrp finding reply <finding-id> --author SU_NOMBRE --body ...`, con argumentos técnicos y citas al diff;
-- sólo publica `phase completed` cuando `--reviewed` cubre todos los nodos y `--remaining` queda vacío; después vuelve a `hrp wait approval`, porque una corrección completada puede abrir otra pasada;
+- sólo publica `phase completed` cuando `--reviewed` cubre **los nodos que no escribió él** y `--remaining` queda vacío; después vuelve a `hrp wait approval`, porque una corrección completada puede abrir otra pasada;
 - **nunca edita código**: su salida son hallazgos y debate;
 - si no encuentra nada real, lo dice; inventar hallazgos para rellenar contamina el debate y el registro.
+
+**La cobertura se cuenta sobre lo ajeno.** Un mismo agente puede implementar nodos y auditar la ejecución, y el contrato le prohíbe revisar los suyos: por eso el conjunto que exige el cierre son los nodos cuyo autor (`executedBy`, o `assignee` si nunca se ejecutó) es **otro**. `--total` y `--remaining` de la directiva de auditoría ya vienen calculados sobre ese subconjunto, y el servidor valida contra él —pedirle los propios volvía imposible el cierre y dejaba `review gate` bloqueado sin ningún hallazgo vivo—. Si el auditor resulta ser el autor de todo, su cierre se acepta para no bloquear la ejecución, pero queda escrito en Actividad que su auditoría no cubrió nada: esa ejecución necesita otro auditor.
 
 ### Contrato del agente base (autoridad v3.1)
 
@@ -638,7 +696,7 @@ Como ejecutor, trabaja desde la raíz del proyecto. Usa el CLI `hrp` si está di
 
 Después de publicar o descubrir nodos, espera la aprobación humana; no la concedas en nombre del usuario. Declara tu identidad al iniciar, respeta sus asignaciones y ejecuta sólo un nodo a la vez. Para cada nodo aprobado: inicia, aplica únicamente esa operación, publica su diff atribuible junto con qué hizo y por qué se hizo así, ejecuta una verificación y completa. Si falla, corrige y reintenta el mismo nodo; no crees otra ejecución. Publica cualquier trabajo nuevo como nodo descubierto. Conserva razones operativas breves y nunca publiques cadena de pensamiento privada.
 
-Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE` y debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...`. Como revisor nunca edites código ajeno y no inventes hallazgos: decir que no encontraste nada es una respuesta valiosa. Nunca audites tus propios nodos: el auditor no es el autor.
+Como revisor, audita el trabajo completado por los demás agentes: obtén el contexto con `hrp review pack <run-id>`, busca errores de integración y desviaciones entre la spec aprobada y el diff, registra cada problema con `hrp finding add <run-id> --title T --body B --severity critical|major|minor|question [--node ID] --reviewer TU_NOMBRE` y debate con `hrp finding reply <finding-id> --author TU_NOMBRE --body ...`. Como revisor nunca edites código ajeno y no inventes hallazgos: decir que no encontraste nada es una respuesta valiosa. Nunca audites tus propios nodos: el auditor no es el autor, y la cobertura que exige el cierre se cuenta sólo sobre los nodos escritos por otros.
 
 Antes de finalizar, consulta el estado, confirma que todos los nodos tengan diff y verificación aprobada, atiende los debates que te mencionen y verifica el cierre con `hrp review gate <run-id>`.
 ```

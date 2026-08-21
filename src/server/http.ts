@@ -1,12 +1,13 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
-import { activityTypes, agentWorkPhases, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls } from "../shared/protocol.js";
+import { activityTypes, agentWorkPhases, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls, type RunDetail } from "../shared/protocol.js";
+import { attentionRank, auditableNodes, computeAttention, type Attention } from "./attention.js";
 import { buildReviewPack, runAutoReview, upstreamJson } from "./review.js";
 import { HrpStore } from "./store.js";
 
@@ -71,6 +72,15 @@ export function createBuildIdentity(target = defaultBuildTarget()) {
 }
 
 const readBuildIdentity = createBuildIdentity();
+
+// El store guarda el workspace ya canonicalizado (realpath), y el cwd que
+// entrega un hook suele atravesar un enlace simbólico: en macOS /tmp apunta a
+// /private/tmp. Comparar rutas sin canonicalizar dejaba mudo al despertador
+// justo donde debía avisar.
+function canonicalPath(target: string): string {
+  const resolved = path.resolve(target);
+  try { return realpathSync(resolved); } catch { return resolved; }
+}
 
 export function createApp(store: HrpStore) {
   const app = express();
@@ -284,18 +294,31 @@ export function createApp(store: HrpStore) {
         remainingNodeIds: input.remainingNodeIds ?? previous?.remainingNodeIds ?? [],
       };
       if (run.auditors.includes(request.params.agent) && input.phase === "completed") {
-        const expected = new Set(detail.nodes.map((node) => node.id));
+        // La cobertura exigida es la del trabajo ajeno: el contrato prohíbe al
+        // auditor revisar sus propios nodos, así que pedírselos volvía
+        // imposible el cierre para quien implementa y audita en el mismo run.
+        const auditable = auditableNodes(detail, request.params.agent);
+        const expected = new Set(auditable.map((node) => node.id));
+        const propios = detail.nodes.length - expected.size;
         const reviewed = new Set(coverage.reviewedNodeIds);
         const unreviewed = [...expected].filter((nodeId) => !reviewed.has(nodeId));
+        const stillRemaining = coverage.remainingNodeIds.filter((nodeId) => expected.has(nodeId));
         const gaps = [
           unreviewed.length ? `unreviewed nodes: ${unreviewed.join(", ")}` : "",
-          coverage.remainingNodeIds.length ? `still marked remaining: ${coverage.remainingNodeIds.join(", ")}` : "",
+          stillRemaining.length ? `still marked remaining: ${stillRemaining.join(", ")}` : "",
           coverage.completed !== expected.size ? `completed is ${coverage.completed}, expected ${expected.size}` : "",
           coverage.total !== expected.size ? `total is ${coverage.total}, expected ${expected.size}` : "",
         ].filter(Boolean);
-        if (gaps.length) throw new Error(`An auditor can only complete with full coverage of the ${expected.size} current nodes (${gaps.join("; ")})`);
-        if (!startedAt || detail.nodes.some((node) => node.updatedAt > startedAt)) {
+        if (gaps.length) {
+          throw new Error(`An auditor can only complete with full coverage of the ${expected.size} nodes authored by others${propios ? ` (its own ${propios} are excluded)` : ""} (${gaps.join("; ")})`);
+        }
+        if (!startedAt || auditable.some((node) => node.updatedAt > startedAt)) {
           throw new Error("Auditor coverage predates the latest node change; publish phase reviewing again before completion");
+        }
+        // Un auditor que implementó todo no revisó nada: el cierre se acepta
+        // para no bloquear el run, pero el humano debe verlo escrito.
+        if (!expected.size) {
+          store.addActivity(request.params.runId, "note", `Auditoría sin alcance: ${request.params.agent} implementó todos los nodos y no tenía trabajo ajeno que revisar`, "Elige otro auditor si esta ejecución necesita una revisión independiente.", undefined, request.params.agent);
         }
       }
       const state = store.setAgentState(request.params.runId, {
@@ -358,7 +381,10 @@ export function createApp(store: HrpStore) {
     try {
       const input = z.object({ tokens: z.number().int().positive().optional() }).strict().parse(request.body ?? {});
       const node = store.completeNode(request.params.runId, request.params.nodeId, input.tokens);
-      broadcast(projectForRun(request.params.runId), request.params.runId, "node-completed");
+      // El evento se emite más abajo, cuando el estado ya está asentado: un
+      // long-poll de /api/attention despertado aquí vería todos los nodos
+      // completos y a los auditores aún con la cobertura de la pasada anterior,
+      // y concluiría que la ejecución terminó cuando falta la revisión.
       // Política v3.1: terminar el trabajo dispara la revisión sola. Corre en
       // segundo plano (no bloquea la respuesta) y con candado por estado, así
       // que los descubiertos que se completen después re-disparan otra pasada.
@@ -367,11 +393,15 @@ export function createApp(store: HrpStore) {
         const detail = store.getRunDetail(request.params.runId)!;
         for (const auditor of run.auditors.filter((agent) => agent !== "ollama")) {
           const previous = detail.agentStates.find((state) => state.agent === auditor);
-          const validNodeIds = new Set(detail.nodes.map((candidate) => candidate.id));
+          // Su alcance es el trabajo ajeno, igual que en la directiva y en la
+          // validación del cierre: contar el run entero le mostraría al humano
+          // una cobertura imposible y le pediría al auditor nodos suyos.
+          const auditable = auditableNodes(detail, auditor);
+          const validNodeIds = new Set(auditable.map((candidate) => candidate.id));
           const reviewedNodeIds = (previous?.reviewedNodeIds ?? [])
             .filter((candidateId) => candidateId !== node.id && validNodeIds.has(candidateId));
           const reviewed = new Set(reviewedNodeIds);
-          const remainingNodeIds = detail.nodes
+          const remainingNodeIds = auditable
             .map((candidate) => candidate.id)
             .filter((candidateId) => !reviewed.has(candidateId));
           store.setAgentState(run.id, {
@@ -380,17 +410,20 @@ export function createApp(store: HrpStore) {
             summary: reviewedNodeIds.length ? "Nueva pasada de auditoría pendiente" : "Auditoría pendiente de iniciar",
             detail: `Se invalidó la cobertura de ${node.id}; conserva ${reviewedNodeIds.length} operaciones ya revisadas.`,
             completed: reviewedNodeIds.length,
-            total: detail.nodes.length,
+            total: auditable.length,
             reviewedNodeIds,
             remainingNodeIds,
           });
         }
+        broadcast(run.projectId, run.id, "node-completed");
         void runAutoReview(store, request.params.runId, {
           onProgress: () => broadcast(run.projectId, run.id, "agent-status"),
         }).then((result) => {
           const audited = store.getRun(request.params.runId);
           if (audited) broadcast(audited.projectId, audited.id, result && result.created > 0 ? "finding-created" : "audit-finished");
         });
+      } else {
+        broadcast(projectForRun(request.params.runId), request.params.runId, "node-completed");
       }
       response.json(node);
     } catch (error) { next(error); }
@@ -476,6 +509,85 @@ export function createApp(store: HrpStore) {
         pendingAuditors: store.pendingAuditors(request.params.runId),
       });
     } catch (error) { next(error); }
+  });
+
+  // Punto único desde el que cualquier agente se entera de que HRP tiene algo
+  // para él: el CLI, los hooks nativos de Claude Code y Codex, y la herramienta
+  // MCP consumen esta misma respuesta. Con waitMs se convierte en long-poll
+  // sobre el mismo emisor que alimenta /api/events, así que la señal llega en
+  // cuanto ocurre en vez de depender de que alguien sondee.
+  app.get("/api/attention", (request, response) => {
+    const agent = typeof request.query.agent === "string" ? request.query.agent.trim() : "";
+    if (!agent) return response.status(400).json({ error: "Falta ?agent=<nombre> en /api/attention" });
+    const runId = typeof request.query.runId === "string" ? request.query.runId : undefined;
+    const workspace = typeof request.query.workspace === "string" ? canonicalPath(request.query.workspace) : undefined;
+    const requestedWait = Number(request.query.waitMs ?? 0);
+    const waitMs = Math.min(Math.max(Number.isFinite(requestedWait) ? requestedWait : 0, 0), 600_000);
+
+    const scopedRunIds = (): string[] => {
+      if (runId) return store.getRun(runId) ? [runId] : [];
+      const projects = workspace
+        ? store.listProjects().filter((project) => canonicalPath(project.workspaceRoot) === workspace)
+        : store.listProjects();
+      return projects.flatMap((project) => store.listRuns(project.id).map((run) => run.id));
+    };
+
+    // Sin un run explícito solo cuentan las ejecuciones donde ese agente
+    // participa: ser base, auditor, tener nodos asignados o haber aparecido.
+    const involves = (detail: RunDetail): boolean => runId !== undefined
+      || detail.run.baseAgent === agent
+      || detail.run.auditors.includes(agent)
+      || detail.run.seenAgents.includes(agent)
+      || detail.nodes.some((node) => node.assignee === agent);
+
+    const evaluate = (): { best?: Attention; runs: Attention[] } => {
+      const runs = scopedRunIds()
+        .map((candidate) => store.getRunDetail(candidate))
+        .filter((detail): detail is RunDetail => Boolean(detail) && involves(detail!))
+        .map((detail) => computeAttention(detail, agent))
+        .sort((left, right) => attentionRank(left.kind) - attentionRank(right.kind));
+      return { best: runs[0], runs };
+    };
+
+    const settle = (): boolean => {
+      const { best, runs } = evaluate();
+      // Un run explícito también termina la espera cuando ya no dará señales
+      // (detenido o completo); en el barrido global eso no es una novedad.
+      const resolved = best && (best.actionable || (runId !== undefined && best.terminal));
+      if (!resolved) return false;
+      response.json({ ...best, runs });
+      return true;
+    };
+
+    if (settle()) return;
+    if (waitMs === 0) {
+      const { best, runs } = evaluate();
+      return response.json(best
+        ? { ...best, runs }
+        : { runId: null, projectId: null, agent, kind: "idle", actionable: false, terminal: false, waiting: false, directive: `Sin ejecuciones de HRP para ${agent}.`, pendingAuditors: [], runs: [] });
+    }
+
+    let finished = false;
+    const finish = (respond: () => void) => {
+      if (finished) return;
+      finished = true;
+      events.off("change", onChange);
+      clearInterval(safety);
+      clearTimeout(deadline);
+      respond();
+    };
+    const onChange = () => { if (!finished) { const done = settle(); if (done) finish(() => undefined); } };
+    // Red de seguridad: hay señales que dependen del reloj de otro proceso
+    // (una auditoría automática en vuelo), no de un evento local.
+    const safety = setInterval(onChange, 5_000);
+    const deadline = setTimeout(() => finish(() => {
+      const { best, runs } = evaluate();
+      response.json(best
+        ? { ...best, runs }
+        : { runId: null, projectId: null, agent, kind: "idle", actionable: false, terminal: false, waiting: false, directive: `Sin ejecuciones de HRP para ${agent}.`, pendingAuditors: [], runs: [] });
+    }), waitMs);
+    events.on("change", onChange);
+    request.on("close", () => finish(() => undefined));
   });
 
   app.get("/api/events", (request, response) => {

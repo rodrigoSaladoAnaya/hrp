@@ -159,6 +159,24 @@ export class HrpMcpClient {
     return this.request(`/api/runs/${encodeURIComponent(runId)}`);
   }
 
+  // Espera bloqueante: el servidor no responde hasta tener algo que decirle a
+  // este agente. Es el despertador de los entornos sin hooks nativos. La espera
+  // se parte en tramos porque el fetch de Node aborta a los 300s de espera de
+  // cabeceras, no porque el protocolo lo exija.
+  async attention(params: { agent: string; runId?: string; workspace?: string; waitSeconds?: number }): Promise<Record<string, unknown>> {
+    const chunkMs = 240_000;
+    const deadline = Date.now() + Math.min(Math.max(params.waitSeconds ?? 0, 0), 600) * 1000;
+    for (;;) {
+      const remaining = Math.max(deadline - Date.now(), 0);
+      const query = new URLSearchParams({ agent: params.agent });
+      if (params.runId) query.set("runId", params.runId);
+      if (params.workspace) query.set("workspace", path.resolve(params.workspace));
+      if (remaining > 0) query.set("waitMs", String(Math.min(remaining, chunkMs)));
+      const signal = await this.request<Record<string, unknown>>(`/api/attention?${query}`);
+      if (signal.actionable || signal.terminal || Date.now() >= deadline) return signal;
+    }
+  }
+
   async publishGraph(runId: string, nodes: ChangeNodeInput[]): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/graph`, {
       method: "POST",
@@ -392,6 +410,32 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
     },
   },
   {
+    name: "hrp_attention",
+    description: "Espera bloqueante hasta que HRP tenga trabajo para este agente: nodos aprobados que ya puede iniciar, hallazgos que debe responder, auditoría disponible o cierre pendiente. Úsala en lugar de terminar el turno cuando la ejecución sigue viva; es la forma de no quedarse ciego sin que el humano tenga que avisar. Devuelve la señal con su directiva accionable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent: {
+          type: "string",
+          description: "Identidad del agente que espera (claude, codex, antigravity...).",
+        },
+        runId: {
+          type: "string",
+          description: "Ejecución concreta. Si se omite, vigila todas las ejecuciones donde participa el agente.",
+        },
+        workspace: {
+          type: "string",
+          description: "Carpeta del proyecto observado para acotar la espera a sus ejecuciones.",
+        },
+        waitSeconds: {
+          type: "number",
+          description: "Segundos máximos de espera (0 a 600; por omisión 300). Con 0 responde de inmediato con la señal actual.",
+        },
+      },
+      required: ["agent"],
+    },
+  },
+  {
     name: "hrp_publish_graph",
     description: "Publica el grafo de nodos de cambio semánticos para una ejecución antes de editar código.",
     inputSchema: {
@@ -428,7 +472,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
   },
   {
     name: "hrp_discover_node",
-    description: "Publica un nuevo nodo descubierto durante la implementación que no estaba en el grafo inicial.",
+    description: "Publica un nuevo nodo descubierto durante la implementación que no estaba en el grafo inicial. Queda aprobado automáticamente y asignado (al modelo base o al agente sugerido), así que puede iniciarse de inmediato: el gate humano solo rige para el grafo inicial.",
     inputSchema: {
       type: "object",
       properties: {
@@ -803,6 +847,14 @@ export async function executeHrpTool(
 
     case "hrp_get_state":
       return client.getRunState(String(args.runId));
+
+    case "hrp_attention":
+      return client.attention({
+        agent: String(args.agent),
+        runId: typeof args.runId === "string" ? args.runId : undefined,
+        workspace: typeof args.workspace === "string" ? args.workspace : undefined,
+        waitSeconds: typeof args.waitSeconds === "number" ? args.waitSeconds : 300,
+      });
 
     case "hrp_publish_graph":
       return client.publishGraph(String(args.runId), args.nodes as ChangeNodeInput[]);
