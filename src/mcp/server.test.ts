@@ -58,8 +58,11 @@ class MockHrpMcpClient extends HrpMcpClient {
     };
   }
 
-  override async publishGraph(runId: string, nodes: unknown[]): Promise<unknown> {
-    return { nodes };
+  graphCalls: unknown[] = [];
+
+  override async publishGraph(runId: string, nodes: unknown[], agent?: string): Promise<unknown> {
+    this.graphCalls.push({ runId, nodes, agent });
+    return { nodes, agent };
   }
 
   override async discoverNode(runId: string, node: unknown): Promise<unknown> {
@@ -274,6 +277,40 @@ describe("HrpMcpServer", () => {
     expect(startNodeResponse?.result).toMatchObject({ isError: false });
     const startContent = (startNodeResponse?.result as { content: Array<{ text: string }> }).content[0].text;
     expect(startContent).toContain("theme-node");
+  });
+
+  it("propaga el agente al publicar el grafo por MCP", async () => {
+    const mockClient = new MockHrpMcpClient();
+    const server = new HrpMcpServer(mockClient);
+    const nodes = [
+      { id: "theme-node", file: "theme.ts", symbol: "Theme", title: "Theme", description: "Work", rationale: "Required", dependencies: [] },
+    ];
+
+    const toolsResponse = await server.handleMessage({ jsonrpc: "2.0", id: 13, method: "tools/list", params: {} });
+    const tools = (toolsResponse?.result as { tools: typeof hrpToolDefinitions }).tools;
+    const publishGraph = tools.find((tool) => tool.name === "hrp_publish_graph");
+    expect(Object.keys(publishGraph?.inputSchema.properties ?? {})).toContain("agent");
+    expect(publishGraph?.inputSchema.required).toEqual(["runId", "nodes", "agent"]);
+
+    const withAgent = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 14,
+      method: "tools/call",
+      params: { name: "hrp_publish_graph", arguments: { runId: "run-100", nodes, agent: "codex" } },
+    });
+    expect(withAgent?.result).toMatchObject({ isError: false });
+
+    const withoutAgent = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 15,
+      method: "tools/call",
+      params: { name: "hrp_publish_graph", arguments: { runId: "run-100", nodes } },
+    });
+    expect(withoutAgent?.result).toMatchObject({ isError: true });
+    expect((withoutAgent?.result as { content: { text: string }[] }).content[0].text).toContain("requiere agent");
+    expect(mockClient.graphCalls).toEqual([
+      { runId: "run-100", nodes, agent: "codex" },
+    ]);
   });
 
   it("returns formatted error if a tool execution fails", async () => {

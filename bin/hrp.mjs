@@ -445,7 +445,7 @@ Uso:
   hrp run pause|resume|stop <run-id>
   hrp run auditors <run-id> <agente...>
   hrp run delete <run-id> --yes
-  hrp graph publish <run-id> <graph.json> [--agent NOMBRE]
+  hrp graph publish <run-id> <graph.json> --agent NOMBRE
   hrp node discover <run-id> <node.json>
   hrp node approve <run-id> [node-id...]
   hrp node assign <run-id> <node-id> <agente|->
@@ -582,7 +582,8 @@ async function main() {
 
   if (group === "graph" && action === "publish") {
     const agent = value("--agent");
-    return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), ...(agent ? { agent } : {}) }) }));
+    if (!agent) throw new Error("Uso: hrp graph publish <run-id> <graph.json> --agent NOMBRE");
+    return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), agent }) }));
   }
   if (group === "node" && action === "discover") {
     return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(readJson(second)) }));

@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createApp } from "./http.js";
 import { HrpStore } from "./store.js";
 
 const roots: string[] = [];
@@ -601,6 +603,44 @@ describe("HrpStore", () => {
       id: "extra", file: "C.ts", symbol: "C.extra", title: "Extra", description: "Add", rationale: "Found", dependencies: [],
     });
     expect(discovered.assignee).toBe("claude");
+  });
+
+  it("rejects an anonymous initial graph through HTTP", async () => {
+    const { store, run } = fixture();
+    const server = createApp(store).listen(0, "127.0.0.1");
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const { port } = server.address() as AddressInfo;
+    const graph = { nodes: [
+      { id: "orphan", file: "A.ts", symbol: "A.orphan", title: "Orphan", description: "Base work", rationale: "Needed", dependencies: [] },
+      { id: "delegated", file: "B.ts", symbol: "B.delegated", title: "Delegated", description: "Delegate work", rationale: "Cheap model suffices", dependencies: [], suggestedAgent: "ollama" },
+    ] };
+
+    try {
+      const anonymous = await fetch(`http://127.0.0.1:${port}/api/runs/${run.id}/graph`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(graph),
+      });
+      expect(anonymous.status).toBe(400);
+      expect(await anonymous.json()).toMatchObject({ error: expect.stringMatching(/requires agent/i) });
+      expect(store.getRun(run.id)?.baseAgent).toBeUndefined();
+      expect(store.getRunDetail(run.id)?.nodes).toEqual([]);
+
+      const identified = await fetch(`http://127.0.0.1:${port}/api/runs/${run.id}/graph`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...graph, agent: "claude" }),
+      });
+      expect(identified.status).toBe(201);
+      expect(store.getRun(run.id)?.baseAgent).toBe("claude");
+      expect(store.getRunDetail(run.id)!.nodes.find((node) => node.id === "orphan")?.assignee).toBe("claude");
+      expect(store.getRunDetail(run.id)!.nodes.find((node) => node.id === "delegated")?.assignee).toBe("ollama");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("persists the executing agent on start", () => {

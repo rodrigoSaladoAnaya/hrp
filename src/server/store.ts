@@ -712,11 +712,11 @@ export class HrpStore {
   publishGraph(runId: string, input: GraphInput, agent?: string): ChangeNode[] {
     const run = this.getRun(runId);
     if (!run) throw new Error(`Unknown run: ${runId}`);
+    const effectiveBaseAgent = run.baseAgent ?? agent;
     if (agent) {
-      if (!run.baseAgent) this.database.prepare("UPDATE runs SET base_agent = ? WHERE id = ?").run(agent, runId);
+      if (!run.baseAgent) this.database.prepare("UPDATE runs SET base_agent = ? WHERE id = ?").run(effectiveBaseAgent, runId);
       this.registerAgent(runId, agent);
     }
-    const baseAgent = run.baseAgent ?? agent;
     const ids = new Set(input.nodes.map((node) => node.id));
     if (ids.size !== input.nodes.length) throw new Error("Node ids must be unique");
     for (const node of input.nodes) {
@@ -774,7 +774,7 @@ export class HrpStore {
         // contextFiles se separa del spread: el binding nombrado no admite claves sobrantes.
         const { contextFiles, ...fields } = node;
         upsert.run({ ...fields, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, contextJson: contextFiles?.length ? JSON.stringify(contextFiles) : null, dependencies: JSON.stringify(node.dependencies), timestamp });
-        const assignee = node.suggestedAgent ?? baseAgent;
+        const assignee = node.suggestedAgent ?? effectiveBaseAgent;
         if (assignee) defaultAssign.run({ runId, id: node.id, assignee });
       }
       this.database.prepare("UPDATE runs SET graph_version = graph_version + 1, updated_at = ? WHERE id = ?").run(timestamp, runId);

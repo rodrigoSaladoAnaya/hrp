@@ -225,6 +225,11 @@ export function createApp(store: HrpStore) {
   app.post("/api/runs/:runId/graph", (request, response, next) => {
     try {
       const input = z.object({ nodes: z.array(nodeInput).min(1), agent: z.string().min(1).optional() }).strict().parse(request.body);
+      const run = store.getRun(request.params.runId);
+      if (!run) throw new Error(`Unknown run: ${request.params.runId}`);
+      if (!run.baseAgent && !input.agent) {
+        throw new Error("Publishing the initial graph requires agent to establish the base model");
+      }
       const nodes = store.publishGraph(request.params.runId, { nodes: input.nodes }, input.agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "graph-published");
       response.status(201).json({ nodes });
