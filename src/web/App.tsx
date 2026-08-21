@@ -1330,7 +1330,7 @@ export function App() {
                     <p>{detail.run.requirement}</p>
                     {detail.run.changeBranch && (
                       <span
-                        className="activity-agent activity-agent-model"
+                        className="activity-agent"
                         title={`Branch de salvaguarda: ${detail.run.changeBranch}`}
                         aria-label={`Branch de salvaguarda: ${detail.run.changeBranch}`}
                       >branch {detail.run.changeBranch}</span>
