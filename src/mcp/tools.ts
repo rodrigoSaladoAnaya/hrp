@@ -140,11 +140,13 @@ export class HrpMcpClient {
     return this.request("/api/projects");
   }
 
-  async createRun(params: { title: string; requirement: string; projectId?: string; workspaceRoot?: string }): Promise<unknown> {
+  async createRun(params: { title: string; requirement: string; projectId?: string; workspaceRoot?: string; agent?: string }): Promise<unknown> {
     const projectId = await this.resolveProjectId(params.projectId, params.workspaceRoot);
+    const body: Record<string, string> = { title: params.title, requirement: params.requirement };
+    if (params.agent) body.agent = params.agent;
     return this.request(`/api/projects/${projectId}/runs`, {
       method: "POST",
-      body: JSON.stringify({ title: params.title, requirement: params.requirement }),
+      body: JSON.stringify(body),
     });
   }
 
@@ -185,10 +187,10 @@ export class HrpMcpClient {
     });
   }
 
-  async startNode(runId: string, nodeId: string, agent: string = "antigravity"): Promise<unknown> {
+  async startNode(runId: string, nodeId: string, agent?: string): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/start`, {
       method: "POST",
-      body: JSON.stringify({ agent }),
+      body: JSON.stringify(agent ? { agent } : {}),
     });
   }
 
@@ -236,15 +238,18 @@ export class HrpMcpClient {
     });
   }
 
-  async publishActivity(runId: string, params: { type: ActivityType; message: string; detail?: string; nodeId?: string }): Promise<unknown> {
+  async publishActivity(runId: string, params: { type: ActivityType; message: string; detail?: string; nodeId?: string; agent?: string }): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/activity`, {
       method: "POST",
       body: JSON.stringify(params),
     });
   }
 
-  async reviewPack(runId: string, nodeId?: string): Promise<string> {
-    const query = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "";
+  async reviewPack(runId: string, nodeId?: string, agent?: string): Promise<string> {
+    const params = new URLSearchParams();
+    if (nodeId) params.set("nodeId", nodeId);
+    if (agent) params.set("agent", agent);
+    const query = params.toString() ? `?${params}` : "";
     const response = await fetch(`${this.baseUrl}/api/runs/${encodeURIComponent(runId)}/review-pack${query}`)
       .catch((error: Error) => {
         throw new Error(`HRP no responde en ${this.baseUrl}: ${error.message}`);
@@ -350,6 +355,10 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
         projectId: {
           type: "string",
           description: "ID del proyecto. Si se omite, se deduce del workspace actual.",
+        },
+        agent: {
+          type: "string",
+          description: "Identidad del agente creador (opcional).",
         },
       },
       required: ["title", "requirement"],
@@ -640,6 +649,10 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
           type: "string",
           description: "ID opcional del nodo relacionado.",
         },
+        agent: {
+          type: "string",
+          description: "Identidad del agente que registra la actividad (opcional).",
+        },
       },
       required: ["runId", "type", "message"],
     },
@@ -652,6 +665,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
       properties: {
         runId: { type: "string", description: "Identificador de la ejecución." },
         nodeId: { type: "string", description: "Nodo raíz opcional para limitar el paquete." },
+        agent: { type: "string", description: "Identidad del auditor que solicita el paquete (opcional)." },
       },
       required: ["runId"],
     },
@@ -779,6 +793,7 @@ export async function executeHrpTool(
         title: String(args.title),
         requirement: String(args.requirement),
         projectId: typeof args.projectId === "string" ? args.projectId : undefined,
+        agent: typeof args.agent === "string" ? args.agent : undefined,
       });
 
     case "hrp_list_runs":
@@ -812,7 +827,7 @@ export async function executeHrpTool(
       return client.startNode(
         String(args.runId),
         String(args.nodeId),
-        typeof args.agent === "string" ? args.agent : "antigravity",
+        typeof args.agent === "string" ? args.agent : undefined,
       );
 
     case "hrp_publish_patch":
@@ -836,7 +851,7 @@ export async function executeHrpTool(
       return client.startNode(
         String(args.runId),
         String(args.nodeId),
-        typeof args.agent === "string" ? args.agent : "antigravity",
+        typeof args.agent === "string" ? args.agent : undefined,
       );
 
     case "hrp_publish_activity":
@@ -845,12 +860,14 @@ export async function executeHrpTool(
         message: String(args.message),
         detail: typeof args.detail === "string" ? args.detail : undefined,
         nodeId: typeof args.nodeId === "string" ? args.nodeId : undefined,
+        agent: typeof args.agent === "string" ? args.agent : undefined,
       });
 
     case "hrp_review_pack":
       return client.reviewPack(
         String(args.runId),
         typeof args.nodeId === "string" ? args.nodeId : undefined,
+        typeof args.agent === "string" ? args.agent : undefined,
       );
 
     case "hrp_review_gate":

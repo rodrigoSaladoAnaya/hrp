@@ -16,7 +16,7 @@ Developers supervising coding agents while they modify a local repository. They 
 
 ## Product Purpose
 
-Human Review Protocol v2 presents an observable map of planned and completed code changes. Success means a developer can see every affected file and symbol, understand why each change exists and what it depends on, then select a completed node and inspect the exact diff and verification evidence.
+Human Review Protocol v3 presents an observable map of planned and completed code changes. Success means a developer can see every affected file and symbol, understand why each change exists and what it depends on, then select a completed node and inspect the exact diff and verification evidence.
 
 ## Positioning
 
@@ -31,7 +31,7 @@ One local service can register multiple workspace folders. An agent adapter publ
 - A graph node represents `file + symbol or logical section + intent`.
 - Multiple symbols in one file are separate nodes.
 - Dependencies form directed branches between semantic operations.
-- Nodes use only `pending`, `running`, `completed` and `failed` in v2.
+- Nodes use only `pending`, `running`, `completed` and `failed`.
 - A completed node requires real diff evidence and a passing verification.
 - Work discovered during execution joins the same graph and is labeled as discovered.
 - A secondary activity view contains investigation, commands and chronological evidence.

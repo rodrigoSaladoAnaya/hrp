@@ -123,6 +123,7 @@ export type Activity = {
   type: ActivityType;
   message: string;
   detail?: string;
+  agent?: string;
   createdAt: string;
 };
 

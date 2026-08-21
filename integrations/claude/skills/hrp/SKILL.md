@@ -99,7 +99,7 @@ ahorro del nodo ≈ salida que no escribes − (spec + revisión fiel + ~1k de c
 
 HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al aprobar.
 
-### 2b. Espera la aprobación humana (protocolo 2.1)
+### 2b. Espera la aprobación humana (protocolo 3.0)
 
 Todo nodo publicado o descubierto nace **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Tras publicar el grafo, espera el clic del humano con el comando bloqueante:
 

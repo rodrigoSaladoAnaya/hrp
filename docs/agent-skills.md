@@ -14,7 +14,7 @@ integrations/antigravity/skills/hrp/SKILL.md
 integrations/antigravity/rules/hrp.md
 ```
 
-La skill de Claude no incluye `references/agent-adapter.md` en su fuente: el instalador la genera copiando `docs/agent-adapter.md`, de modo que el contrato distribuido siempre es el vigente.
+Las skills de Claude y Antigravity no incluyen `references/` en su fuente: el instalador las genera copiando `docs/agent-adapter.md`, `docs/protocol.md` y las reglas vigentes, de modo que los contratos distribuidos siempre son los vigentes.
 
 ## Dónde vive la skill de cada agente
 
@@ -22,12 +22,12 @@ La skill de Claude no incluye `references/agent-adapter.md` en su fuente: el ins
 | --- | --- | --- |
 | Claude Code | `~/.claude/skills/hrp/` | `<workspace>/.claude/skills/hrp/` |
 | Codex | plugin `hrp@hrp-local` en la caché de Codex; la copia compatible de la skill queda en `~/.agents/skills/use-hrp/` | `<workspace>/.codex/skills/use-hrp/` o `<workspace>/.agents/skills/use-hrp/` |
-| Antigravity | `~/.gemini/config/skills/hrp/` | `<workspace>/.agents/skills/hrp/` y `<workspace>/.agents/rules/hrp.md` |
+| Antigravity | `~/.gemini/config/skills/hrp/` y `~/.gemini/config/rules/hrp.md` | `<workspace>/.agents/skills/hrp/` y `<workspace>/.agents/rules/hrp.md` |
 
 Notas:
 
 - El destino de la copia compatible de la skill de Codex puede cambiarse con `HRP_CODEX_SKILLS_DIR`; el plugin siempre se instala desde el marketplace local `integrations/codex`.
-- Las reglas globales de Antigravity viven en `~/.gemini/GEMINI.md` (archivo compartido con otras reglas del usuario); HRP no lo modifica automáticamente. Las reglas de HRP se distribuyen por workspace en `.agents/rules/hrp.md`, como hace este propio repositorio.
+- Las reglas de Antigravity se distribuyen globalmente en `~/.gemini/config/rules/hrp.md` y por workspace en `.agents/rules/hrp.md`, como hace este propio repositorio.
 - Los archivos `AGENTS.md` (global `~/.codex/AGENTS.md`, o en la raíz del workspace) son la alternativa siempre-activa para agentes sin soporte de skills; el bloque reutilizable está en `docs/agent-adapter.md`.
 - Este repositorio incluye su propia instalación local de Antigravity en `.agents/` (skills, reglas y el MCP `hrp mcp`), que sirve además como ejemplo de instalación por workspace.
 
@@ -85,4 +85,8 @@ npm install
 ./scripts/update.sh
 ```
 
-`scripts/update.sh` usa `scripts/install-codex.sh`, por lo que también reinstala el plugin. Cada versión fuente del plugin debe usar la misma base semántica que `package.json` y un único sufijo `+codex.<cachebuster>`; así Codex no conserva una copia anterior durante desarrollo local.
+`scripts/update.sh` usa `scripts/install-codex.sh`, por lo que también reinstala el plugin.
+
+## Fuente única de versión
+
+`package.json` es la fuente única de verdad para la versión semántica de HRP que gobierna el CLI (`hrp version`), el servidor MCP (`serverInfo.version`) y los componentes distribuidos. El instalador `scripts/install-codex.sh` sincroniza automáticamente el manifiesto del plugin Codex (`.codex-plugin/plugin.json`), derivando la base semántica desde `package.json` y conservando un único sufijo `+codex.<timestamp>` para invalidar la caché local de Codex sin divergir de la versión canónica del proyecto.

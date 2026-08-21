@@ -31,6 +31,12 @@ import {
 
 type Row = Record<string, unknown>;
 
+// La cobertura es opcional al publicar: omitirla conserva la ya registrada, y
+// sólo un valor explícito la reemplaza.
+export type AgentStateInput =
+  Omit<AgentWorkState, "updatedAt" | "completed" | "total" | "reviewedNodeIds" | "remainingNodeIds">
+  & Partial<Pick<AgentWorkState, "completed" | "total" | "reviewedNodeIds" | "remainingNodeIds">>;
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -142,6 +148,7 @@ export class HrpStore {
         type TEXT NOT NULL,
         message TEXT NOT NULL,
         detail TEXT,
+        agent TEXT,
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS settings (
@@ -189,6 +196,34 @@ export class HrpStore {
       CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id, created_at);
       CREATE INDEX IF NOT EXISTS finding_messages_finding ON finding_messages(finding_id, created_at);
     `);
+    const activityColumns = this.database.pragma("table_info(activity)") as Row[];
+    if (!activityColumns.some((column) => String(column.name) === "agent")) {
+      this.database.exec("ALTER TABLE activity ADD COLUMN agent TEXT");
+      this.database.exec(`
+        UPDATE activity SET agent = 'human'
+        WHERE agent IS NULL AND (
+          message LIKE 'Aprobado por el humano%'
+          OR message LIKE 'Grafo aprobado por el humano%'
+          OR message LIKE 'Asignado a %'
+          OR message LIKE 'Desasignado%'
+          OR message LIKE 'Auditores elegidos%'
+          OR message LIKE 'Ejecución pausada%'
+          OR message LIKE 'Ejecución reanudada%'
+          OR message LIKE 'Ejecución detenida%'
+        )
+      `);
+      this.database.exec(`
+        UPDATE activity SET agent = 'ollama'
+        WHERE agent IS NULL AND (
+          message LIKE 'Consulta a ollama%'
+          OR message LIKE 'Auditoría automática%'
+        )
+      `);
+      this.database.exec(`
+        UPDATE activity SET agent = substr(message, 11, instr(message, ')') - 11)
+        WHERE agent IS NULL AND type = 'node' AND message LIKE 'En curso (%'
+      `);
+    }
     const nodeColumns = this.database.pragma("table_info(nodes)") as Row[];
     if (!nodeColumns.some((column) => String(column.name) === "patch_rationale")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN patch_rationale TEXT");
@@ -224,6 +259,19 @@ export class HrpStore {
         )
         WHERE executed_by IS NULL
       `);
+    }
+    const backfillMigrationDone = this.database.prepare("SELECT 1 FROM settings WHERE key = 'activity_agent_backfill_v1'").get();
+    if (!backfillMigrationDone) {
+      this.database.exec(`
+        UPDATE activity SET agent = (
+          SELECT n.executed_by FROM nodes n
+          WHERE n.run_id = activity.run_id AND n.id = activity.node_id AND n.executed_by IS NOT NULL
+        )
+        WHERE agent IS NULL AND node_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM nodes n WHERE n.run_id = activity.run_id AND n.id = activity.node_id AND n.executed_by IS NOT NULL)
+      `);
+      this.database.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('activity_agent_backfill_v1', '\"done\"', ?)")
+        .run(new Date().toISOString());
     }
     const runColumns = this.database.pragma("table_info(runs)") as Row[];
     if (!runColumns.some((column) => String(column.name) === "base_agent")) {
@@ -319,13 +367,13 @@ export class HrpStore {
     return this.database.prepare("DELETE FROM projects WHERE id = ?").run(id).changes > 0;
   }
 
-  createRun(projectId: string, title: string, requirement: string): RunSummary {
+  createRun(projectId: string, title: string, requirement: string, agent?: string): RunSummary {
     if (!this.getProject(projectId)) throw new Error(`Unknown project: ${projectId}`);
     const id = randomUUID();
     const timestamp = now();
     this.database.prepare(`INSERT INTO runs (id, project_id, title, requirement, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(id, projectId, title, requirement, timestamp, timestamp);
-    this.addActivity(id, "run", "Ejecución creada", requirement);
+    this.addActivity(id, "run", "Ejecución creada", requirement, undefined, agent ?? "human");
     return this.getRun(id)!;
   }
 
@@ -354,6 +402,7 @@ export class HrpStore {
       type: String(row.type) as ActivityType,
       message: String(row.message),
       detail: row.detail ? String(row.detail) : undefined,
+      agent: row.agent ? String(row.agent) : undefined,
       createdAt: String(row.created_at),
     } satisfies Activity));
     const agentStates = (this.database.prepare("SELECT * FROM agent_states WHERE run_id = ? ORDER BY updated_at DESC, agent").all(id) as Row[])
@@ -389,20 +438,30 @@ export class HrpStore {
     }
     this.addActivity(runId, "run", normalized.length
       ? `Auditores elegidos: ${normalized.join(", ")}`
-      : "Auditoría desactivada para esta ejecución");
+      : "Auditoría desactivada para esta ejecución", undefined, undefined, "human");
     return this.getRun(runId)!;
   }
 
-  setAgentState(runId: string, state: Omit<AgentWorkState, "updatedAt">): AgentWorkState {
+  setAgentState(runId: string, state: AgentStateInput): AgentWorkState {
     const detail = this.getRunDetail(runId);
     if (!detail) throw new Error(`Unknown run: ${runId}`);
-    if (state.completed > state.total) throw new Error("Agent progress cannot exceed its total");
+    // Publicar una fase sin cobertura no la niega: la conserva. Distinguir
+    // "omitida" de "cero" evita que anunciar una etapa borre lo ya revisado.
+    const previous = detail.agentStates.find((candidate) => candidate.agent === state.agent);
+    const merged: Omit<AgentWorkState, "updatedAt"> = {
+      ...state,
+      completed: state.completed ?? previous?.completed ?? 0,
+      total: state.total ?? previous?.total ?? 0,
+      reviewedNodeIds: state.reviewedNodeIds ?? previous?.reviewedNodeIds ?? [],
+      remainingNodeIds: state.remainingNodeIds ?? previous?.remainingNodeIds ?? [],
+    };
+    if (merged.completed > merged.total) throw new Error("Agent progress cannot exceed its total");
     const validNodeIds = new Set(detail.nodes.map((node) => node.id));
-    const referenced = [state.currentNodeId, ...state.reviewedNodeIds, ...state.remainingNodeIds].filter(Boolean) as string[];
+    const referenced = [merged.currentNodeId, ...merged.reviewedNodeIds, ...merged.remainingNodeIds].filter(Boolean) as string[];
     const unknown = [...new Set(referenced.filter((id) => !validNodeIds.has(id)))];
     if (unknown.length) throw new Error(`Agent status references unknown nodes: ${unknown.join(", ")}`);
-    const reviewed = new Set(state.reviewedNodeIds);
-    const overlap = state.remainingNodeIds.filter((id) => reviewed.has(id));
+    const reviewed = new Set(merged.reviewedNodeIds);
+    const overlap = merged.remainingNodeIds.filter((id) => reviewed.has(id));
     if (overlap.length) throw new Error(`Agent status cannot mark nodes as reviewed and remaining: ${[...new Set(overlap)].join(", ")}`);
     const updatedAt = now();
     this.database.prepare(`
@@ -417,12 +476,12 @@ export class HrpStore {
         remaining_json = excluded.remaining_json, started_at = excluded.started_at,
         updated_at = excluded.updated_at
     `).run(
-      runId, state.agent, state.phase, state.summary, state.detail ?? null,
-      state.currentNodeId ?? null, state.completed, state.total,
-      JSON.stringify(state.reviewedNodeIds), JSON.stringify(state.remainingNodeIds),
-      state.startedAt ?? null, updatedAt,
+      runId, merged.agent, merged.phase, merged.summary, merged.detail ?? null,
+      merged.currentNodeId ?? null, merged.completed, merged.total,
+      JSON.stringify(merged.reviewedNodeIds), JSON.stringify(merged.remainingNodeIds),
+      merged.startedAt ?? null, updatedAt,
     );
-    return { ...state, updatedAt };
+    return { ...merged, updatedAt };
   }
 
   private nodesForAgent(runId: string, agent: string): ChangeNode[] {
@@ -499,7 +558,7 @@ export class HrpStore {
       }
       this.database.prepare("UPDATE runs SET graph_version = graph_version + 1, updated_at = ? WHERE id = ?").run(timestamp, runId);
     })(input.nodes);
-    this.addActivity(runId, "graph", `Mapa actualizado · ${input.nodes.length} operaciones`, `Versión ${run.graphVersion + 1}`);
+    this.addActivity(runId, "graph", `Mapa actualizado · ${input.nodes.length} operaciones`, `Versión ${run.graphVersion + 1}`, undefined, agent ?? run.baseAgent);
     const updated = this.getRunDetail(runId)!;
     for (const state of updated.agentStates.filter((candidate) => candidate.summary === "Seleccionado para auditar")) {
       const { updatedAt: _updatedAt, ...observable } = state;
@@ -515,7 +574,8 @@ export class HrpStore {
 
   addDiscoveredNode(runId: string, node: ChangeNodeInput): ChangeNode {
     this.publishGraph(runId, { nodes: [{ ...node, discovered: true }] });
-    this.addActivity(runId, "inspect", `Cambio descubierto: ${node.file} · ${node.symbol}`, node.rationale, node.id);
+    const run = this.getRun(runId);
+    this.addActivity(runId, "inspect", `Cambio descubierto: ${node.file} · ${node.symbol}`, node.rationale, node.id, run?.baseAgent);
     // Un descubierto sugerido para otro modelo (p. ej. ollama) respeta esa
     // sugerencia; el resto vuelve al modelo base para no esperar a nadie.
     const baseAgent = this.getRun(runId)?.baseAgent;
@@ -560,8 +620,8 @@ export class HrpStore {
     const update = this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?");
     for (const node of pending) update.run(timestamp, runId, node.id);
     this.touchRun(runId, timestamp);
-    if (pending.length === 1) this.addActivity(runId, "node", `Aprobado por el humano: ${pending[0].file} · ${pending[0].symbol}`, undefined, pending[0].id);
-    else this.addActivity(runId, "graph", `Grafo aprobado por el humano · ${pending.length} operaciones`);
+    if (pending.length === 1) this.addActivity(runId, "node", `Aprobado por el humano: ${pending[0].file} · ${pending[0].symbol}`, undefined, pending[0].id, "human");
+    else this.addActivity(runId, "graph", `Grafo aprobado por el humano · ${pending.length} operaciones`, undefined, undefined, "human");
     return pending.map((node) => this.requireNode(runId, node.id));
   }
 
@@ -575,7 +635,7 @@ export class HrpStore {
     this.touchRun(runId, timestamp);
     this.addActivity(runId, "node", normalized
       ? `Asignado a ${normalized}: ${node.file} · ${node.symbol}`
-      : `Asignación retirada: ${node.file} · ${node.symbol}`, undefined, nodeId);
+      : `Asignación retirada: ${node.file} · ${node.symbol}`, undefined, nodeId, "human");
     return this.requireNode(runId, nodeId);
   }
 
@@ -592,7 +652,7 @@ export class HrpStore {
       paused: "Ejecución pausada por el humano: ningún agente puede iniciar nodos hasta reanudar",
       stopped: "Ejecución detenida por el humano: los agentes deben cerrar ordenadamente",
     };
-    this.addActivity(runId, "run", copy[control]);
+    this.addActivity(runId, "run", copy[control], undefined, undefined, "human");
     return this.getRun(runId)!;
   }
 
@@ -629,7 +689,8 @@ export class HrpStore {
         startedAt: now(),
       });
     }
-    this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId);
+    const effectiveAgent = agent ?? node.assignee ?? run.baseAgent;
+    this.addActivity(runId, "node", `En curso${agent ? ` (${agent})` : ""}: ${node.file} · ${node.symbol}`, node.description, nodeId, effectiveAgent);
     return this.requireNode(runId, nodeId);
   }
 
@@ -658,7 +719,8 @@ export class HrpStore {
     this.database.prepare("UPDATE nodes SET diff = ?, patch_summary = ?, patch_rationale = ?, updated_at = ? WHERE run_id = ? AND id = ?")
       .run(diff, summary, rationale?.trim() || null, timestamp, runId, nodeId);
     this.touchRun(runId, timestamp);
-    this.addActivity(runId, "patch", `Diff aplicado: ${node.file} · ${node.symbol}`, summary, nodeId);
+    const nodeAgent = node.executedBy ?? node.assignee ?? this.getRun(runId)?.baseAgent;
+    this.addActivity(runId, "patch", `Diff aplicado: ${node.file} · ${node.symbol}`, summary, nodeId, nodeAgent);
     return this.requireNode(runId, nodeId);
   }
 
@@ -668,7 +730,8 @@ export class HrpStore {
     this.database.prepare("UPDATE nodes SET verification_json = ?, status = ?, updated_at = ? WHERE run_id = ? AND id = ?")
       .run(JSON.stringify(result), result.passed ? node.status : "failed", result.observedAt, runId, nodeId);
     this.touchRun(runId, result.observedAt);
-    this.addActivity(runId, "verify", `${result.passed ? "Verificación aprobada" : "Verificación fallida"}: ${verification.command}`, verification.output, nodeId);
+    const nodeAgent = node.executedBy ?? node.assignee ?? this.getRun(runId)?.baseAgent;
+    this.addActivity(runId, "verify", `${result.passed ? "Verificación aprobada" : "Verificación fallida"}: ${verification.command}`, verification.output, nodeId, nodeAgent);
     if (!result.passed && node.executedBy) {
       const assigned = this.nodesForAgent(runId, node.executedBy);
       this.setAgentState(runId, {
@@ -698,7 +761,8 @@ export class HrpStore {
     }
     this.updateNodeStatus(runId, nodeId, "completed");
     const tokensNote = tokens != null ? ` · ~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens` : "";
-    this.addActivity(runId, "node", `Terminado: ${node.file} · ${node.symbol}${tokensNote}`, node.patchSummary, nodeId);
+    const nodeAgent = node.executedBy ?? node.assignee ?? this.getRun(runId)?.baseAgent;
+    this.addActivity(runId, "node", `Terminado: ${node.file} · ${node.symbol}${tokensNote}`, node.patchSummary, nodeId, nodeAgent);
     if (node.executedBy) {
       const assigned = this.nodesForAgent(runId, node.executedBy);
       const completed = assigned.filter((candidate) => candidate.status === "completed").length;
@@ -750,7 +814,7 @@ export class HrpStore {
       INSERT INTO findings (id, run_id, node_id, reviewer, severity, title, body, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
     `).run(id, runId, input.nodeId ?? null, input.reviewer, input.severity, input.title, input.body, timestamp, timestamp);
-    this.addActivity(runId, "note", `Hallazgo de ${input.reviewer} (${input.severity}): ${input.title}`, input.body, input.nodeId);
+    this.addActivity(runId, "note", `Hallazgo de ${input.reviewer} (${input.severity}): ${input.title}`, input.body, input.nodeId, input.reviewer);
     return this.requireFinding(id);
   }
 
@@ -779,7 +843,7 @@ export class HrpStore {
     // terminales y escalated no retroceden por seguir conversando.
     const status = finding.status === "open" ? "debating" : finding.status;
     this.database.prepare("UPDATE findings SET status = ?, updated_at = ? WHERE id = ?").run(status, timestamp, findingId);
-    this.addActivity(finding.runId, "note", `Debate (${author}): ${finding.title}`, body, finding.nodeId);
+    this.addActivity(finding.runId, "note", `Debate (${author}): ${finding.title}`, body, finding.nodeId, author);
     return this.requireFinding(findingId);
   }
 
@@ -797,6 +861,7 @@ export class HrpStore {
     // corrida. Los nodos ajenos al debate conservan el gate humano intacto.
     // Todo dentro de una transacción: el hallazgo no puede quedar accepted con
     // su nodo sin aprobar si algo falla a la mitad.
+    const baseAgent = this.getRun(finding.runId)?.baseAgent;
     this.database.transaction(() => {
       this.database.prepare("UPDATE findings SET status = ?, resolution_node_id = COALESCE(?, resolution_node_id), updated_at = ? WHERE id = ?")
         .run(status, resolutionNodeId ?? null, now(), findingId);
@@ -810,9 +875,9 @@ export class HrpStore {
           if (resolutionNode.discovered) {
             this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?")
               .run(now(), finding.runId, resolvedNodeId);
-            this.addActivity(finding.runId, "node", `Corrección autorizada por la aceptación del hallazgo (agente base): ${resolvedNodeId}`, finding.title, resolvedNodeId);
+            this.addActivity(finding.runId, "node", `Corrección autorizada por la aceptación del hallazgo (agente base): ${resolvedNodeId}`, finding.title, resolvedNodeId, baseAgent);
           } else {
-            this.addActivity(finding.runId, "node", `La corrección vinculada pertenece al plan inicial y conserva el gate humano: ${resolvedNodeId}`, finding.title, resolvedNodeId);
+            this.addActivity(finding.runId, "node", `La corrección vinculada pertenece al plan inicial y conserva el gate humano: ${resolvedNodeId}`, finding.title, resolvedNodeId, "human");
           }
         }
       }
@@ -824,7 +889,7 @@ export class HrpStore {
         escalated: "Hallazgo escalado al humano",
       };
       const resolutionNote = resolutionNodeId ? ` · corrección: ${resolutionNodeId}` : "";
-      this.addActivity(finding.runId, "note", `${labels[status]}: ${finding.title}${resolutionNote}`, undefined, finding.nodeId);
+      this.addActivity(finding.runId, "note", `${labels[status]}: ${finding.title}${resolutionNote}`, undefined, finding.nodeId, baseAgent);
     })();
     return this.requireFinding(findingId);
   }
@@ -856,12 +921,12 @@ export class HrpStore {
     });
   }
 
-  addActivity(runId: string, type: ActivityType, message: string, detail?: string, nodeId?: string): Activity {
+  addActivity(runId: string, type: ActivityType, message: string, detail?: string, nodeId?: string, agent?: string): Activity {
     const createdAt = now();
-    const result = this.database.prepare("INSERT INTO activity (run_id, node_id, type, message, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(runId, nodeId ?? null, type, message, detail ?? null, createdAt);
+    const result = this.database.prepare("INSERT INTO activity (run_id, node_id, type, message, detail, agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(runId, nodeId ?? null, type, message, detail ?? null, agent ?? null, createdAt);
     this.touchRun(runId, createdAt);
-    return { id: Number(result.lastInsertRowid), runId, nodeId, type, message, detail, createdAt };
+    return { id: Number(result.lastInsertRowid), runId, nodeId, type, message, detail, agent: agent ?? undefined, createdAt };
   }
 
   private runFromRow(row: Row): RunSummary {

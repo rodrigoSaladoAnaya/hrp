@@ -1,6 +1,6 @@
-# Diseño de HRP v2
+# Diseño de HRP v3
 
-Este documento describe el sistema visual y de interacción vigente de Human Review Protocol v2. Es una referencia para mantener coherencia al extender la interfaz; la intención del producto y sus límites funcionales siguen definidos en `PRODUCT.md`.
+Este documento describe el sistema visual y de interacción vigente de Human Review Protocol v3. Es una referencia para mantener coherencia al extender la interfaz; la intención del producto y sus límites funcionales siguen definidos en `PRODUCT.md`.
 
 ## Tesis visual
 
@@ -145,19 +145,16 @@ El movimiento sirve sólo para indicar actividad:
 
 No se usan animaciones de entrada, fondos decorativos en movimiento ni efectos que compitan con la lectura causal.
 
-## Límites de v2
+## Límites actuales
 
-HRP v2 es una superficie local, de un solo usuario y completamente automática. Esta versión:
+HRP v3 es una superficie local y de un solo usuario. Esta versión:
 
 - no incluye modos `REVISAR`, `OBSERVAR` o `AUTO` por nodo;
-- no detiene al agente en gates humanos;
-- no recibe aprobaciones, rechazos ni observaciones dirigidas;
-- no presenta políticas de revisión ni controles de pausa;
 - no almacena ni solicita cadena de pensamiento;
 - no depende de Codex, Claude, Gemini, skills o MCP;
 - no convierte el historial cronológico en el modelo principal de navegación.
 
-Esas capacidades pueden añadirse en una etapa posterior, pero no deben contaminar la claridad de esta base. Antes de incorporar gates, la prioridad es que cada operación sea granular, causal, seleccionable y verificable.
+Las capacidades de aprobación, pausa y revisión deben reforzar la claridad de esta base: cada operación sigue siendo granular, causal, seleccionable y verificable.
 
 ## Reglas para futuras extensiones
 

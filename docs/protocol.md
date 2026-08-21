@@ -1,4 +1,6 @@
-# Protocolo neutral 2.1
+# Protocolo neutral HRP v3
+
+La version observable del protocolo la publica `PROTOCOL_VERSION` en `src/shared/protocol.ts` y el endpoint `/api/health`.
 
 HRP no solicita ni almacena el razonamiento interno de un modelo. Un adaptador publica explicaciones operativas y evidencia observable.
 

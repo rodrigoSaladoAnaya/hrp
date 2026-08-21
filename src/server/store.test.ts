@@ -434,5 +434,84 @@ describe("HrpStore", () => {
       expect(store.runReviewGate(run.id)).toHaveLength(1);
       expect(store.pendingAuditors(run.id)).toHaveLength(0);
     });
+
+    it("keeps the published coverage when a later status omits it", () => {
+      const { store, run } = reviewFixture();
+      store.setRunAuditors(run.id, ["claude"]);
+      store.setAgentState(run.id, {
+        agent: "claude",
+        phase: "reviewing",
+        summary: "Auditando el run",
+        completed: 1,
+        total: 1,
+        reviewedNodeIds: ["uno"],
+        remainingNodeIds: [],
+      });
+
+      const closed = store.setAgentState(run.id, { agent: "claude", phase: "completed", summary: "Auditoría terminada" });
+      expect(closed).toMatchObject({ completed: 1, total: 1, reviewedNodeIds: ["uno"], remainingNodeIds: [] });
+      expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "claude")?.reviewedNodeIds).toEqual(["uno"]);
+      expect(store.pendingAuditors(run.id)).toHaveLength(0);
+
+      const reopened = store.setAgentState(run.id, {
+        agent: "claude", phase: "reviewing", summary: "Nueva pasada", completed: 0, reviewedNodeIds: [], remainingNodeIds: ["uno"],
+      });
+      expect(reopened).toMatchObject({ completed: 0, total: 1, reviewedNodeIds: [], remainingNodeIds: ["uno"] });
+
+      // Las validaciones miran la cobertura fusionada, no sólo lo recibido.
+      expect(() => store.setAgentState(run.id, { agent: "claude", phase: "reviewing", summary: "Solape", reviewedNodeIds: ["uno"] }))
+        .toThrow(/reviewed and remaining/);
+      expect(() => store.setAgentState(run.id, { agent: "claude", phase: "reviewing", summary: "Exceso", completed: 5 }))
+        .toThrow(/exceed its total/);
+    });
+
+    it("persists and returns the agent associated with activity events", () => {
+      const { store, run } = reviewFixture();
+      const activity = store.addActivity(run.id, "note", "Prueba de autor", "Detalle de prueba", undefined, "antigravity");
+      expect(activity.agent).toBe("antigravity");
+
+      const detail = store.getRunDetail(run.id);
+      const found = detail?.activity.find((item) => item.id === activity.id);
+      expect(found?.agent).toBe("antigravity");
+      expect(found?.message).toBe("Prueba de autor");
+    });
+
+    it("attributes node lifecycle and human actions to the corresponding agent in activity", () => {
+      const { store, run } = reviewFixture();
+      store.publishGraph(run.id, { nodes: [
+        { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
+        { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
+      ] }, "base-model");
+      store.approveNodes(run.id);
+
+      // Human actions (approval, assign, control, set auditors)
+      expect(store.getRunDetail(run.id)?.activity.some((item) => item.agent === "human" && item.message.toLowerCase().includes("aprobado"))).toBe(true);
+
+      // Node executed with explicit agent
+      store.startNode(run.id, "uno", "worker-1");
+      store.publishPatch(run.id, "uno", "Parche worker", "@@ A.ts\n+1");
+      store.publishVerification(run.id, "uno", { command: "test", output: "ok", exitCode: 0 });
+      store.completeNode(run.id, "uno");
+
+      const detail = store.getRunDetail(run.id)!;
+      const workerEvents = detail.activity.filter((item) => item.nodeId === "uno" && !item.message.includes("Aprobado"));
+      expect(workerEvents.length).toBeGreaterThanOrEqual(4);
+      for (const event of workerEvents) {
+        expect(event.agent).toBe("worker-1");
+      }
+
+      // Node executed without explicit agent (should fallback to baseAgent)
+      store.startNode(run.id, "dos");
+      store.publishPatch(run.id, "dos", "Parche base", "@@ B.ts\n+2");
+      store.publishVerification(run.id, "dos", { command: "test2", output: "ok", exitCode: 0 });
+      store.completeNode(run.id, "dos");
+
+      const detail2 = store.getRunDetail(run.id)!;
+      const baseEvents = detail2.activity.filter((item) => item.nodeId === "dos" && !item.message.includes("Aprobado"));
+      expect(baseEvents.length).toBeGreaterThanOrEqual(4);
+      for (const event of baseEvents) {
+        expect(event.agent).toBe("base-model");
+      }
+    });
   });
 });

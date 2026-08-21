@@ -1,5 +1,25 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { type Readable, type Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { executeHrpTool, HrpMcpClient, hrpToolDefinitions } from "./tools.js";
+
+export const PACKAGE_VERSION: string = (() => {
+  try {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    let cur = dir;
+    for (let depth = 0; depth < 5; depth += 1) {
+      const pkgPath = path.join(cur, "package.json");
+      if (existsSync(pkgPath)) {
+        return JSON.parse(readFileSync(pkgPath, "utf8")).version;
+      }
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  } catch {}
+  return "unknown";
+})();
 
 type JsonRpcRequest = {
   jsonrpc: "2.0";
@@ -43,7 +63,7 @@ export class HrpMcpServer {
               },
               serverInfo: {
                 name: "hrp-mcp",
-                version: "3.2.0",
+                version: PACKAGE_VERSION,
               },
             },
           };

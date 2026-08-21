@@ -170,7 +170,11 @@ const skillAgents = {
   antigravity: {
     source: path.join(root, "integrations/antigravity/skills/hrp"),
     target: path.join(os.homedir(), ".gemini", "config", "skills", "hrp"),
-    extras: [],
+    extras: [
+      { from: path.join(root, "docs/agent-adapter.md"), to: "references/agent-adapter.md" },
+      { from: path.join(root, "docs/protocol.md"), to: "references/protocol.md" },
+      { from: path.join(root, "integrations/antigravity/rules/hrp.md"), to: "references/hrp-rules.md" },
+    ],
   },
 };
 
@@ -226,6 +230,14 @@ function installSkill(name, spec) {
   writeFileSync(path.join(staging, skillReceipt), `${spec.source}\n`);
   rmSync(spec.target, { recursive: true, force: true });
   renameSync(staging, spec.target);
+  if (name === "antigravity") {
+    const rulesSource = path.join(root, "integrations/antigravity/rules/hrp.md");
+    if (existsSync(rulesSource)) {
+      const globalRulesDir = path.join(os.homedir(), ".gemini", "config", "rules");
+      mkdirSync(globalRulesDir, { recursive: true });
+      cpSync(rulesSource, path.join(globalRulesDir, "hrp.md"));
+    }
+  }
   return ownership === "owned" ? "actualizada" : "instalada";
 }
 
@@ -264,7 +276,7 @@ Uso:
   hrp patch publish <run-id> <node-id> --summary TEXTO [--rationale TEXTO] --diff-file PATH|-
   hrp verify run <run-id> <node-id> -- <comando> [args...]
   hrp node complete <run-id> <node-id> [--tokens N]
-  hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID]
+  hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID] [--agent NOMBRE]
   hrp agent status <run-id> --agent NOMBRE --phase idle|waiting|executing|reviewing|completed|failed --summary TEXTO [--detail TEXTO] [--node ID] [--completed N --total N --reviewed ID,ID --remaining ID,ID]
   hrp ollama status
   hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
@@ -330,7 +342,10 @@ async function main() {
 
   if (group === "run" && action === "create") {
     const projectId = await resolveProject(value("--project"));
-    const run = await api(`/api/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify({ title: value("--title"), requirement: value("--requirement") }) });
+    const agent = value("--agent") ?? value("--author");
+    const body = { title: value("--title"), requirement: value("--requirement") };
+    if (agent) body.agent = agent;
+    const run = await api(`/api/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify(body) });
     return print(run);
   }
   if (group === "run" && action === "list") {
@@ -396,6 +411,7 @@ async function main() {
   if (group === "activity" && action === "publish") {
     return print(await api(`/api/runs/${first}/activity`, { method: "POST", body: JSON.stringify({
       type: value("--type", "note"), message: value("--summary"), detail: value("--detail"), nodeId: value("--node"),
+      agent: value("--agent") ?? value("--author"),
     }) }));
   }
   if (group === "agent" && action === "status") {
@@ -404,14 +420,19 @@ async function main() {
     const summary = value("--summary");
     if (!first || !agent || !phase || !summary) throw new Error("Uso: hrp agent status <run-id> --agent NOMBRE --phase FASE --summary TEXTO");
     const splitIds = (name) => (value(name) ?? "").split(",").map((item) => item.trim()).filter(Boolean);
-    const body = {
-      phase,
-      summary,
-      completed: Number(value("--completed", "0")),
-      total: Number(value("--total", "0")),
-      reviewedNodeIds: splitIds("--reviewed"),
-      remainingNodeIds: splitIds("--remaining"),
+    const count = (name) => {
+      const parsed = Number(value(name));
+      if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${name} espera un entero no negativo`);
+      return parsed;
     };
+    // Una bandera ausente no declara cobertura cero: omitirla conserva la que
+    // el agente ya publicó, y sólo la bandera presente la reemplaza. Enviar
+    // ceros por defecto borraba lo revisado al anunciar una fase nueva.
+    const body = { phase, summary };
+    if (flag("--completed")) body.completed = count("--completed");
+    if (flag("--total")) body.total = count("--total");
+    if (flag("--reviewed")) body.reviewedNodeIds = splitIds("--reviewed");
+    if (flag("--remaining")) body.remainingNodeIds = splitIds("--remaining");
     if (value("--detail")) body.detail = value("--detail");
     if (value("--node")) body.currentNodeId = value("--node");
     return print(await api(`/api/runs/${encodeURIComponent(first)}/agents/${encodeURIComponent(agent)}/status`, { method: "PUT", body: JSON.stringify(body) }));
@@ -503,7 +524,7 @@ async function main() {
         const remaining = auditorState?.remainingNodeIds.length
           ? auditorState.remainingNodeIds
           : detail.nodes.map((node) => node.id);
-        return print(`Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${first} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${auditorState?.completed ?? 0} --total ${detail.nodes.length}${reviewedFlag} --remaining ${remaining.join(",")}', obtén el contexto con 'hrp review pack ${first}', registra o debate hallazgos y al cubrir todos los nodos publica phase completed con --reviewed y --remaining vacíos.`);
+        return print(`Auditoría disponible para ${agent}. Publica el inicio con 'hrp agent status ${first} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" --completed ${auditorState?.completed ?? 0} --total ${detail.nodes.length}${reviewedFlag} --remaining ${remaining.join(",")}', obtén el contexto con 'hrp review pack ${first}', registra o debate hallazgos y, al cubrir todos los nodos, cierra con phase completed llevando --reviewed con los ${detail.nodes.length} nodos y --remaining vacío.`);
       }
       // Los nodos sin asignación pertenecen exclusivamente al modelo base. Los
       // asignados a ollama también los administra el base porque no abren sesión.
@@ -647,7 +668,9 @@ async function main() {
       // reviewer ollama:<modelo>. Nunca edita código ni inventa problemas.
       if (!first) throw new Error("Uso: hrp ollama review <run-id> [--node ID] [--model MODELO]");
       const nodeId = value("--node");
-      const query = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "";
+      const params = new URLSearchParams({ agent: "ollama" });
+      if (nodeId) params.set("nodeId", nodeId);
+      const query = `?${params}`;
       const packResponse = await fetch(`${url}/api/runs/${encodeURIComponent(first)}/review-pack${query}`)
         .catch((error) => { throw new Error(`HRP no responde en ${url}: ${error.message}`); });
       if (!packResponse.ok) {
@@ -772,9 +795,13 @@ async function main() {
   if (group === "review" && action === "pack") {
     // El pack es markdown, no JSON: se imprime crudo para copiarlo tal cual a
     // la sesión del modelo revisor (o canalizarlo a un archivo).
-    if (!first) throw new Error("Uso: hrp review pack <run-id> [--node ID]");
+    if (!first) throw new Error("Uso: hrp review pack <run-id> [--node ID] [--agent AGENTE]");
     const nodeId = value("--node");
-    const query = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : "";
+    const agent = value("--agent") ?? value("--author");
+    const params = new URLSearchParams();
+    if (nodeId) params.set("nodeId", nodeId);
+    if (agent) params.set("agent", agent);
+    const query = params.toString() ? `?${params}` : "";
     const response = await fetch(`${url}/api/runs/${encodeURIComponent(first)}/review-pack${query}`)
       .catch((error) => { throw new Error(`HRP no responde en ${url}: ${error.message}`); });
     if (!response.ok) {

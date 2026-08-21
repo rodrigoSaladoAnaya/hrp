@@ -151,7 +151,7 @@ export function createApp(store: HrpStore) {
         try {
           const tokens = body.prompt_eval_count != null || body.eval_count != null
             ? ` · ${body.prompt_eval_count ?? "?"} prompt + ${body.eval_count ?? "?"} respuesta tokens` : "";
-          store.addActivity(input.runId, "note", `Consulta a ollama (${body.model ?? model})${tokens}`, undefined, input.nodeId);
+          store.addActivity(input.runId, "note", `Consulta a ollama (${body.model ?? model})${tokens}`, undefined, input.nodeId, "ollama");
           broadcast(store.getRun(input.runId)!.projectId, input.runId, "activity-published");
         } catch { /* la auditoría nunca debe tumbar la consulta */ }
       }
@@ -188,8 +188,8 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/projects/:projectId/runs", (request, response, next) => {
     try {
-      const input = z.object({ title: z.string().min(1), requirement: z.string().min(1) }).strict().parse(request.body);
-      const run = store.createRun(request.params.projectId, input.title, input.requirement);
+      const input = z.object({ title: z.string().min(1), requirement: z.string().min(1), agent: z.string().min(1).optional() }).strict().parse(request.body);
+      const run = store.createRun(request.params.projectId, input.title, input.requirement, input.agent);
       broadcast(run.projectId, run.id, "run-created");
       response.status(201).json(run);
     } catch (error) { next(error); }
@@ -263,10 +263,10 @@ export function createApp(store: HrpStore) {
         summary: z.string().min(1),
         detail: z.string().optional(),
         currentNodeId: z.string().min(1).optional(),
-        completed: z.number().int().nonnegative().default(0),
-        total: z.number().int().nonnegative().default(0),
-        reviewedNodeIds: z.array(z.string()).default([]),
-        remainingNodeIds: z.array(z.string()).default([]),
+        completed: z.number().int().nonnegative().optional(),
+        total: z.number().int().nonnegative().optional(),
+        reviewedNodeIds: z.array(z.string()).optional(),
+        remainingNodeIds: z.array(z.string()).optional(),
         startedAt: z.iso.datetime().optional(),
       }).strict().parse(request.body);
       const run = store.helloAgent(request.params.runId, request.params.agent);
@@ -275,15 +275,25 @@ export function createApp(store: HrpStore) {
       const startedAt = input.startedAt ?? (input.phase === "reviewing"
         ? (previous?.phase === "reviewing" ? previous.startedAt : undefined) ?? new Date().toISOString()
         : input.phase === "completed" ? previous?.startedAt : undefined);
+      // Un campo ausente no declara cobertura cero: la que cuenta es la
+      // efectiva, ya fusionada con lo que el agente publicó antes.
+      const coverage = {
+        completed: input.completed ?? previous?.completed ?? 0,
+        total: input.total ?? previous?.total ?? 0,
+        reviewedNodeIds: input.reviewedNodeIds ?? previous?.reviewedNodeIds ?? [],
+        remainingNodeIds: input.remainingNodeIds ?? previous?.remainingNodeIds ?? [],
+      };
       if (run.auditors.includes(request.params.agent) && input.phase === "completed") {
         const expected = new Set(detail.nodes.map((node) => node.id));
-        const reviewed = new Set(input.reviewedNodeIds);
-        const completeCoverage = input.completed === expected.size
-          && input.total === expected.size
-          && input.remainingNodeIds.length === 0
-          && reviewed.size === expected.size
-          && [...expected].every((nodeId) => reviewed.has(nodeId));
-        if (!completeCoverage) throw new Error("An auditor can only complete after reviewing every current node with no remaining coverage");
+        const reviewed = new Set(coverage.reviewedNodeIds);
+        const unreviewed = [...expected].filter((nodeId) => !reviewed.has(nodeId));
+        const gaps = [
+          unreviewed.length ? `unreviewed nodes: ${unreviewed.join(", ")}` : "",
+          coverage.remainingNodeIds.length ? `still marked remaining: ${coverage.remainingNodeIds.join(", ")}` : "",
+          coverage.completed !== expected.size ? `completed is ${coverage.completed}, expected ${expected.size}` : "",
+          coverage.total !== expected.size ? `total is ${coverage.total}, expected ${expected.size}` : "",
+        ].filter(Boolean);
+        if (gaps.length) throw new Error(`An auditor can only complete with full coverage of the ${expected.size} current nodes (${gaps.join("; ")})`);
         if (!startedAt || detail.nodes.some((node) => node.updatedAt > startedAt)) {
           throw new Error("Auditor coverage predates the latest node change; publish phase reviewing again before completion");
         }
@@ -291,6 +301,7 @@ export function createApp(store: HrpStore) {
       const state = store.setAgentState(request.params.runId, {
         agent: request.params.agent,
         ...input,
+        ...coverage,
         startedAt,
       });
       broadcast(run.projectId, run.id, "agent-status");
@@ -389,8 +400,9 @@ export function createApp(store: HrpStore) {
     try {
       const input = z.object({
         type: z.enum(activityTypes), message: z.string().min(1), detail: z.string().optional(), nodeId: z.string().optional(),
+        agent: z.string().min(1).optional(),
       }).strict().parse(request.body);
-      const activity = store.addActivity(request.params.runId, input.type, input.message, input.detail, input.nodeId);
+      const activity = store.addActivity(request.params.runId, input.type, input.message, input.detail, input.nodeId, input.agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "activity-published");
       response.status(201).json(activity);
     } catch (error) { next(error); }
@@ -449,8 +461,9 @@ export function createApp(store: HrpStore) {
   app.get("/api/runs/:runId/review-pack", (request, response, next) => {
     try {
       const nodeId = typeof request.query.nodeId === "string" ? request.query.nodeId : undefined;
+      const agent = typeof request.query.agent === "string" ? request.query.agent : (typeof request.headers["x-agent"] === "string" ? request.headers["x-agent"] : undefined);
       const pack = buildReviewPack(store, request.params.runId, nodeId);
-      store.addActivity(request.params.runId, "note", `Paquete de revisión generado${nodeId ? ` · subárbol ${nodeId}` : ""}`, undefined, nodeId);
+      store.addActivity(request.params.runId, "note", `Paquete de revisión generado${nodeId ? ` · subárbol ${nodeId}` : ""}`, undefined, nodeId, agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "activity-published");
       response.type("text/markdown").send(pack);
     } catch (error) { next(error); }

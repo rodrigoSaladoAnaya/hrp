@@ -233,13 +233,13 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
       return 1;
     };
     if (!settings.apiKey) {
-      store.addActivity(runId, "note", "Auditoría automática omitida: ollama no está configurado");
+      store.addActivity(runId, "note", "Auditoría automática omitida: ollama no está configurado", undefined, undefined, "ollama");
       publishProgress("failed", "No se pudo iniciar la auditoría", { detail: "Falta configurar la API key de Ollama Cloud." });
       finish(marker);
       return undefined;
     }
     if (detail.run.baseAgent && detail.run.baseAgent === `ollama:${settings.model}`) {
-      store.addActivity(runId, "note", "Auditoría automática omitida: el auditor no puede ser el mismo modelo que el base");
+      store.addActivity(runId, "note", "Auditoría automática omitida: el auditor no puede ser el mismo modelo que el base", undefined, undefined, "ollama");
       publishProgress("failed", "Auditor inválido", { detail: "El modelo auditor coincide con el modelo base de la ejecución." });
       const created = blockingOmission(
         "Auditoría pendiente: el auditor no puede ser el mismo modelo que el base",
@@ -250,7 +250,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     }
     const pack = buildReviewPack(store, runId);
     if (pack.length > 200_000) {
-      store.addActivity(runId, "note", "Auditoría automática omitida: el paquete excede 200KB; audita por subárbol con 'hrp ollama review --node'");
+      store.addActivity(runId, "note", "Auditoría automática omitida: el paquete excede 200KB; audita por subárbol con 'hrp ollama review --node'", undefined, undefined, "ollama");
       publishProgress("failed", "El paquete excede el límite de Ollama", { detail: "Divide la auditoría por subárboles para cubrir el grafo completo." });
       const created = blockingOmission(
         "Auditoría pendiente: el paquete excede 200KB",
@@ -272,7 +272,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     publishProgress("reviewing", `Esperando a ${settings.model}`, {
       detail: `Paquete enviado con ${coveredNodeIds.length} ${coveredNodeIds.length === 1 ? "operación" : "operaciones"}. HRP confirmará la cobertura cuando el modelo responda.`,
     });
-    store.addActivity(runId, "note", `Auditoría automática iniciada (${settings.model}) · ${coveredNodeIds.length} operaciones en el paquete`);
+    store.addActivity(runId, "note", `Auditoría automática iniciada (${settings.model}) · ${coveredNodeIds.length} operaciones en el paquete`, undefined, undefined, "ollama");
     const upstream = await upstreamJson(
       `${settings.baseUrl}/api/chat`,
       { "content-type": "application/json", authorization: `Bearer ${settings.apiKey}` },
@@ -288,7 +288,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     const model = body.model ?? settings.model;
     const tokens = body.prompt_eval_count != null || body.eval_count != null
       ? ` · ${body.prompt_eval_count ?? "?"} prompt + ${body.eval_count ?? "?"} respuesta tokens` : "";
-    store.addActivity(runId, "note", `Consulta a ollama (${model}) · auditoría automática${tokens}`);
+    store.addActivity(runId, "note", `Consulta a ollama (${model}) · auditoría automática${tokens}`, undefined, undefined, "ollama");
     publishProgress("reviewing", `Procesando la respuesta de ${model}`, {
       detail: "La respuesta llegó; HRP está validando el formato y registrando los hallazgos.",
     });
@@ -297,13 +297,13 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
     // relajar lo que se acepta como contenido.
     const answer = unwrapFence(String(body.message?.content ?? "").trim());
     if (answer.startsWith("NECESITO:")) {
-      store.addActivity(runId, "note", `Auditoría automática detenida — ${answer.split("\n")[0]}`);
+      store.addActivity(runId, "note", `Auditoría automática detenida — ${answer.split("\n")[0]}`, undefined, undefined, "ollama");
       publishProgress("failed", `${model} pidió más contexto`, { detail: answer.split("\n")[0] });
       finish(marker);
       return undefined;
     }
     if (answer === "SIN-HALLAZGOS") {
-      store.addActivity(runId, "note", `Auditoría automática (${model}): sin hallazgos`);
+      store.addActivity(runId, "note", `Auditoría automática (${model}): sin hallazgos`, undefined, undefined, "ollama");
       publishProgress("completed", `Auditoría terminada por ${model}`, {
         detail: "El modelo cubrió el paquete completo y no reportó problemas reales.",
         completed: coveredNodeIds.length,
@@ -341,7 +341,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
         });
         created += 1;
       }
-      store.addActivity(runId, "note", `Auditoría automática (${model}): ${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"}`);
+      store.addActivity(runId, "note", `Auditoría automática (${model}): ${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"}`, undefined, undefined, "ollama");
     })();
     publishProgress("completed", `Auditoría terminada por ${model}`, {
       detail: `${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"}.`,
@@ -354,7 +354,7 @@ export async function runAutoReview(store: HrpStore, runId: string, options: { f
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {
-      store.addActivity(runId, "note", `Auditoría automática falló: ${message}`);
+      store.addActivity(runId, "note", `Auditoría automática falló: ${message}`, undefined, undefined, "ollama");
       if (store.getRun(runId)?.auditors.includes("ollama")) {
         const failedDetail = store.getRunDetail(runId);
         const remaining = failedDetail?.nodes.filter((node) => node.status === "completed").map((node) => node.id) ?? [];

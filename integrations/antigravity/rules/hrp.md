@@ -1,4 +1,4 @@
-# Reglas de Integración con Human Review Protocol (HRP v2.2)
+# Reglas de Integración con Human Review Protocol (HRP v3)
 
 Cuando interactúes con tareas que utilicen HRP o en proyectos gestionados por HRP, debes seguir estrictamente estas directrices:
 
@@ -29,4 +29,13 @@ Cuando interactúes con tareas que utilicen HRP o en proyectos gestionados por H
 
 ## 5. Gestión de Fallos y Descubrimientos
 - Si una verificación falla, no crees una nueva ejecución: reintenta el mismo nodo (`retry`), aplica la corrección y vuelve a verificar.
-- Si descubres trabajo imprevisto durante la ejecución, regístralo como nodo descubierto (`discover`), no lo ocultes en el nodo actual. Los descubiertos se auto-asignan al modelo base y también esperan aprobación humana.
+- Si descubres trabajo imprevisto durante la ejecución, regístralo como nodo descubierto (`discover`), no lo ocultes en el nodo actual. Los descubiertos se auto-asignan al modelo base y también esperan aprobación humana salvo cuando nacen de la aceptación de un hallazgo.
+
+## 6. Auditoría Multi-Modelo y Cierre (Protocolo v3)
+- Al completar los nodos asignados, el modelo base no da por cerrada la tarea de inmediato.
+- Permanece esperando (`hrp wait approval <run> --agent antigravity` o consultando el estado de la ejecución) mientras haya auditores en `run.auditors` revisando (`waiting`, `reviewing`).
+- Cuando se publiquen hallazgos:
+  - Atiende los hallazgos prioritariamente antes de cerrar la tarea.
+  - Si procede: acéptalo registrando el nodo descubierto (`hrp node discover`) y vinculándolo con `hrp finding accept <id> --resolution-node <node-id>`, el cual queda autorizado automáticamente. Aplica el diff, verifica y completa el nodo.
+  - Si no procede: recházalo justificando técnicamente con `hrp finding reject <id> --author antigravity --body ...`.
+- El cierre de la tarea solo es válido cuando `hrp review gate <run>` pasa exitosamente (sin hallazgos vivos ni `pendingAuditors`).

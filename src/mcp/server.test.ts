@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { EventEmitter, PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { HrpMcpServer } from "./server.js";
 import { HrpMcpClient, hrpToolDefinitions } from "./tools.js";
+
+const EXPECTED_PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 class MockHrpMcpClient extends HrpMcpClient {
   state: Record<string, unknown> = {
@@ -101,7 +104,7 @@ describe("HrpMcpServer", () => {
     expect(initResponse?.result).toMatchObject({
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "hrp-mcp", version: "3.2.0" },
+      serverInfo: { name: "hrp-mcp", version: EXPECTED_PACKAGE_VERSION },
     });
 
     const pingResponse = await server.handleMessage({

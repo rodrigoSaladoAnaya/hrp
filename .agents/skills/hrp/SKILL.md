@@ -1,16 +1,16 @@
 ---
 name: hrp
 description: >-
-  Use this skill to integrate task execution and code changes with Human Review Protocol (HRP v2.1).
+  Use this skill to integrate task execution and code changes with Human Review Protocol (HRP v3).
   Covers the full lifecycle: checking/starting the HRP service, attaching workspace, creating runs,
   decomposing tasks into granular semantic graphs (file + symbol + intent), waiting for human approval gates,
   executing nodes with agent identity declaration (start → exclusive diff patch → verification → complete),
   handling retries within the same node, registering discovered work, and publishing technical activity.
 ---
 
-# Human Review Protocol (HRP v2.1) Skill for Antigravity
+# Human Review Protocol (HRP v3) Skill for Antigravity
 
-This skill defines how Antigravity integrates with HRP v2.1 following `docs/agent-adapter.md`.
+This skill defines how Antigravity integrates with HRP v3 following `docs/agent-adapter.md`.
 
 ## Core Principles
 
@@ -25,7 +25,7 @@ This skill defines how Antigravity integrates with HRP v2.1 following `docs/agen
    - Publish factual operational explanations: what the node changes, why it is necessary, what diff was applied, what command verified it, and what constraints were discovered.
    - Do NOT emit internal chain of thought, private reasoning, or raw credentials.
 
-3. **Approval Gate & Identity (Protocol 2.1)**:
+3. **Approval Gate & Identity (Protocol v3)**:
    - All published and discovered nodes start unapproved (`approved: false`).
    - The agent MUST check state (`hrp_get_state` / `hrp state`) and wait for human approval before calling start.
    - The agent MUST declare its identity (`--agent antigravity` or `{ agent: "antigravity" }`) and respect assignments made by the user.
@@ -99,12 +99,20 @@ Before modifying files, inspect the codebase and plan granular operations:
 - Using CLI:
   Save `graph.json` and execute:
   ```sh
-  hrp graph publish "$run_id" graph.json
+  hrp graph publish "$run_id" graph.json --agent antigravity
   ```
+
+Declaring `--agent antigravity` registers you as the run's **base model** when you are the first publisher: unassigned nodes belong to you by default, and any node discovered during execution is auto-assigned to the base model so the run never stalls waiting for an agent that does not know new work exists.
 
 ### 4. Wait for Human Approval
 
-Nodes start unapproved. Check `hrp_get_state` (or `hrp state "$run_id" --json`) until the target node has `approved: true`. Approval is a human control: call `hrp_approve_nodes` (or `hrp node approve "$run_id"`) only when the user explicitly asks to approve nodes, never by inferring permission from general task autonomy.
+Nodes start unapproved. Wait for the human's click with the blocking command:
+
+```sh
+hrp wait approval "$run_id" --agent antigravity --timeout 300
+```
+
+It exits successfully as soon as approved work is available for your identity; on timeout it fails with a retryable error — run it again or hand the panel URL to the human. Without the CLI, poll `hrp_get_state` until the target node has `approved: true`. Approval is a human control: call `hrp_approve_nodes` (or `hrp node approve "$run_id"`) only when the user explicitly asks to approve nodes, never by inferring permission from general task autonomy.
 
 ### 5. Execute Each Node
 
@@ -124,7 +132,8 @@ For each node whose dependencies are completed and is approved:
    - CLI: `hrp verify run "$run_id" nodeId -- npm test`
 7. **Complete node**:
    - MCP: `hrp_complete_node(runId, nodeId)`
-   - CLI: `hrp node complete "$run_id" nodeId`
+   - CLI: `hrp node complete "$run_id" nodeId --tokens N`
+   - Report `--tokens` (your real token usage for this node) only if your environment exposes actual usage; omit it otherwise. Never fabricate the number.
 
 ### 6. Handling Failures and Retries
 
@@ -149,6 +158,12 @@ Publish technical inspections or notes when relevant:
 - MCP: `hrp_publish_activity(runId, type="inspect", message="...", detail="...", nodeId="...")`
 - CLI: `hrp activity publish "$run_id" --type inspect --node nodeId --summary "..." --detail "..."`
 
-### 9. Final Verification
+### 9. Review Another Agent
 
-Check `hrp_get_state` (or `hrp state "$run_id" --json`) to confirm all nodes are `completed`, with attributable diffs and passing verifications. Run a comprehensive workspace test suite before handing off.
+When `antigravity` is selected in `run.auditors`, keep `hrp wait approval <run-id> --agent antigravity` active until it reports **Auditoría disponible**. Unassigned nodes belong to the base model; never claim or edit them as a reviewer. Publish `hrp agent status` with `phase reviewing` before reading `hrp review pack`, then update `--completed`, `--reviewed`, and `--remaining` as coverage advances.
+
+Audit integration boundaries, broken contracts, approved-spec versus diff deviations, and missing edge cases. Report real problems with `hrp finding add`, debate with `hrp finding reply`, and never edit the workspace. Publish `phase completed` only after every node is covered, then return to `hrp wait approval` because a completed correction can request another pass. Do not invent findings or coverage.
+
+### 10. Final Verification
+
+As the base model, check `hrp_get_state` (or `hrp state "$run_id" --json`) to confirm all nodes are `completed`, with attributable diffs and passing verifications. Remain in `hrp wait approval` until every selected auditor publishes `phase completed`, then require `hrp review gate` to pass without live findings or `pendingAuditors`. Run a comprehensive workspace test suite before handing off.

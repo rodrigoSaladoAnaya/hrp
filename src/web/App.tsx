@@ -500,7 +500,14 @@ function ActivityLedger({ activity, nodes, onSelect }: { activity: Activity[]; n
             <span className={`activity-mark activity-${item.type}`}/>
             <time>{new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(item.createdAt))}</time>
             <div>
-              <strong>{item.message}</strong>
+              <div className="activity-header">
+                <strong>{item.message}</strong>
+                {item.agent && (
+                  <span className={`activity-agent activity-agent-${item.agent === "human" ? "human" : item.agent.startsWith("ollama") ? "ollama" : "model"}`}>
+                    {item.agent === "human" ? "humano" : item.agent}
+                  </span>
+                )}
+              </div>
               {node && <button type="button" onClick={() => onSelect(node.id)}>{node.file} · {node.symbol}</button>}
               {item.detail && <p>{item.detail}</p>}
             </div>
@@ -532,7 +539,7 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
   const [packFeedback, setPackFeedback] = useState<"copied" | "failed">();
   const copyPack = async () => {
     try {
-      const response = await fetch(`/api/runs/${runId}/review-pack`);
+      const response = await fetch(`/api/runs/${runId}/review-pack?agent=human`);
       if (!response.ok) throw new Error(await response.text());
       await navigator.clipboard.writeText(await response.text());
       setPackFeedback("copied");

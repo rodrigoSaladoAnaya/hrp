@@ -1,16 +1,16 @@
 ---
 name: hrp
 description: >-
-  Use this skill to integrate task execution and code changes with Human Review Protocol (HRP v2.2).
+  Use this skill to integrate task execution and code changes with Human Review Protocol (HRP v3).
   Covers the full lifecycle: checking/starting the HRP service, attaching workspace, creating runs,
   decomposing tasks into granular semantic graphs (file + symbol + intent), waiting for human approval gates,
   executing nodes with agent identity declaration (start → exclusive diff patch → verification → complete),
   handling retries within the same node, registering discovered work, and publishing technical activity.
 ---
 
-# Human Review Protocol (HRP v2.2) Skill for Antigravity
+# Human Review Protocol (HRP v3) Skill for Antigravity
 
-This skill defines how Antigravity integrates with HRP v2.2 following `docs/agent-adapter.md`.
+This skill defines how Antigravity integrates with HRP v3 following `docs/agent-adapter.md`.
 
 ## Core Principles
 
@@ -25,7 +25,7 @@ This skill defines how Antigravity integrates with HRP v2.2 following `docs/agen
    - Publish factual operational explanations: what the node changes, why it is necessary, what diff was applied, what command verified it, and what constraints were discovered.
    - Do NOT emit internal chain of thought, private reasoning, or raw credentials.
 
-3. **Approval Gate & Identity (Protocol 2.2)**:
+3. **Approval Gate & Identity (Protocol v3)**:
    - All published and discovered nodes start unapproved (`approved: false`).
    - The agent MUST check state (`hrp_get_state` / `hrp state`) and wait for human approval before calling start.
    - The agent MUST declare its identity (`--agent antigravity` or `{ agent: "antigravity" }`) and respect assignments made by the user.

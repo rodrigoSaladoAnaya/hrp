@@ -18,7 +18,7 @@ const project = await api("/api/projects", {
 const run = await api(`/api/projects/${project.id}/runs`, {
   method: "POST",
   body: JSON.stringify({
-    title: "Construir el mapa semántico de HRP v2",
+    title: "Construir el mapa semántico de HRP v3",
     requirement: "Representar operaciones por archivo y símbolo, sus dependencias, el diff aplicado y la evidencia de verificación.",
   }),
 });

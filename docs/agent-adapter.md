@@ -647,7 +647,7 @@ Antes de finalizar, consulta el estado, confirma que todos los nodos tengan diff
 
 Un adaptador para Codex, Claude, Gemini u otro agente es compatible cuando:
 
-- [ ] usa el protocolo `2.1` sin depender de conceptos internos del proveedor;
+- [ ] usa el protocolo publicado por `PROTOCOL_VERSION` sin depender de conceptos internos del proveedor;
 - [ ] espera la aprobación humana después de publicar o descubrir nodos;
 - [ ] declara su identidad con `--agent` y respeta las asignaciones del humano;
 - [ ] respeta la regla de un nodo en curso por ejecución;
