@@ -412,9 +412,7 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .agent-presence-dot.agent-presence-absent { background: #bb6b13; }
 .agent-dock-entry.is-base-agent .agent-presence-dot { outline: 2px solid #b99132; outline-offset: 2px; }
 .agent-dock-name { min-width: 0; display: grid; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
-.agent-name-line { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
 .agent-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-role-badge { flex: none; padding: 1px 6px; border: 1px solid #9d7924; border-radius: 999px; color: #5d4310; background: #f5e6b7; font-family: Aptos, Segoe UI, system-ui, sans-serif; font-size: .62rem; font-weight: 850; letter-spacing: .04em; line-height: 1.35; text-transform: uppercase; }
 .agent-dock-name small { overflow: hidden; color: #596660; font-size: .62rem; text-overflow: ellipsis; }
 .agent-dock-count { flex: none; min-width: 21px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #c9d1ca; font-size: .68rem; font-weight: 800; text-align: center; }
 .agent-dock-subrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; padding: 0 10px 7px 21px; }
@@ -423,8 +421,11 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .auditor-toggle:has(input:checked) { color: #244f40; background: #cfe1d7; }
 .auditor-toggle:has(input:disabled) { opacity: .7; cursor: default; }
 .auditor-toggle input { width: 13px; height: 13px; margin: 0; accent-color: #2d6a50; }
-.agent-copy { flex: none; min-height: 36px; padding: 0 9px; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .68rem; font-weight: 750; }
+.agent-copy { width: 36px; height: 36px; display: inline-grid; flex: none; place-items: center; padding: 0; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; }
+.agent-copy .icon { width: 17px; height: 17px; }
 .agent-copy:hover { background: #d2d9d2; }
+.agent-copy.is-copied { border-color: #6c9883; color: var(--completed); background: #d6e7dd; }
+.agent-copy.is-failed { border-color: #b47670; color: var(--failed); background: #f2dfdc; }
 .agent-activity-row { min-width: 0; min-height: 36px; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 0 8px; border: 0; color: #52605b; background: transparent; cursor: pointer; text-align: left; }
 .agent-activity-row:hover:not(:disabled), .agent-activity-row[aria-expanded="true"] { color: #24332e; background: #d2d9d2; }
 .agent-activity-row:disabled { cursor: default; }
@@ -647,8 +648,6 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .findings-empty { display: grid; place-content: center; justify-items: center; gap: 10px; min-height: 0; overflow: auto; padding: 30px; text-align: center; }
 .findings-empty .icon { width: 30px; height: 30px; color: #5d6a64; }
 .findings-empty h2 { margin: 0; font-family: "Saira Condensed", "Aptos Narrow", sans-serif; font-size: 1.3rem; }
-.findings-empty p { max-width: 52ch; margin: 0; color: #4d5b56; font-size: .84rem; line-height: 1.5; }
-.findings-empty code { padding: 1px 6px; border-radius: 3px; background: #e6eae4; font-size: .78rem; }
 
 .findings-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .finding-card { border: 1px solid #b6c0ba; border-radius: 4px; background: #fdfdfb; box-shadow: 2px 3px 9px rgba(38,50,47,.08); }

@@ -16,6 +16,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import type { Activity, AgentWorkState, ChangeNode, Finding, NodeStatus, OllamaSettingsView, Project, RunDetail, RunSummary } from "../shared/protocol";
+import { agentAttentionCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 
@@ -162,7 +163,7 @@ function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   });
 }
 
-function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" }) {
+function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" }) {
   const paths = {
     sliders: <><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></>,
     route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 3 4"/></>,
@@ -172,6 +173,7 @@ function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clo
     clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
     warning: <><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v4M12 17h.01"/></>,
     code: <><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></>,
+    copy: <><rect x="8" y="8" width="11" height="11" rx="1"/><path d="M16 8V5H5v11h3"/></>,
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" className="icon">{paths[name]}</svg>;
 }
@@ -449,21 +451,10 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
     return () => clearInterval(timer);
   }, [hasActiveAgent]);
   if (!nodes.length) return null;
-  const commandFor = (agent: string) => {
-    const audits = run.auditors.includes(agent);
-    if (agent === "ollama") {
-      // ollama no abre su propia sesión: la instrucción va a la sesión del modelo
-      // base, que administra la delegación y revisa el resultado antes de publicar.
-      return `Como modelo base de la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, trabaja los nodos asignados a "ollama" delegando la implementación: inicia cada nodo con hrp node start --agent ollama, genera el cambio con hrp ollama run --prompt-file <prompt con el contexto del nodo>, revisa y corrige el resultado como administrador, aplica el cambio, y publica su diff y su verificación antes de completarlo.${audits ? " Ollama Cloud también está seleccionado como auditor automático; HRP iniciará esa revisión al terminar el grafo y publicará su cobertura." : ""}`;
-    }
-    const execution = `Trabaja los nodos asignados a "${agent}"${agent === run.baseAgent ? " o sin asignar" : ""} en la ejecución HRP ${run.id}${workspaceRoot ? ` (workspace: ${workspaceRoot})` : ""}, siguiendo docs/agent-adapter.md: consulta el estado con hrp state ${run.id} --json, inicia cada nodo con --agent ${agent}, y publica su diff y su verificación antes de completarlo.`;
-    if (!audits) return execution;
-    return `${execution} También fuiste seleccionado como auditor: antes de comenzar publica hrp agent status ${run.id} --agent ${agent} --phase reviewing --summary "Auditando la ejecución" y actualiza la cobertura con --completed, --total, --reviewed y --remaining cuando avances; revisa únicamente el trabajo de los demás agentes con hrp review pack ${run.id}, registra problemas reales con hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question [--node ID] --reviewer ${agent}, debate con hrp finding reply <finding-id> --author ${agent} --body ... y reabre cierres con hrp finding reopen <finding-id> --author ${agent} --body RAZON; nunca edites código ajeno ni audites tus propios nodos, y si estás conforme vota OK con hrp agent status ${run.id} --agent ${agent} --phase completed --summary "Auditoría terminada" seguido de hrp review gate ${run.id}.`;
-  };
   const copyCommand = async (agent: string) => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-      await navigator.clipboard.writeText(commandFor(agent));
+      await navigator.clipboard.writeText(agentAttentionCommand(agent, workspaceRoot));
       setCopyFeedback({ agent, result: "copied" });
     } catch {
       setCopyFeedback({ agent, result: "failed" });
@@ -508,25 +499,29 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
         const presenceLabel = isBase ? "Modelo base"
           : isOllama ? (ollama?.configured ? `Ollama Cloud · ${ollama.model}` : "Sin API key configurada")
             : present ? "Presente" : "Sin señal";
-        const buttonLabel = copyFeedback?.agent === agent
-          ? copyFeedback.result === "copied" ? "Copiado" : "Error"
-          : "Copiar";
+        const copyResult = copyFeedback?.agent === agent ? copyFeedback.result : undefined;
+        const buttonLabel = copyResult === "copied"
+          ? `Comando copiado para ${agent}`
+          : copyResult === "failed"
+            ? `No se pudo copiar el comando para ${agent}`
+            : `Copiar comando de atención para ${agent}`;
         return (
           <div className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""}`} key={agent} role="group" aria-label={`${agent}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}>
             <div className="agent-dock-row">
               <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
               <span className="agent-dock-name" title={isBase ? "Modelo base: controla los nodos sin asignar y coordina el cierre de la ejecución" : isOllama && ollama?.configured ? `${agent} · ${ollama.model}` : agent}>
-                <span className="agent-name-line"><span className="agent-name-text">{agent}</span>{isBase && <span className="agent-role-badge">Base</span>}</span>
+                <span className="agent-name-text">{agent}</span>
                 {isOllama && ollama?.configured && <small>{ollama.model}</small>}
               </span>
               <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
               <button
                 type="button"
-                className="agent-copy"
-                aria-label={`Copiar instrucciones para ${agent}; ${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}
+                className={`agent-copy ${copyResult ? `is-${copyResult}` : ""}`}
+                aria-label={buttonLabel}
                 aria-live="polite"
+                title={buttonLabel}
                 onClick={() => { copyCommand(agent).catch(() => undefined); }}
-              >{buttonLabel}</button>
+              ><Icon name={copyResult === "copied" ? "check" : copyResult === "failed" ? "warning" : "copy"}/></button>
             </div>
             <div className="agent-dock-subrow">
               <button type="button" className="agent-activity-row" disabled={!state} aria-expanded={expandedAgent === agent} onClick={() => setExpandedAgent((current) => current === agent ? undefined : agent)}>
@@ -690,8 +685,6 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
       <div className="findings-empty">
         <Icon name="check"/>
         <h2>Sin hallazgos todavía</h2>
-        <p>Convierte a otro modelo en revisor: copia el paquete de revisión a su sesión, o lanza al revisor automático con <code>hrp ollama review {runId}</code>.</p>
-        {copyPackButton}
       </div>
     );
   }
@@ -1432,7 +1425,7 @@ function HelpPanel() {
             <ol>
               <li>Aprueba el grafo cuando el agente lo publique (botón «Aprobar grafo»).</li>
               <li>En la cajita del nodo elige quién lo implementa: claude, codex o antigravity.</li>
-              <li>En el dock de agentes (abajo a la izquierda) pulsa «Copiar» junto a ese modelo.</li>
+              <li>En el dock de agentes (abajo a la izquierda) pulsa el icono de copiar junto a ese modelo.</li>
               <li>Pega el comando en la sesión de ese modelo. Su punto se pone verde al engancharse y trabajará solo sus nodos.</li>
             </ol>
             <h3>¿Un agente actúa «a la antigua»?</h3>
