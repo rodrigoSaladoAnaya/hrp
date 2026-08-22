@@ -463,6 +463,7 @@ describe("computeAttention", () => {
       store.publishGraph(run.id, { nodes: [
         { id: "uno", file: "A.ts", symbol: "A.method", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
       ] }, "codex");
+      store.recordPlanPass(run.id, "antigravity", 0);
       store.approveNodes(run.id);
       store.startNode(run.id, "uno", "codex");
       store.setRunControl(run.id, "paused");
@@ -580,6 +581,7 @@ describe("computeAttention", () => {
         { id: "mio-dos", file: "B.ts", symbol: "B.second", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
         { id: "ajeno", file: "C.ts", symbol: "C.third", title: "Ajeno", description: "Work", rationale: "Required", dependencies: [], suggestedAgent: "codex" },
       ] }, "claude");
+      store.recordPlanPass(run.id, "antigravity", 0);
       store.approveNodes(run.id);
       store.startNode(run.id, "mio-uno", "claude");
 
@@ -635,5 +637,37 @@ describe("attentionRank", () => {
   it("cubre todos los tipos declarados, para que ninguno herede una prioridad por omisión", () => {
     for (const kind of attentionKinds) expect(attentionRank(kind)).toBeGreaterThanOrEqual(0);
     expect(new Set(attentionKinds.map(attentionRank)).size).toBe(attentionKinds.length);
+  });
+  describe("gate del plan", () => {
+    const gate = (pending: string[]) => ({
+      planGate: { graphVersion: 1, auditors: ["codex", "ollama"], reviewed: ["codex", "ollama"].filter((auditor) => !pending.includes(auditor)), pending, open: pending.length > 0 },
+      auditors: ["codex", "ollama"],
+      baseAgent: "claude",
+    });
+
+    it("despierta al auditor que todavía no opinó sobre el grafo", () => {
+      const signal = computeAttention(detail({ nodes: [node({ id: "uno", approved: false })], run: gate(["codex"]) }), "codex");
+      expect(signal.kind).toBe("plan");
+      expect(signal.actionable).toBe(true);
+      expect(signal.directive).toContain("hrp graph review run --agent codex");
+      expect(signal.directive).toContain("hrp graph review done");
+    });
+
+    it("mantiene esperando al modelo base y le nombra a quien falta", () => {
+      const signal = computeAttention(detail({ nodes: [node({ id: "uno", approved: false })], run: gate(["codex"]) }), "claude");
+      expect(signal.kind).toBe("plan-wait");
+      expect(signal.actionable).toBe(false);
+      expect(signal.waiting).toBe(true);
+      expect(signal.directive).toContain("codex");
+    });
+
+    it("deja de reclamarle al auditor que ya publicó su pasada", () => {
+      const signal = computeAttention(detail({ nodes: [node({ id: "uno", approved: false })], run: gate(["ollama"]) }), "codex");
+      expect(signal.kind).not.toBe("plan");
+    });
+
+    it("prioriza la auditoría del plan sobre tomar trabajo", () => {
+      expect(attentionRank("plan")).toBeLessThan(attentionRank("work"));
+    });
   });
 });

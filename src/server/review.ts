@@ -273,10 +273,13 @@ function setPlanReviewMarker(store: HrpStore, runId: string, marker: AutoReviewM
 }
 
 // Auditoría del PLAN: se dispara al publicarse el grafo, una sola vez por
-// versión. A diferencia de la auditoría final, NO toca el estado de cobertura
-// del auditor ni cuenta para el gate de cierre: su único destinatario es el
-// humano que está a punto de aprobar. Nunca propaga excepciones ni bloquea el
-// arranque de los nodos; un fallo queda como actividad y se puede relanzar.
+// versión. No toca la cobertura del auditor ni el gate de cierre, pero sí cierra
+// la pasada de ollama en el gate del plan: sin ese registro el humano seguiría
+// bloqueado esperando a un modelo que ya opinó. Sólo la registra cuando hubo
+// opinión real —hallazgos o SIN-HALLAZGOS—; si la consulta falla, si ollama no
+// está configurado o si pide más contexto, la pasada queda pendiente a la vista
+// en vez de darse por cumplida. Nunca propaga excepciones: un fallo queda como
+// actividad y la ronda puede relanzarse.
 export async function runPlanReview(store: HrpStore, runId: string, options: { force?: boolean; onProgress?: () => void } = {}): Promise<{ created: number } | undefined> {
   if (inFlightPlanReviews.has(runId)) return undefined;
   inFlightPlanReviews.add(runId);
@@ -346,6 +349,8 @@ export async function runPlanReview(store: HrpStore, runId: string, options: { f
     }
     if (answer === "SIN-HALLAZGOS") {
       store.addActivity(runId, "note", `Auditoría del plan (${model}): sin hallazgos`, undefined, undefined, "ollama");
+      // Declarar el plan sano ES opinar: cierra la pasada igual que un hallazgo.
+      store.recordPlanPass(runId, "ollama", 0);
       finish();
       options.onProgress?.();
       return { created: 0 };
@@ -367,6 +372,7 @@ export async function runPlanReview(store: HrpStore, runId: string, options: { f
         created += 1;
       }
       store.addActivity(runId, "note", `Auditoría del plan (${model}): ${created} ${created === 1 ? "hallazgo registrado" : "hallazgos registrados"} sobre el grafo`, undefined, undefined, "ollama");
+      store.recordPlanPass(runId, "ollama", created);
     })();
     finish();
     options.onProgress?.();

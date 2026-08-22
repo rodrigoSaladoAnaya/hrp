@@ -110,6 +110,32 @@ Before modifying files, inspect the codebase and plan granular operations:
 
 Declaring `--agent antigravity` registers you as the run's **base model** when you are the first publisher: unassigned nodes belong to you by default, and any node discovered during execution is auto-assigned to the base model so the run never stalls waiting for an agent that does not know new work exists.
 
+### 3b. Plan Audit — the round that gates approval (protocol 3.3)
+
+Publishing the graph opens a **plan audit** round before the human approves it: the selected auditors review the graph — not code, which does not exist yet — looking for what no diff could reveal later: a missing node, a wrong cut, a mis-declared dependency, a node with no observable verification, or a node outside the requirement. One round per graph version, and it **blocks the initial human approval**: until every selected auditor publishes its pass on that graph version, the server rejects the approval.
+
+**As the base model, do not ask for approval after publishing — wait.** The `plan-wait` signal names who is missing, and `run.planGate` (`pending`, `open`) in `hrp state "$run_id" --json` says the same. Park on `hrp_attention` until the round closes and the human approves.
+
+Its findings arrive with `scope: "plan"` and no `nodeId`. Handle them before the human approves:
+
+1. Read them with `hrp finding show <finding-id>` (or `hrp_finding_show`).
+2. If a finding holds, **fix the graph and publish it again** — do not open a discovered node: what is wrong is the plan, and republishing sends the uncompleted nodes back to the human gate and reopens the round on the new version. Then accept the finding citing that version.
+3. If it does not hold, reject it with `hrp finding reject <id> --author antigravity --body REASON`, giving a technical, verifiable reason. Your answer shows next to the approve button, so it is what the human reads to decide.
+
+Findings themselves do not block — the human decides whether to approve as is or ask for a corrected graph. What blocks is an auditor who has not spoken yet.
+
+If the auditors are session models rather than `ollama`, produce the package with `hrp graph review "$run_id"` and ask the human to copy it. That same command relaunches the ollama round if it failed or if the human picked auditors after publishing.
+
+**When you are the plan auditor**, HRP wakes you with the actionable `plan` signal — the human is stopped at the approve button waiting for your opinion:
+
+```sh
+hrp graph review "$run_id" --agent antigravity
+hrp finding add "$run_id" --title T --body B --severity major --scope plan --reviewer antigravity
+hrp graph review done "$run_id" --agent antigravity --findings N
+```
+
+Always close your pass, **including when the plan looks sound** (`--findings 0`, or the `hrp_plan_pass` MCP tool): without it nobody can approve. Do not invent findings to justify the round.
+
 ### 4. Wait for Human Approval (initial graph only)
 
 Graph nodes start unapproved. Stay parked on the MCP blocking tool until work is available:

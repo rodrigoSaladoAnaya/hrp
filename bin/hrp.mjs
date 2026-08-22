@@ -25,7 +25,7 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--scope", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--scope", "--findings", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
@@ -447,8 +447,9 @@ Uso:
   hrp run delete <run-id> --yes
   hrp graph publish <run-id> <graph.json> --agent NOMBRE
   hrp graph review <run-id> [--agent NOMBRE]   (audita el PLAN antes de aprobarlo)
+  hrp graph review done <run-id> --agent NOMBRE [--findings N]   (cierra tu pasada y desbloquea la aprobación)
   hrp node discover <run-id> <node.json>
-  hrp node approve <run-id> [node-id...]
+  hrp node approve <run-id> [node-id...] [--force]   (--force aprueba sin esperar la auditoría del plan)
   hrp node assign <run-id> <node-id> <agente|->
   hrp node start <run-id> <node-id> [--agent NOMBRE]
   hrp node retry <run-id> <node-id> [--agent NOMBRE]
@@ -586,9 +587,25 @@ async function main() {
     if (!agent) throw new Error("Uso: hrp graph publish <run-id> <graph.json> --agent NOMBRE");
     return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), agent }) }));
   }
+  if (group === "graph" && action === "review" && first === "done") {
+    // Cierre de la pasada: es lo que desbloquea la aprobación humana. Se publica
+    // igual con hallazgos que sin ellos, porque lo que la ronda exige es la
+    // opinión del auditor, no su conformidad con el plan.
+    const agent = value("--agent", process.env.HRP_AGENT);
+    if (!second || !agent) throw new Error("Uso: hrp graph review done <run-id> --agent NOMBRE [--findings N]");
+    const findings = Number(value("--findings", "0"));
+    if (!Number.isInteger(findings) || findings < 0) throw new Error("--findings espera un entero no negativo");
+    const result = await api(`/api/runs/${encodeURIComponent(second)}/plan-pass`, { method: "POST", body: JSON.stringify({ agent, findings }) });
+    if (json) return print(result);
+    const gate = result.planGate ?? {};
+    return print(gate.pending?.length
+      ? `Pasada publicada por ${agent} sobre la versión ${gate.graphVersion}. La aprobación sigue esperando a: ${gate.pending.join(", ")}.`
+      : `Pasada publicada por ${agent} sobre la versión ${gate.graphVersion}. Ronda completa: el humano ya puede aprobar el grafo.`);
+  }
   if (group === "graph" && action === "review") {
     // Auditoría del PLAN: entrega el grafo a los auditores antes de aprobarlo.
-    // No bloquea nada; sus hallazgos informan el clic del humano.
+    // Mientras la ronda siga abierta, el servidor rechaza la aprobación humana:
+    // cada auditor la cierra con 'hrp graph review done'.
     if (!first) throw new Error("Uso: hrp graph review <run-id> [--agent NOMBRE]");
     const detail = await api(`/api/runs/${encodeURIComponent(first)}`);
     const auditors = detail.run?.auditors ?? [];
@@ -620,6 +637,11 @@ async function main() {
       print("");
       print(pack);
     }
+    const gate = detail.run?.planGate;
+    if (gate?.open) {
+      print("");
+      print(`La aprobación del grafo está bloqueada hasta que opinen: ${gate.pending.join(", ")}. Cada uno cierra su pasada con 'hrp graph review done ${first} --agent SU_NOMBRE [--findings N]'.`);
+    }
     return;
   }
   if (group === "node" && action === "discover") {
@@ -627,7 +649,10 @@ async function main() {
   }
   if (group === "node" && action === "approve") {
     const nodeIds = args.slice(3);
-    return print(await api(`/api/runs/${first}/approve`, { method: "POST", body: JSON.stringify(nodeIds.length ? { nodeIds } : {}) }));
+    // --force aprueba sin esperar la auditoría del plan; el servicio deja
+    // registrado en la actividad qué auditores faltaban.
+    const body = { ...(nodeIds.length ? { nodeIds } : {}), ...(flag("--force") ? { force: true } : {}) };
+    return print(await api(`/api/runs/${first}/approve`, { method: "POST", body: JSON.stringify(body) }));
   }
   if (group === "node" && action === "assign") {
     const assignee = args[4];
@@ -904,6 +929,9 @@ async function main() {
         process.stderr.write(`${signal.directive}\n`);
         lastKind = signal.kind;
       }
+    }
+    if (lastKind === "plan-wait") {
+      throw new Error(`La auditoría del plan sigue abierta después de ${timeoutSeconds}s: falta la pasada de ${pendingAuditors.join(", ") || "algún auditor"}. Vuelve a ejecutar 'hrp wait approval'; el humano no puede aprobar el grafo hasta que cierre, y puede saltarse la espera desde el panel.`);
     }
     if (lastKind === "implementation") {
       throw new Error(`La implementación aún no termina después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; no necesitas pedir otra aprobación humana.`);

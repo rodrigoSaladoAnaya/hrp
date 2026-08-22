@@ -171,6 +171,60 @@ describe("auditoría del plan", () => {
     }
   });
 
+  it("cierra la pasada de ollama cuando declara el plan sano", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await planReviewServer("SIN-HALLAZGOS", calls);
+    try {
+      const { store, run } = planFixture(["ollama"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 0 });
+
+      const gate = store.getRun(run.id)?.planGate;
+      expect(gate?.reviewed).toEqual(["ollama"]);
+      expect(gate?.open).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("cierra la pasada de ollama con los hallazgos que reportó", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await planReviewServer(JSON.stringify([
+      { severity: "major", title: "Falta el nodo de migración", body: "El nodo uno cambia el formato y nada migra lo anterior." },
+    ]), calls);
+    try {
+      const { store, run } = planFixture(["ollama"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      await expect(runPlanReview(store, run.id)).resolves.toEqual({ created: 1 });
+
+      expect(store.getRun(run.id)?.planGate?.open).toBe(false);
+      // Opinar cierra la pasada; los hallazgos los resuelve el humano al decidir.
+      expect(store.listFindings(run.id)).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("deja la pasada pendiente si la consulta al revisor falla", async () => {
+    const calls = { count: 0, prompts: [] as string[] };
+    const server = await ollamaServer((_request, response) => {
+      calls.count += 1;
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "upstream caído" }));
+    });
+    try {
+      const { store, run } = planFixture(["ollama"]);
+      store.setOllamaSettings({ apiKey: "qa-key", model: "qa-plan", baseUrl: server.baseUrl });
+      await expect(runPlanReview(store, run.id)).resolves.toBeUndefined();
+
+      const gate = store.getRun(run.id)?.planGate;
+      expect(gate?.pending).toEqual(["ollama"]);
+      expect(gate?.open).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("con auditores de sesión no llama a ollama y explica cómo obtener el paquete", async () => {
     const calls = { count: 0, prompts: [] as string[] };
     const server = await planReviewServer("SIN-HALLAZGOS", calls);
@@ -226,6 +280,7 @@ describe("runAutoReview", () => {
       store.publishGraph(run.id, { nodes: [
         { id: "change", file: "src/A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
       ] }, `ollama:${model}`);
+      for (const auditor of store.getRun(run.id)?.planGate?.pending ?? []) store.recordPlanPass(run.id, auditor, 0);
       store.approveNodes(run.id);
       store.startNode(run.id, "change", `ollama:${model}`);
       store.publishPatch(run.id, "change", "Changed method", "diff --git a/src/A.ts b/src/A.ts\n--- a/src/A.ts\n+++ b/src/A.ts\n+return true");
@@ -288,6 +343,7 @@ describe("runAutoReview", () => {
         { id: "own", file: "src/A.ts", symbol: "A.own", title: "Own", description: "Own work", rationale: "Required", dependencies: [] },
         { id: "other", file: "src/B.ts", symbol: "B.other", title: "Other", description: "Other work", rationale: "Required", dependencies: [] },
       ] }, `ollama:${model}`);
+      for (const auditor of store.getRun(run.id)?.planGate?.pending ?? []) store.recordPlanPass(run.id, auditor, 0);
       store.approveNodes(run.id);
       store.startNode(run.id, "own", `ollama:${model}`);
       store.publishPatch(run.id, "own", "Changed own method", "diff --git a/src/A.ts b/src/A.ts\n--- a/src/A.ts\n+++ b/src/A.ts\n+return true");

@@ -29,6 +29,7 @@ import {
   type NodeStatus,
   type OllamaSettings,
   type OllamaSettingsView,
+  type PlanGateStatus,
   type Project,
   type RunControl,
   type RunDetail,
@@ -225,6 +226,18 @@ export class HrpStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY (finding_id, agent)
       );
+      -- Pasada de auditoría del plan: una fila significa que ese auditor ya
+      -- opinó sobre esa versión del grafo, con hallazgos o declarándolo sano.
+      -- La versión es parte de la clave porque republicar el plan invalida lo
+      -- opinado sobre el anterior: lo que se revisó ya no es lo que se aprueba.
+      CREATE TABLE IF NOT EXISTS plan_passes (
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        auditor TEXT NOT NULL,
+        graph_version INTEGER NOT NULL,
+        findings INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, auditor, graph_version)
+      );
       CREATE TABLE IF NOT EXISTS attention_releases (
         run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
         agent TEXT NOT NULL,
@@ -354,6 +367,13 @@ export class HrpStore {
     }
     if (!runColumns.some((column) => String(column.name) === "change_branch")) {
       this.database.exec("ALTER TABLE runs ADD COLUMN change_branch TEXT");
+    }
+    // Versión del grafo que el humano aprobó sin esperar la auditoría del plan.
+    // NULL es lo normal: nadie se saltó la ronda. Las ejecuciones anteriores a
+    // v3.3 quedan en NULL y sin filas en plan_passes, que es lo correcto porque
+    // su gate ya se decidió cuando la ronda todavía no bloqueaba nada.
+    if (!runColumns.some((column) => String(column.name) === "plan_override_version")) {
+      this.database.exec("ALTER TABLE runs ADD COLUMN plan_override_version INTEGER");
     }
   }
 
@@ -868,12 +888,67 @@ export class HrpStore {
     this.database.prepare("DELETE FROM attention_releases WHERE run_id = ? AND agent = ?").run(runId, agent);
   }
 
-  approveNodes(runId: string, nodeIds?: string[]): ChangeNode[] {
+  // Regla única del gate del plan: quién ya opinó sobre la versión vigente del
+  // grafo y si por eso la aprobación humana sigue bloqueada. El bloqueo cubre
+  // exclusivamente el gate inicial —con un nodo ya aprobado la ejecución
+  // arrancó, y los descubiertos posteriores no pueden frenarla esperando otra
+  // ronda—, y el override sólo libera la versión exacta que el humano vio.
+  planGateStatus(runId: string): PlanGateStatus {
+    const row = this.database.prepare("SELECT graph_version, auditors_json, plan_override_version FROM runs WHERE id = ?").get(runId) as Row | undefined;
+    if (!row) throw new Error(`Unknown run: ${runId}`);
+    const graphVersion = Number(row.graph_version);
+    const auditors = row.auditors_json ? JSON.parse(String(row.auditors_json)) as string[] : [];
+    const overriddenVersion = row.plan_override_version == null ? undefined : Number(row.plan_override_version);
+    const passed = new Set((this.database.prepare("SELECT auditor FROM plan_passes WHERE run_id = ? AND graph_version = ?").all(runId, graphVersion) as Row[])
+      .map((pass) => String(pass.auditor)));
+    const reviewed = auditors.filter((auditor) => passed.has(auditor));
+    const pending = auditors.filter((auditor) => !passed.has(auditor));
+    const counts = this.database.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN approved = 1 THEN 1 ELSE 0 END) AS approved FROM nodes WHERE run_id = ?").get(runId) as Row;
+    const open = Number(counts.total ?? 0) > 0
+      && Number(counts.approved ?? 0) === 0
+      && auditors.length > 0
+      && pending.length > 0
+      && overriddenVersion !== graphVersion;
+    return { graphVersion, auditors, reviewed, pending, open, overriddenVersion };
+  }
+
+  // Un auditor declara que ya revisó ESTA versión del plan. Vale igual con
+  // hallazgos que sin ellos: lo que la ronda exige es su opinión, no su
+  // conformidad, porque quien decide sobre los hallazgos es el humano.
+  recordPlanPass(runId: string, auditor: string, findings = 0): PlanGateStatus {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Unknown run: ${runId}`);
+    if (!run.auditors.includes(auditor)) {
+      throw new Error(`${auditor} is not an auditor of run ${runId}; the human chooses the auditors in the panel`);
+    }
+    if (run.nodeCount === 0) throw new Error(`Run has no published graph yet: ${runId}`);
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO plan_passes (run_id, auditor, graph_version, findings, created_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, auditor, graph_version) DO UPDATE SET findings = excluded.findings, created_at = excluded.created_at
+    `).run(runId, auditor, run.graphVersion, findings, timestamp);
+    this.touchRun(runId, timestamp);
+    const status = this.planGateStatus(runId);
+    this.addActivity(runId, "graph",
+      `Auditoría del plan cerrada por ${auditor} · ${findings === 0 ? "sin hallazgos" : `${findings} ${findings === 1 ? "hallazgo" : "hallazgos"}`} sobre la versión ${run.graphVersion}`,
+      status.pending.length ? `Faltan por opinar: ${status.pending.join(", ")}` : "Ronda completa: el humano ya puede aprobar el grafo.",
+      undefined, auditor);
+    return status;
+  }
+
+  // force es la decisión explícita del humano de aprobar sin esperar la ronda
+  // del plan: no la salta en silencio, deja registrado en la actividad qué
+  // auditores faltaban y sobre qué versión del grafo se decidió.
+  approveNodes(runId: string, nodeIds?: string[], options: { force?: boolean } = {}): ChangeNode[] {
     const run = this.getRun(runId);
     if (!run) throw new Error(`Unknown run: ${runId}`);
     if (run.auditors.length === 0) throw new Error("Choose at least one auditor before approving the graph");
     if (run.auditors.includes("ollama") && !this.getOllamaSettings().apiKey) {
       throw new Error("Ollama is selected as auditor but is not configured; configure its API key or choose another auditor");
+    }
+    const gate = this.planGateStatus(runId);
+    if (gate.open && !options.force) {
+      throw new Error(`The plan audit is still open on graph version ${gate.graphVersion}: ${gate.pending.join(", ")} ${gate.pending.length === 1 ? "has" : "have"} not published a pass yet. Wait for the round to close, or approve without waiting (panel button, or 'hrp node approve --force'), which records who was missing.`);
     }
     const targets = nodeIds?.length
       ? nodeIds.map((id) => this.requireNode(runId, id))
@@ -881,6 +956,13 @@ export class HrpStore {
     const pending = targets.filter((node) => !node.approved);
     if (!pending.length) throw new Error("No nodes are awaiting approval");
     const timestamp = now();
+    if (gate.open) {
+      this.database.prepare("UPDATE runs SET plan_override_version = ?, updated_at = ? WHERE id = ?").run(gate.graphVersion, timestamp, runId);
+      this.addActivity(runId, "graph",
+        `Aprobado sin esperar la auditoría del plan · faltaban ${gate.pending.join(", ")}`,
+        `Versión ${gate.graphVersion} del grafo. El humano decidió no esperar la ronda; ${gate.reviewed.length ? `ya habían opinado: ${gate.reviewed.join(", ")}` : "ningún auditor había opinado"}.`,
+        undefined, "human");
+    }
     const update = this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?");
     for (const node of pending) update.run(timestamp, runId, node.id);
     this.touchRun(runId, timestamp);
@@ -1551,6 +1633,10 @@ export class HrpStore {
       auditors,
       pendingAuditorCount: auditorConsensus.pendingAuditors.length,
       pendingAuditorVotes: auditorConsensus.pendingAuditorVotes,
+      // El panel decide con este dato si el botón de aprobar está disponible; sale
+      // del mismo cálculo que approveNodes usa para rechazar, así que no pueden
+      // discrepar sobre si la ronda del plan sigue abierta.
+      planGate: this.planGateStatus(runId),
       nodeCount: total, completedCount: completed, awaitingApproval: Number(counts.awaitingApproval ?? 0),
       openFindings: Number(findingCounts.open ?? 0),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),

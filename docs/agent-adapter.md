@@ -196,19 +196,26 @@ Requisitos del grafo:
 - `suggestedAgent` (opcional) recomienda quién debería implementarlo — por ejemplo `"ollama"` para trabajo mecánico o de bajo riesgo. HRP pre-asigna el nodo al agente sugerido si el humano no ha decidido otra cosa; la insignia «sugiere» del panel deja visible que la recomendación vino del modelo base.
 - `contextFiles` (opcional) lista archivos del workspace que `hrp ollama exec` adjuntará al prompt como **referencia de solo lectura**. Es parte de la semántica aprobada: el inspector lo muestra antes de aprobar, y cambiarlo en una republicación regresa el nodo a «por aprobar».
 
-### 4a. Auditoría del plan (v3.2)
+### 4a. Auditoría del plan y su gate (v3.3)
 
-Al publicarse el grafo, y **antes** de que el humano lo apruebe, el servidor lanza una ronda de auditoría sobre el plan: los auditores ya elegidos revisan el grafo —requisito, nodos, `file`, `symbol`, `description`, `rationale` y dependencias—, no código, porque todavía no existe. Ataca la clase de defecto que ningún diff puede revelar después: un nodo que falta no aparece en ningún cambio.
+Al publicarse el grafo, y **antes** de que el humano lo apruebe, se abre una ronda de auditoría sobre el plan: los auditores elegidos revisan el grafo —requisito, nodos, `file`, `symbol`, `description`, `rationale` y dependencias—, no código, porque todavía no existe. Ataca la clase de defecto que ningún diff puede revelar después: un nodo que falta no aparece en ningún cambio.
+
+Desde la v3.3 la ronda **bloquea la aprobación inicial**: mientras un auditor elegido no publique su pasada sobre esa versión del grafo, `POST /api/runs/:runId/approve` la rechaza. Antes no bloqueaba nada y en la práctica no ocurría: el modelo base seguía adelante y el humano aprobaba en el mismo minuto en que se publicaba el plan.
 
 Reglas del contrato:
 
-- Se dispara sola en `POST /api/runs/:runId/graph`, en segundo plano. La publicación responde sin esperarla y un fallo de la ronda nunca invalida el grafo.
+- **Estado de la ronda**: `run.planGate` = `{ graphVersion, auditors, reviewed, pending, open, overriddenVersion? }`. `open` es el bloqueo. Viaja en todo `RunSummary`, así que `hrp state --json` y el panel leen lo mismo que el servidor aplica.
+- **Cerrar la pasada**: `POST /api/runs/:runId/plan-pass` con `{ agent, findings }`, `hrp graph review done <run-id> --agent NOMBRE [--findings N]` o la herramienta MCP `hrp_plan_pass`. Se publica igual con hallazgos que sin ellos: lo que la ronda exige es la opinión del auditor, no su conformidad. Sólo se acepta de un auditor elegido de ese run.
+- **Despertar a los auditores**: con la ronda abierta, `/api/attention` entrega al auditor pendiente la señal accionable `plan` (dice cómo obtener el paquete, cómo reportar con `--scope plan` y cómo cerrar la pasada) y al modelo base la señal de espera `plan-wait`, que le prohíbe pedir la aprobación mientras falte alguien. `plan` tiene prioridad sobre tomar trabajo.
+- **Ollama cierra la suya sola**: la ronda automática registra su pasada al reportar hallazgos o al responder `SIN-HALLAZGOS`. Si la consulta falla, si no está configurado o si pide más contexto, la pasada queda **pendiente** a la vista en vez de darse por cumplida.
+- **Override humano**: el panel ofrece «Aprobar sin esperar la auditoría» (confirmación en dos pasos) y el CLI `hrp node approve <run-id> --force`; ambos van a `/approve` con `force: true`. El servidor guarda `plan_override_version` y publica una actividad `human` con los auditores que faltaban. El override libera **sólo esa versión**: republicar el grafo vuelve a exigir la ronda.
+- **Alcance del bloqueo: sólo el gate inicial.** `open` exige que ningún nodo esté aprobado todavía. Una vez que la implementación arrancó, los nodos descubiertos republican el grafo y la ronda vuelve a ser informativa: nada frena la ejecución.
 - Corre **una sola vez por `graphVersion`**. Republicar el mismo plan no repite la ronda; corregirlo y republicarlo sí abre otra.
-- No corre sin auditores elegidos ni sobre un run sin grafo. Con `ollama` entre los auditores la ronda es automática; para los auditores con sesión el paquete se obtiene con `hrp graph review <run-id>` (o `GET /api/runs/:runId/plan-pack`) y `POST /api/runs/:runId/plan-review` la relanza.
+- La ronda automática se dispara en `POST /api/runs/:runId/graph`, en segundo plano: la publicación responde sin esperarla y un fallo suyo nunca invalida el grafo. No corre sin auditores elegidos ni sobre un run sin grafo. Para los auditores con sesión el paquete se obtiene con `hrp graph review <run-id>` (o `GET /api/runs/:runId/plan-pack`), y `POST /api/runs/:runId/plan-review` relanza la de ollama.
 - Sus hallazgos nacen con `scope: "plan"`, **sin `nodeId`** —citan el nodo en el cuerpo— y el servidor rechaza un hallazgo de plan que traiga nodeId: contaría como revisión de ese nodo en la cobertura del auditor.
-- El auditor del plan se restringe a cinco tipos: nodo faltante, corte incorrecto, dependencia mal declarada, nodo sin verificación observable, nodo fuera del requisito. Todo hallazgo cita archivo y símbolo concretos; lo que no encaje va con severidad `question` y no bloquea.
-- **No es un segundo gate ni una certificación del plan.** Los hallazgos de plan no cuentan en `openFindings` ni en `hrp review gate`, no impiden aprobar ni iniciar nodos, y no tocan la cobertura que el auditor debe publicar sobre los diffs al final. Su único destinatario es el humano que está a punto de aprobar, que los ve en la barra de aprobación del panel.
-- La salida del base ante un hallazgo de plan que procede es **republicar el grafo corregido**, no abrir un nodo descubierto: lo que se corrige es el plan, y republicarlo devuelve los nodos no completados al gate humano.
+- El auditor del plan se restringe a cinco tipos: nodo faltante, corte incorrecto, dependencia mal declarada, nodo sin verificación observable, nodo fuera del requisito. Todo hallazgo cita archivo y símbolo concretos; lo que no encaje va con severidad `question`.
+- **Los hallazgos no bloquean; la falta de opinión sí.** Los de plan siguen fuera de `openFindings`, de `hrp review gate` y de la cobertura del auditor sobre los diffs: quien decide qué hacer con ellos es el humano, con el plan a la vista. Lo que el gate exige es que cada auditor haya hablado.
+- La salida del base ante un hallazgo de plan que procede es **republicar el grafo corregido**, no abrir un nodo descubierto: lo que se corrige es el plan, y republicarlo devuelve los nodos no completados al gate humano —y reabre la ronda sobre la versión nueva.
 
 El alcance de un hallazgo se declara con `scope`; omitido, se deriva de `nodeId` (`node` con él, `integration` sin él), que es exactamente lo que significaba antes de la v3.2.
 
@@ -542,7 +549,7 @@ El objetivo de la v3 es la calidad del producto, no el ahorro de tokens: otros m
 
 - **Checkpoint por flujo**: al completarse una cadena de dependencias (un flujo funcional), el base lanza por sí mismo la revisión de ese subárbol (`hrp ollama review <run-id> --node <nodo-hoja>`, o genera `hrp review pack <run-id> --node <nodo-hoja>` para que el humano lo copie a otro modelo con sesión). Revisar el flujo integrado —y no nodo por nodo— es deliberado: los errores valiosos para un segundo modelo son los de integración, y el gate por nodo duplicaría ceremonia y serializaría la ejecución.
 - **Auditoría final automática**: al quedar todos los nodos completados, el servidor lanza solo la auditoría del run completo (ver «Auditoría automática al completar»); nadie tiene que pedirla.
-- **Auditoría del plan**: antes de la aprobación humana, sobre el grafo y no sobre código (ver «Auditoría del plan»). Es la única de las tres que no cuenta para el cierre.
+- **Auditoría del plan**: antes de la aprobación humana, sobre el grafo y no sobre código (ver «Auditoría del plan y su gate»). No cuenta para el cierre, pero su ronda bloquea la aprobación inicial hasta que cada auditor publica su pasada.
 - Los hallazgos de alcance `node` e `integration` **no bloquean nodos individuales**; bloquean el **cierre del run**: `hrp review gate <run-id>` sale con código 1 mientras existan hallazgos en `open`, `debating` o `escalated`. Los de alcance `plan` quedan fuera de ese gate.
 
 ### Contrato del modelo revisor

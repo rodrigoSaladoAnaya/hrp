@@ -204,10 +204,21 @@ export class HrpMcpClient {
     });
   }
 
-  async approveNodes(runId: string, nodeIds?: string[]): Promise<unknown> {
+  // force es el 'aprobar sin esperar' del humano frente al gate del plan: el
+  // servicio registra qué auditores faltaban antes de aprobar.
+  async approveNodes(runId: string, nodeIds?: string[], force?: boolean): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/approve`, {
       method: "POST",
-      body: JSON.stringify(nodeIds && nodeIds.length > 0 ? { nodeIds } : {}),
+      body: JSON.stringify({ ...(nodeIds && nodeIds.length > 0 ? { nodeIds } : {}), ...(force ? { force: true } : {}) }),
+    });
+  }
+
+  // Cierre de la pasada de auditoría del plan: es lo que desbloquea la
+  // aprobación humana del grafo, con hallazgos o sin ellos.
+  async planPass(runId: string, agent: string, findings?: number): Promise<unknown> {
+    return this.request(`/api/runs/${encodeURIComponent(runId)}/plan-pass`, {
+      method: "POST",
+      body: JSON.stringify({ agent, findings: findings ?? 0 }),
     });
   }
 
@@ -546,8 +557,34 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
           items: { type: "string" },
           description: "IDs específicos de nodos a aprobar. Si no se especifica, aprueba todos los pendientes.",
         },
+        force: {
+          type: "boolean",
+          description: "Aprueba sin esperar a que los auditores cierren la auditoría del plan. Es una decisión del humano y queda registrada con los auditores que faltaban.",
+        },
       },
       required: ["runId"],
+    },
+  },
+  {
+    name: "hrp_plan_pass",
+    description: "Publica tu pasada de auditoría del plan sobre la versión vigente del grafo. Mientras falte la pasada de algún auditor elegido, el humano no puede aprobar el grafo; publícala con hallazgos o declarando el plan sano.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: {
+          type: "string",
+          description: "Identificador de la ejecución.",
+        },
+        agent: {
+          type: "string",
+          description: "Tu identidad de auditor, tal como la eligió el humano.",
+        },
+        findings: {
+          type: "number",
+          description: "Cuántos hallazgos de plan reportaste en esta pasada. Cero significa que el plan te pareció sano.",
+        },
+      },
+      required: ["runId", "agent"],
     },
   },
   {
@@ -932,6 +969,14 @@ export async function executeHrpTool(
       return client.approveNodes(
         String(args.runId),
         Array.isArray(args.nodeIds) ? (args.nodeIds as string[]) : undefined,
+        args.force === true,
+      );
+
+    case "hrp_plan_pass":
+      return client.planPass(
+        String(args.runId),
+        String(args.agent),
+        typeof args.findings === "number" ? args.findings : undefined,
       );
 
     case "hrp_assign_node":

@@ -360,8 +360,10 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/approve", (request, response, next) => {
     try {
-      const input = z.object({ nodeIds: z.array(z.string()).min(1).optional() }).strict().parse(request.body ?? {});
-      const nodes = store.approveNodes(request.params.runId, input.nodeIds);
+      // force es el 'aprobar sin esperar' del humano: el store lo deja
+      // registrado con los auditores que faltaban, no lo salta en silencio.
+      const input = z.object({ nodeIds: z.array(z.string()).min(1).optional(), force: z.boolean().optional() }).strict().parse(request.body ?? {});
+      const nodes = store.approveNodes(request.params.runId, input.nodeIds, { force: input.force });
       broadcast(projectForRun(request.params.runId), request.params.runId, "graph-approved");
       response.json({ nodes });
     } catch (error) { next(error); }
@@ -570,6 +572,21 @@ export function createApp(store: HrpStore) {
         if (result && result.created > 0) broadcast(projectForRun(request.params.runId), request.params.runId, "finding-created");
       });
       response.status(202).json({ started: true });
+    } catch (error) { next(error); }
+  });
+
+  // Un auditor declara que ya opinó sobre esta versión del plan. Es lo único que
+  // cierra el gate desde fuera: sin esta ruta el bloqueo no tendría salida más
+  // que el override del humano.
+  app.post("/api/runs/:runId/plan-pass", (request, response, next) => {
+    try {
+      const input = z.object({
+        agent: z.string().min(1),
+        findings: z.number().int().min(0).optional(),
+      }).strict().parse(request.body);
+      const planGate = store.recordPlanPass(request.params.runId, input.agent, input.findings ?? 0);
+      broadcast(projectForRun(request.params.runId), request.params.runId, "plan-pass");
+      response.json({ planGate });
     } catch (error) { next(error); }
   });
 

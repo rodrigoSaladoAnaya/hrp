@@ -1,14 +1,15 @@
 import { auditorIdentity, computeAuditorConsensus, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
 
 // Señales que una ejecución puede dar a un agente concreto, declaradas en
-// orden de prioridad: las cuatro primeras exigen acción inmediata, las
+// orden de prioridad: las cinco primeras exigen acción inmediata, las
 // siguientes explican por qué conviene seguir atento, y las últimas cierran la
 // espera. El orden ES la prioridad (attentionRank), así que una señal nueva
 // obliga a elegir su lugar aquí en vez de heredar un rango por omisión en otro
-// archivo.
+// archivo. 'plan' va casi al principio porque el humano está detenido frente al
+// botón de aprobar mientras ese auditor no opina.
 export const attentionKinds = [
-  "findings", "work", "audit", "gate",
-  "released", "paused", "blocked", "busy", "implementation", "auditors", "review-pass",
+  "findings", "plan", "work", "audit", "gate",
+  "released", "paused", "blocked", "busy", "plan-wait", "implementation", "auditors", "review-pass",
   "stopped", "done", "idle",
 ] as const;
 export type AttentionKind = (typeof attentionKinds)[number];
@@ -41,6 +42,7 @@ export type Attention = {
 
 const flags: Record<AttentionKind, { actionable: boolean; terminal: boolean; waiting: boolean }> = {
   findings: { actionable: true, terminal: false, waiting: false },
+  plan: { actionable: true, terminal: false, waiting: false },
   work: { actionable: true, terminal: false, waiting: false },
   audit: { actionable: true, terminal: false, waiting: false },
   gate: { actionable: true, terminal: false, waiting: false },
@@ -50,6 +52,7 @@ const flags: Record<AttentionKind, { actionable: boolean; terminal: boolean; wai
   paused: { actionable: false, terminal: false, waiting: true },
   blocked: { actionable: false, terminal: false, waiting: true },
   busy: { actionable: false, terminal: false, waiting: true },
+  "plan-wait": { actionable: false, terminal: false, waiting: true },
   implementation: { actionable: false, terminal: false, waiting: true },
   auditors: { actionable: false, terminal: false, waiting: true },
   "review-pass": { actionable: false, terminal: false, waiting: true },
@@ -138,6 +141,21 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   }) : [];
   if (agreementsPending.length && run.control === "active" && !auditorNeedsReview) {
     return decide("findings", `Tu acuerdo falta en ${agreementsPending.length} ${agreementsPending.length === 1 ? "hallazgo" : "hallazgos"} (${agreementsPending.map((finding) => finding.id).join(", ")}). Lee el hilo con 'hrp finding show <id>'; si discrepas, responde con 'hrp finding reply <id> --author ${agent} --body ...'. Si aceptas que el reportero implemente la corrección vinculada y que otro agente la audite, publica 'hrp finding agree <id> --author ${agent}'.`);
+  }
+
+  // Gate del plan. Mientras la ronda siga abierta no hay ningún nodo aprobado,
+  // así que el único trabajo real del run es la opinión que falta: el auditor
+  // pendiente la recibe como orden accionable y el modelo base como espera
+  // explícita. Sin esta señal el auditor de sesión sólo veía "esperando
+  // implementación" y el gate se volvería un bloqueo que nadie puede abrir.
+  const planGate = run.planGate;
+  if (planGate?.open && run.control === "active") {
+    if (planGate.pending.includes(agent)) {
+      return decide("plan", `Auditoría del plan disponible para ${agent}: el humano no puede aprobar la versión ${planGate.graphVersion} del grafo hasta que opines. Obtén el paquete con 'hrp graph review ${run.id} --agent ${agent}' y revisa el GRAFO, no código —todavía no existe—: nodo faltante, corte incorrecto, dependencia mal declarada, nodo sin verificación observable o fuera del requisito. Reporta con 'hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question --scope plan --reviewer ${agent}' y, con hallazgos o sin ellos, cierra tu pasada con 'hrp graph review done ${run.id} --agent ${agent}'.`);
+    }
+    if (run.baseAgent === agent) {
+      return decide("plan-wait", `Tu grafo (versión ${planGate.graphVersion}) está en auditoría de plan y el humano no puede aprobarlo hasta que cierre: falta la pasada de ${planGate.pending.join(", ")}. No pidas la aprobación todavía ni empieces a editar; atiende los hallazgos de plan que lleguen y permanece atento, que la señal llega sola.`);
+    }
   }
 
   // Al terminar la implementación, una sesión revisora que estaba bloqueada

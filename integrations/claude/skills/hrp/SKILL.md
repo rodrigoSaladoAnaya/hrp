@@ -99,19 +99,31 @@ ahorro del nodo ≈ salida que no escribes − (spec + revisión fiel + ~1k de c
 
 HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al aprobar.
 
-### 2a. Atiende la auditoría del plan (protocolo 3.2)
+### 2a. Auditoría del plan: la ronda que bloquea la aprobación (protocolo 3.3)
 
-Publicar el grafo dispara una ronda de auditoría **sobre el plan**, antes de que el humano lo apruebe: los auditores elegidos revisan el grafo, no código, buscando lo que ningún diff podría revelar después —un nodo faltante, un corte incorrecto, una dependencia mal declarada, un nodo sin verificación observable o uno fuera del requerimiento—. Es una sola ronda por versión del grafo y **no bloquea nada**: ni la aprobación, ni el arranque de nodos, ni el cierre del run.
+Publicar el grafo abre una ronda de auditoría **sobre el plan**: los auditores elegidos revisan el grafo, no código, buscando lo que ningún diff podría revelar después —un nodo faltante, un corte incorrecto, una dependencia mal declarada, un nodo sin verificación observable o uno fuera del requerimiento—. Una sola ronda por versión del grafo, y **bloquea la aprobación humana inicial**: mientras un auditor elegido no publique su pasada, el servidor rechaza aprobar el grafo.
 
-Sus hallazgos llegan con `scope: "plan"` y sin `nodeId`. Cuando aparezcan, atiéndelos antes de que el humano apruebe:
+**Como modelo base, después de publicar el grafo no pidas la aprobación: espera.** La señal `plan-wait` te dice quién falta; estaciónate en `hrp attention --agent claude --wait 600` (o la herramienta MCP) hasta que la ronda cierre y el humano apruebe. Leer `hrp state "$run_id" --json` te da lo mismo en `run.planGate` (`pending`, `open`).
+
+Los hallazgos llegan con `scope: "plan"` y sin `nodeId`. Atiéndelos antes de que el humano apruebe:
 
 1. Léelos con `hrp finding show <finding-id>`.
-2. Si el hallazgo procede, **corrige el grafo y vuelve a publicarlo** — no abras un nodo descubierto: lo que está mal es el plan, y republicar devuelve los nodos no completados al gate humano. Después acepta el hallazgo citando la nueva versión.
+2. Si el hallazgo procede, **corrige el grafo y vuelve a publicarlo** — no abras un nodo descubierto: lo que está mal es el plan, y republicar devuelve los nodos no completados al gate humano y reabre la ronda sobre la versión nueva. Después acepta el hallazgo citando esa versión.
 3. Si no procede, recházalo con `hrp finding reject <id> --author claude --body RAZON`, con una razón técnica y verificable. Tu respuesta se ve junto al botón de aprobar, así que es lo que el humano leerá para decidir.
 
-Si tus auditores son modelos con sesión (no `ollama`), la ronda no puede lanzarse sola: genera el paquete con `hrp graph review "$run_id"` y pide al humano que lo copie. `hrp graph review` también relanza la ronda de ollama si falló o si el humano eligió auditores después de publicar.
+Los hallazgos no bloquean por sí mismos —el humano decide si aprueba así o pide el grafo corregido—; lo que bloquea es que un auditor todavía no haya hablado.
 
-No trates esta ronda como una certificación del plan ni esperes a que "termine" para seguir: en cuanto el humano apruebe, arranca los nodos.
+Si tus auditores son modelos con sesión (no `ollama`), genera el paquete con `hrp graph review "$run_id"` y pide al humano que lo copie a esas sesiones. `hrp graph review` también relanza la ronda de ollama si falló o si el humano eligió auditores después de publicar.
+
+**Cuando el auditor eres tú.** Si HRP te entrega la señal `plan` (accionable), el humano está detenido frente al botón de aprobar esperando tu opinión:
+
+```sh
+hrp graph review "$run_id" --agent claude          # el paquete del plan
+hrp finding add "$run_id" --title T --body B --severity major --scope plan --reviewer claude
+hrp graph review done "$run_id" --agent claude --findings N
+```
+
+Cierra siempre tu pasada, **también cuando el plan te parezca sano** (`--findings 0`): sin ella nadie puede aprobar. No inventes hallazgos para justificar la ronda.
 
 ### 2b. Espera la aprobación humana (protocolo 3.0)
 

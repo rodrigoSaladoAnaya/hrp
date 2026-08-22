@@ -14,6 +14,16 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// Desde el gate del plan, aprobar exige que los auditores elegidos hayan
+// publicado su pasada sobre esa versión del grafo. Las pruebas que sólo
+// necesitan un grafo aprobado cierran la ronda como lo haría el auditor real,
+// en vez de saltársela con el override del humano.
+function approveGraph(store: HrpStore, runId: string, nodeIds?: string[]) {
+  const gate = store.getRun(runId)?.planGate;
+  if (gate?.open) for (const auditor of gate.pending) store.recordPlanPass(runId, auditor, 0);
+  return store.approveNodes(runId, nodeIds);
+}
+
 function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "hrp-v2-"));
   roots.push(root);
@@ -51,10 +61,10 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    expect(() => store.approveNodes(run.id)).toThrow(/auditor/i);
+    expect(() => approveGraph(store, run.id)).toThrow(/auditor/i);
     expect(store.setRunAuditors(run.id, ["claude", "antigravity", "claude"]).auditors).toEqual(["claude", "antigravity"]);
     expect(store.getRunDetail(run.id)?.agentStates.map((state) => state.agent).sort()).toEqual(["antigravity", "claude"]);
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     expect(() => store.setRunAuditors(run.id, ["codex"])).toThrow(/locked/i);
   });
 
@@ -64,9 +74,9 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    expect(() => store.approveNodes(run.id)).toThrow(/not configured/i);
+    expect(() => approveGraph(store, run.id)).toThrow(/not configured/i);
     store.setOllamaSettings({ apiKey: "qa-key" });
-    expect(store.approveNodes(run.id)).toHaveLength(1);
+    expect(approveGraph(store, run.id)).toHaveLength(1);
   });
 
   it("reports observable agent work without exposing private reasoning", () => {
@@ -74,7 +84,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [], suggestedAgent: "codex" },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
     expect(store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "codex")).toMatchObject({
       phase: "executing", currentNodeId: "change", completed: 0, total: 1,
@@ -96,7 +106,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
     store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
     store.publishVerification(run.id, "change", { command: "npm test", output: "ok", exitCode: 0 });
@@ -140,7 +150,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
 
     expect(git(workspace, ["branch", "--show-current"])).toBe(initialBranch);
@@ -156,7 +166,7 @@ describe("HrpStore", () => {
       { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
       { id: "second", file: "B.ts", symbol: "B.second", title: "Second", description: "Work", rationale: "Required", dependencies: ["first"] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
 
     // El cambio pendiente tiene que ser rastreado: los archivos sin seguimiento
     // no producen branch porque cambiar de rama no los resguarda.
@@ -190,7 +200,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
 
     writeFileSync(path.join(workspace, "scratch.tmp"), "untracked\n");
     store.startNode(run.id, "change", "codex");
@@ -211,7 +221,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     writeFileSync(path.join(workspace, "A.ts"), "pending\n");
     store.startNode(run.id, "first", "codex");
 
@@ -225,7 +235,7 @@ describe("HrpStore", () => {
     store.publishGraph(other.id, { nodes: [
       { id: "second", file: "B.ts", symbol: "B.second", title: "Second", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(other.id);
+    approveGraph(store, other.id);
 
     expect(() => store.startNode(other.id, "second", "codex")).toThrow(/belong to run/);
     expect(git(workspace, ["branch", "--list", `hrp/run-${other.id}`])).toBe("");
@@ -241,7 +251,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
     // El nodo añade 'mia'; otra sesión añade 'ajena' en el mismo archivo.
     writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\nmia\najena\n");
@@ -261,7 +271,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
     writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\nmia\n");
     store.publishPatch(run.id, "change", "Añade mia", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n dos\n+mia\n");
@@ -277,7 +287,7 @@ describe("HrpStore", () => {
       { id: "primero", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
       { id: "segundo", file: "A.ts", symbol: "A.dos", title: "Dos", description: "Work", rationale: "Required", dependencies: ["primero"] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "primero", "codex");
     writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\n");
     store.publishPatch(run.id, "primero", "Añade dos", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n+dos\n");
@@ -302,7 +312,7 @@ describe("HrpStore", () => {
       { id: "hecho", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
       { id: "sinhacer", file: "B.ts", symbol: "B.uno", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "hecho", "codex");
     writeFileSync(path.join(workspace, "A.ts"), "uno\ndos\n");
     store.publishPatch(run.id, "hecho", "Añade dos", "--- a/A.ts\n+++ b/A.ts\n@@\n uno\n+dos\n");
@@ -331,7 +341,7 @@ describe("HrpStore", () => {
       { id: "resolve", file: "A.ts", symbol: "A.method2", title: "Resolve theme", description: "Read the preference", rationale: "Centralize behavior", dependencies: ["config"] },
       { id: "save", file: "A.ts", symbol: "A.method1", title: "Save theme", description: "Persist the preference", rationale: "Keep it across launches", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     expect(() => store.startNode(run.id, "resolve")).toThrow(/Incomplete dependencies/);
     store.startNode(run.id, "config");
     store.publishPatch(run.id, "config", "Declared theme", "@@ config.json\n+  \"theme\": \"system\"", "The existing config is the shared source of truth");
@@ -346,7 +356,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change");
     expect(() => store.completeNode(run.id, "change")).toThrow(/diff/i);
     store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
@@ -361,7 +371,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "src/A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change");
     expect(() => store.publishPatch(run.id, "change", "Changed method", "+return true")).toThrow(/not attributable/i);
     store.publishPatch(run.id, "change", "Changed method", "--- /tmp/A.ts.before\n+++ src/A.ts\n+return true");
@@ -374,7 +384,7 @@ describe("HrpStore", () => {
       { id: "change", file: "src/A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
       { id: "created", file: "src/New.ts", symbol: "New", title: "New module", description: "Create it", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change");
     const mixed = "diff --git a/src/A.ts b/src/A.ts\n+++ b/src/A.ts\n+return true\ndiff --git a/src/Server.ts b/src/Server.ts\n+++ b/src/Server.ts\n+wire()";
     expect(() => store.publishPatch(run.id, "change", "Changed method", mixed)).toThrow(/src\/Server\.ts/);
@@ -392,9 +402,9 @@ describe("HrpStore", () => {
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
     ] });
     expect(() => store.startNode(run.id, "change")).toThrow(/human approval/i);
-    store.approveNodes(run.id, ["change"]);
+    approveGraph(store, run.id, ["change"]);
     expect(store.startNode(run.id, "change").status).toBe("running");
-    expect(() => store.approveNodes(run.id)).toThrow(/No nodes are awaiting approval/);
+    expect(() => approveGraph(store, run.id)).toThrow(/No nodes are awaiting approval/);
   });
 
   it("allows independent nodes to run concurrently", () => {
@@ -403,7 +413,7 @@ describe("HrpStore", () => {
       { id: "first", file: "A.ts", symbol: "A.first", title: "First", description: "Work", rationale: "Required", dependencies: [] },
       { id: "second", file: "B.ts", symbol: "B.second", title: "Second", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "first");
     expect(store.startNode(run.id, "second").status).toBe("running");
   });
@@ -414,7 +424,7 @@ describe("HrpStore", () => {
       { id: "uno", file: "A.ts", symbol: "A.uno", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
       { id: "dos", file: "B.ts", symbol: "B.dos", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "uno", "claude");
     expect(() => store.startNode(run.id, "dos", "claude")).toThrow(/already running uno/i);
     expect(store.startNode(run.id, "dos", "codex").status).toBe("running");
@@ -427,7 +437,7 @@ describe("HrpStore", () => {
       { id: "same-file", file: "A.ts", symbol: "A.second", title: "Same file", description: "Work", rationale: "Required", dependencies: [] },
       { id: "depends", file: "B.ts", symbol: "B.second", title: "Depends", description: "Work", rationale: "Required", dependencies: ["first"] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "first");
     expect(() => store.startNode(run.id, "same-file")).toThrow(/cannot run concurrently.*both modify A\.ts/i);
     expect(() => store.startNode(run.id, "depends")).toThrow(/Incomplete dependencies: first/);
@@ -439,7 +449,7 @@ describe("HrpStore", () => {
       { id: "reader", file: "A.ts", symbol: "A.first", title: "Reader", description: "Work", rationale: "Required", dependencies: [], contextFiles: ["contract.ts"] },
       { id: "contract", file: "contract.ts", symbol: "Contract", title: "Contract", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "reader");
     expect(() => store.startNode(run.id, "contract")).toThrow(/approved context/i);
   });
@@ -451,7 +461,7 @@ describe("HrpStore", () => {
       { id: "dos", file: "B.ts", symbol: "B.dos", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
       { id: "solo", file: "C.ts", symbol: "C.solo", title: "Solo", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "uno", "claude");
     store.startNode(run.id, "dos", "codex");
     expect(() => store.publishVerification(run.id, "dos", { command: "npm test", output: "ok", exitCode: 0 })).toThrow(/does not declare its scope/);
@@ -472,7 +482,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
     expect(() => store.assignNode(run.id, "change", "claude")).toThrow(/cannot be reassigned/i);
     store.publishPatch(run.id, "change", "Changed method", "@@ A.ts\n+return true");
@@ -487,7 +497,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "change", "codex");
     store.publishPatch(run.id, "change", "Partial change", "@@ A.ts\n+return maybe");
     store.publishVerification(run.id, "change", { command: "npm test", output: "partial check", exitCode: 0 });
@@ -508,7 +518,7 @@ describe("HrpStore", () => {
       { id: "ajeno", file: "A.ts", symbol: "A.method", title: "Ajeno", description: "Work", rationale: "Required", dependencies: [] },
       { id: "propio", file: "B.ts", symbol: "B.method", title: "Propio", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.startNode(run.id, "ajeno", "claude");
     store.publishPatch(run.id, "ajeno", "Changed method", "@@ A.ts\n+return true");
     store.publishVerification(run.id, "ajeno", { command: "npm test", output: "ok", exitCode: 0 });
@@ -548,7 +558,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change method", description: "Do work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     expect(store.assignNode(run.id, "change", "codex").assignee).toBe("codex");
     expect(() => store.startNode(run.id, "change", "claude")).toThrow(/assigned to codex/);
     expect(store.assignNode(run.id, "change", null).assignee).toBeUndefined();
@@ -650,7 +660,7 @@ describe("HrpStore", () => {
       { id: "a", file: "A.ts", symbol: "A.a", title: "A", description: "Work", rationale: "Required", dependencies: [] },
       { id: "b", file: "B.ts", symbol: "B.b", title: "B", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     expect(store.startNode(run.id, "a", "codex").executedBy).toBe("codex");
     store.publishPatch(run.id, "a", "done", "@@ A.ts\n+x");
     store.publishVerification(run.id, "a", { command: "true", output: "", exitCode: 0 });
@@ -670,7 +680,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "change", file: "A.ts", symbol: "A.method", title: "Change", description: "Work", rationale: "Required", dependencies: [] },
     ] }, "claude");
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     expect(store.getRun(run.id)?.seenAgents).not.toContain("codex");
     store.assignNode(run.id, "change", "codex");
     store.startNode(run.id, "change", "codex");
@@ -736,7 +746,7 @@ describe("HrpStore", () => {
     ];
     store.publishGraph(run.id, { nodes });
     expect(store.getRunDetail(run.id)?.nodes.find((node) => node.id === "uno")?.contextFiles).toEqual(["contracts.ts"]);
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.publishGraph(run.id, { nodes });
     expect(store.getRunDetail(run.id)?.nodes.every((node) => node.approved)).toBe(true);
     // Cambiar solo el contexto altera lo que verá el modelo delegado: re-aprobación.
@@ -753,7 +763,7 @@ describe("HrpStore", () => {
       { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Cambio dos", rationale: "Prueba", dependencies: [] },
     ];
     store.publishGraph(run.id, { nodes });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     store.publishGraph(run.id, { nodes });
     expect(store.getRunDetail(run.id)?.nodes.every((node) => node.approved)).toBe(true);
     store.publishGraph(run.id, { nodes: [nodes[0], { ...nodes[1], description: "Cambio dos ajustado" }] });
@@ -767,7 +777,7 @@ describe("HrpStore", () => {
     store.publishGraph(run.id, { nodes: [
       { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
     ] });
-    store.approveNodes(run.id);
+    approveGraph(store, run.id);
     expect(store.getRun(run.id)?.control).toBe("active");
     store.setRunControl(run.id, "paused");
     expect(() => store.startNode(run.id, "uno", "claude")).toThrow(/paused by the human/);
@@ -1024,7 +1034,7 @@ describe("HrpStore", () => {
         { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
         { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Correction", rationale: "Required", dependencies: ["uno"] },
       ] });
-      store.approveNodes(run.id);
+      approveGraph(store, run.id);
       for (const [id, file] of [["uno", "A.ts"], ["dos", "B.ts"]] as const) {
         store.startNode(run.id, id, "codex");
         store.publishPatch(run.id, id, "Cambio", `diff --git a/${file} b/${file}\n@@\n+ok`);
@@ -1194,7 +1204,7 @@ describe("HrpStore", () => {
         { id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] },
         { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Work", rationale: "Required", dependencies: [] },
       ] }, "base-model");
-      store.approveNodes(run.id);
+      approveGraph(store, run.id);
 
       // Human actions (approval, assign, control, set auditors)
       expect(store.getRunDetail(run.id)?.activity.some((item) => item.agent === "human" && item.message.toLowerCase().includes("aprobado"))).toBe(true);
@@ -1225,6 +1235,77 @@ describe("HrpStore", () => {
       for (const event of baseEvents) {
         expect(event.agent).toBe("base-model");
       }
+    });
+  });
+  describe("gate del plan", () => {
+    const plan = [{ id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] }];
+
+    it("rejects approval while an auditor has not published its plan pass", () => {
+      const { store, run } = fixture();
+      store.setRunAuditors(run.id, ["codex", "antigravity"]);
+      store.publishGraph(run.id, { nodes: plan }, "claude");
+      store.recordPlanPass(run.id, "codex", 2);
+
+      const gate = store.getRun(run.id)?.planGate;
+      expect(gate?.reviewed).toEqual(["codex"]);
+      expect(gate?.pending).toEqual(["antigravity"]);
+      expect(gate?.open).toBe(true);
+      expect(() => store.approveNodes(run.id)).toThrow(/plan audit is still open.*antigravity/s);
+    });
+
+    it("lets the human approve once every auditor published its pass", () => {
+      const { store, run } = fixture();
+      store.setRunAuditors(run.id, ["codex", "antigravity"]);
+      store.publishGraph(run.id, { nodes: plan }, "claude");
+      store.recordPlanPass(run.id, "codex", 0);
+      store.recordPlanPass(run.id, "antigravity", 1);
+
+      expect(store.getRun(run.id)?.planGate?.open).toBe(false);
+      expect(store.approveNodes(run.id).every((node) => node.approved)).toBe(true);
+    });
+
+    it("records who was missing when the human approves without waiting", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: plan }, "claude");
+
+      store.approveNodes(run.id, undefined, { force: true });
+      const detail = store.getRunDetail(run.id)!;
+      expect(detail.nodes.every((node) => node.approved)).toBe(true);
+      expect(detail.run.planGate?.overriddenVersion).toBe(detail.run.graphVersion);
+      expect(detail.activity.some((item) => item.agent === "human"
+        && item.message.includes("sin esperar la auditoría del plan")
+        && item.message.includes("codex"))).toBe(true);
+    });
+
+    it("asks for the round again when the graph is republished before starting", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: plan }, "claude");
+      store.recordPlanPass(run.id, "codex", 0);
+      expect(store.getRun(run.id)?.planGate?.open).toBe(false);
+
+      store.publishGraph(run.id, { nodes: [{ ...plan[0], description: "Otro alcance" }] }, "claude");
+      const gate = store.getRun(run.id)?.planGate;
+      expect(gate?.pending).toEqual(["codex"]);
+      expect(gate?.open).toBe(true);
+    });
+
+    it("does not block the run once implementation started: discovered nodes keep the informative round", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: plan }, "claude");
+      store.recordPlanPass(run.id, "codex", 0);
+      store.approveNodes(run.id);
+
+      const discovered = store.addDiscoveredNode(run.id, { id: "dos", file: "B.ts", symbol: "B.b", title: "Dos", description: "Found", rationale: "Required", dependencies: ["uno"] });
+      expect(discovered.approved).toBe(true);
+      const gate = store.getRun(run.id)?.planGate;
+      expect(gate?.pending).toEqual(["codex"]);
+      expect(gate?.open).toBe(false);
+    });
+
+    it("only accepts a plan pass from an auditor of the run", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: plan }, "claude");
+      expect(() => store.recordPlanPass(run.id, "antigravity", 0)).toThrow(/not an auditor/);
     });
   });
 });
