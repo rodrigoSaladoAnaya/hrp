@@ -400,17 +400,6 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .approval-banner button.plan-gate-cancel { min-height: 34px; border: 1px solid #8a6a1c; color: #6d4d05; background: transparent; font-size: .76rem; }
 .approval-banner button.plan-gate-cancel:hover:not(:disabled) { color: #17201e; background: #f2d28b; }
 
-/* Auditoría del plan dentro de la barra de aprobación: ocupa el ancho completo
-   para no competir con los botones, y cada hallazgo se lee como una ficha. */
-.approval-banner .plan-findings { flex-basis: 100%; margin-top: 4px; }
-.approval-banner .plan-findings > p { margin: 0 0 7px; color: #5c451c; font-size: .78rem; }
-.approval-banner .plan-findings ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.approval-banner .plan-findings li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 9px; padding: 8px 10px; border: 1px solid #d9b98a; border-radius: 3px; background: #fdf7ec; }
-.approval-banner .plan-findings b { color: #4a3812; font-size: .8rem; }
-.plan-finding-severity { flex: none; padding: 2px 8px; border-radius: 999px; font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-.plan-finding-reviewer { flex: none; color: #7a6a4a; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .66rem; }
-.plan-finding-body { flex-basis: 100%; color: #5c451c; font-size: .76rem; }
-.plan-finding-answer { flex-basis: 100%; padding-top: 5px; border-top: 1px dashed #ddc79c; color: #43514c; font-size: .74rem; }
 .human-controls { display: grid; gap: 9px; padding: 12px 0 14px; border-bottom: 1px solid #c6ccc5; }
 .approve-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 0 14px; border: 0; border-radius: 3px; color: #fff; background: #2d6a50; cursor: pointer; font-size: .8rem; font-weight: 750; }
 .approve-button:hover { background: #245741; }
@@ -703,6 +692,7 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .finding-meta { flex: none; color: #58655f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .66rem; }
 
 .severity-chip { flex: none; padding: 2px 8px; border-radius: 999px; font-size: .62rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.finding-scope { flex: none; padding: 2px 7px; border: 1px dashed #90a59a; border-radius: 999px; color: #2f5a4a; background: #e4efe8; font-size: .6rem; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
 .severity-critical { border: 1px solid #c0392b; color: #8c1f14; background: #f9e2de; }
 .severity-major { border: 1px solid #d9b98a; color: #6d4d05; background: #f7ecd7; }
 .severity-minor { border: 1px solid #aab5af; color: #43514c; background: #eef0ea; }

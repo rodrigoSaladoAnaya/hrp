@@ -763,6 +763,7 @@ function FindingsPanel({ findings, nodes, runId, onChanged, onSelectNode }: {
             <li key={finding.id} className={`finding-card status-${finding.status} ${finding.status === "escalated" ? "needs-human" : ""}`}>
               <button type="button" className="finding-summary" aria-expanded={expanded} onClick={() => setExpandedId(expanded ? "" : finding.id)}>
                 <span className={`severity-chip severity-${finding.severity}`}>{severityCopy[finding.severity]}</span>
+                {finding.scope === "plan" && <span className="finding-scope">grafo</span>}
                 <strong>{finding.title}</strong>
                 <span className="finding-meta">{finding.reviewer} · {findingStatusCopy[finding.status]}</span>
               </button>
@@ -1276,10 +1277,10 @@ export function App() {
   const progress = detail?.run.nodeCount ? Math.round((detail.run.completedCount / detail.run.nodeCount) * 100) : 0;
   const publishedActivity = detail?.activity.filter((entry) => entry.type !== "run").length ?? 0;
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
-  // Auditoría del plan: sus hallazgos se leen junto al botón, que es donde
-  // pueden cambiar la decisión, y su ronda bloquea la aprobación inicial hasta
-  // que todos los auditores elegidos opinen sobre esta versión del grafo.
-  const planFindings = detail?.findings.filter((finding) => finding.scope === "plan") ?? [];
+  const liveFindingsCount = detail?.findings.filter((finding) => liveFindingStatuses.includes(finding.status)).length ?? 0;
+  const escalatedImplementationFindings = detail?.findings.filter((finding) => finding.scope !== "plan" && finding.status === "escalated") ?? [];
+  // Auditoría del plan: sólo la ronda pendiente puede bloquear la aprobación
+  // inicial. Los hallazgos que produzca ya viven en Hallazgos para debate.
   const planGate = detail?.run.planGate;
   const planGateOpen = Boolean(planGate?.open);
   // La confirmación en dos pasos pertenece a la ronda que el humano está
@@ -1358,7 +1359,7 @@ export function App() {
         <div className="content-shell">
           <div className="content-toolbar">
             <div className="current-context"><Icon name="route"/><span>{detail?.run.title ?? "Sin ejecución seleccionada"}</span></div>
-            <nav aria-label="Vista principal"><button aria-pressed={view === "map"} className={view === "map" ? "active" : ""} onClick={() => setView("map")}><Icon name="route"/>Mapa</button><button aria-pressed={view === "activity"} className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}><Icon name="activity"/>Actividad</button><button aria-pressed={view === "findings"} className={view === "findings" ? "active" : ""} onClick={() => setView("findings")}><Icon name="warning"/>Hallazgos{(detail?.run.openFindings ?? 0) > 0 && <span className="nav-findings-count">{detail?.run.openFindings}</span>}</button></nav>
+            <nav aria-label="Vista principal"><button aria-pressed={view === "map"} className={view === "map" ? "active" : ""} onClick={() => setView("map")}><Icon name="route"/>Mapa</button><button aria-pressed={view === "activity"} className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}><Icon name="activity"/>Actividad</button><button aria-pressed={view === "findings"} className={view === "findings" ? "active" : ""} onClick={() => setView("findings")}><Icon name="warning"/>Hallazgos{liveFindingsCount > 0 && <span className="nav-findings-count">{liveFindingsCount}</span>}</button></nav>
           </div>
           {loadingRun ? <LoadingState label="Cargando ejecución"/> : !runId || !detail ? <EmptyState kind="runs"/> : (
             <main className="workspace">
@@ -1413,32 +1414,13 @@ export function App() {
                         {overrideArmed && <button type="button" className="plan-gate-cancel" onClick={() => setOverrideArmed(false)}>Cancelar</button>}
                       </div>
                     )}
-                    {planFindings.length > 0 && (
-                      <div className="plan-findings">
-                        <p>{planFindings.length === 1 ? "La auditoría del plan dejó 1 observación sobre el grafo:" : `La auditoría del plan dejó ${planFindings.length} observaciones sobre el grafo:`} decides tú si aprobar así o pedir al modelo base que republique el grafo corregido.</p>
-                        <ul>
-                          {planFindings.map((finding) => {
-                            const answer = finding.messages.at(-1);
-                            return (
-                              <li key={finding.id}>
-                                <span className={`plan-finding-severity severity-${finding.severity}`}>{finding.severity}</span>
-                                <b>{finding.title}</b>
-                                <span className="plan-finding-reviewer">{finding.reviewer}</span>
-                                <span className="plan-finding-body">{finding.body}</span>
-                                {answer && <span className="plan-finding-answer">{answer.author}: {answer.body}</span>}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    )}
                     {approveError && <p className="approve-error" role="alert">{approveError}</p>}
                   </div>
                 )}
-                {detail.findings.some((finding) => finding.status === "escalated") && view !== "findings" && (
+                {escalatedImplementationFindings.length > 0 && view !== "findings" && (
                   <div className="approval-banner findings-banner" role="status">
                     <Icon name="warning"/>
-                    <p>{detail.findings.filter((finding) => finding.status === "escalated").length === 1 ? "1 hallazgo del debate espera tu arbitraje." : `${detail.findings.filter((finding) => finding.status === "escalated").length} hallazgos del debate esperan tu arbitraje.`} Los modelos no llegaron a acuerdo.</p>
+                    <p>{escalatedImplementationFindings.length === 1 ? "1 hallazgo del debate espera tu arbitraje." : `${escalatedImplementationFindings.length} hallazgos del debate esperan tu arbitraje.`} Los modelos no llegaron a acuerdo.</p>
                     <button type="button" onClick={() => setView("findings")}>Ver hallazgos</button>
                   </div>
                 )}
