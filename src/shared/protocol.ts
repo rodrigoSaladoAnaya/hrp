@@ -284,7 +284,22 @@ export type OllamaSettingsView = {
   keyMask?: string;
 };
 
+export type ViewShortcutModifier = "meta" | "ctrl" | "either";
+
+export type UiPreferences = {
+  viewShortcuts: {
+    enabled: boolean;
+    modifier: ViewShortcutModifier;
+  };
+};
+
 export const DEFAULT_OLLAMA_MODEL = "kimi-k2.7-code";
 export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
+export const DEFAULT_UI_PREFERENCES: UiPreferences = {
+  viewShortcuts: {
+    enabled: true,
+    modifier: "meta",
+  },
+};
 
 export const PROTOCOL_VERSION = "3.0";

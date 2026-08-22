@@ -149,6 +149,14 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .settings-clear { border: 1px solid #a03c2c; color: #a03c2c; background: transparent; }
 .settings-clear:hover:not(:disabled) { color: #fff; background: #a03c2c; }
 .settings-hint { margin: 11px 0 0; color: #58655f; font-size: .7rem; line-height: 1.4; }
+.settings-section { margin-top: 14px; padding-top: 13px; border-top: 1px solid #c7cec9; }
+.settings-check { display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 8px; margin: 7px 0 10px; color: #26332f; font-size: .78rem; line-height: 1.35; }
+.settings-check input { width: 16px; height: 16px; margin: 0; accent-color: #35443f; }
+.shortcut-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 3px; border: 1px solid #9aa6a0; border-radius: 4px; background: #e6e9e2; }
+.shortcut-options button { min-height: 34px; border: 0; border-radius: 3px; color: #394641; background: transparent; cursor: pointer; font-size: .76rem; font-weight: 800; }
+.shortcut-options button.active { color: #fff; background: #35443f; }
+.shortcut-options button:focus-visible { outline: 2px solid #087e96; outline-offset: 1px; }
+.shortcut-options button:disabled { opacity: .58; cursor: default; }
 
 .help-wrap { position: relative; }
 .help-toggle { width: 34px; height: 34px; border: 1px solid #5d6d66; border-radius: 999px; color: #dfe5e1; background: transparent; cursor: pointer; font-size: .9rem; font-weight: 800; }

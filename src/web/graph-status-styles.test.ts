@@ -53,4 +53,15 @@ describe("graph status style contracts", () => {
     expect(declarationFor(".react-flow__edge.route-edge-running .react-flow__edge-path")).toContain("stroke: var(--running)");
     expect(declarationFor(".react-flow__edge.route-edge-failed .react-flow__edge-path")).toContain("stroke: var(--failed)");
   });
+
+  it("keeps shortcut settings controls wired to CSS", () => {
+    const app = readWebFile("App.tsx");
+
+    expect(app).toContain("shortcut-settings");
+    expect(app).toContain("shortcut-options");
+    expect(declarationFor(".settings-section")).toContain("border-top");
+    expect(declarationFor(".settings-check")).toContain("grid-template-columns");
+    expect(declarationFor(".shortcut-options")).toContain("grid-template-columns");
+    expect(declarationFor(".shortcut-options button.active")).toContain("background: #35443f");
+  });
 });

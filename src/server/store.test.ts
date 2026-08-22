@@ -73,6 +73,38 @@ describe("HrpStore", () => {
     expect(approveGraph(store, run.id)).toHaveLength(1);
   });
 
+  it("returns UI preference defaults before any value is persisted", () => {
+    const { store } = fixture();
+    expect(store.getUiPreferences()).toEqual({
+      viewShortcuts: {
+        enabled: true,
+        modifier: "meta",
+      },
+    });
+  });
+
+  it("persists UI preferences while merging partial updates", () => {
+    const { store } = fixture();
+    expect(store.setUiPreferences({ viewShortcuts: { enabled: false, modifier: "ctrl" } })).toEqual({
+      viewShortcuts: {
+        enabled: false,
+        modifier: "ctrl",
+      },
+    });
+    expect(store.setUiPreferences({ viewShortcuts: { enabled: true } })).toEqual({
+      viewShortcuts: {
+        enabled: true,
+        modifier: "ctrl",
+      },
+    });
+    expect(store.getUiPreferences()).toEqual({
+      viewShortcuts: {
+        enabled: true,
+        modifier: "ctrl",
+      },
+    });
+  });
+
   it("reports observable agent work without exposing private reasoning", () => {
     const { store, run } = fixture();
     store.publishGraph(run.id, { nodes: [
