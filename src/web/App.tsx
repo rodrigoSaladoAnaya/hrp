@@ -19,6 +19,7 @@ import { auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, t
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
+import { resolveProjectRunListState } from "./project-tree-runs";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -70,7 +71,6 @@ const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
 const graphMagnifierScale = 1.65;
 const graphMagnifierSize = 236;
-
 function readCssPixels(property: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
   const value = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(property));
@@ -846,8 +846,10 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
   // Sin override del usuario, solo el proyecto activo se muestra expandido:
   // la lista crece con cada ejecución y debe seguir siendo navegable.
   const [collapseOverrides, setCollapseOverrides] = useState<Record<string, boolean>>({});
+  const [expandedRunLists, setExpandedRunLists] = useState<Record<string, boolean>>({});
   const isCollapsed = (id: string) => collapseOverrides[id] ?? (id !== projectId);
   const toggleCollapse = (id: string) => setCollapseOverrides((previous) => ({ ...previous, [id]: !isCollapsed(id) }));
+  const toggleRunList = (id: string) => setExpandedRunLists((previous) => ({ ...previous, [id]: !(previous[id] ?? false) }));
   const selectProject = (project: ProjectWithRuns) => {
     setCollapseOverrides((previous) => { const next = { ...previous }; delete next[project.id]; return next; });
     onProject(project);
@@ -861,6 +863,8 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
       <div className="tree-scroll">
         {orderedProjects.map((project) => {
           const runs = sortRuns(project.runs);
+          const runListExpanded = expandedRunLists[project.id] ?? false;
+          const { visibleRuns, collapsedHiddenRuns, canToggleRuns } = resolveProjectRunListState(runs, { runId, expanded: runListExpanded });
           const selected = project.id === projectId;
           const collapsed = isCollapsed(project.id);
           return (
@@ -892,7 +896,7 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
               </div>
               {collapsed ? null : runs.length ? (
                 <ul>
-                  {runs.map((run) => (
+                  {visibleRuns.map((run) => (
                     <li className="tree-run-row" key={run.id}>
                       <button type="button" className={`tree-run status-${run.status} ${run.id === runId ? "is-current" : ""}`} aria-current={run.id === runId ? "page" : undefined} onClick={() => onRun(project.id, run.id)}>
                         <span className="tree-signal"/>
@@ -904,6 +908,14 @@ function ProjectTree({ projects, projectId, runId, agentDock, onProject, onRun, 
                       <button type="button" className="tree-delete" aria-label={`Eliminar la ejecución ${run.title}`} title="Eliminar ejecución" onClick={() => onDeleteRun(run)}>×</button>
                     </li>
                   ))}
+                  {canToggleRuns && (
+                    <li className="tree-more-row">
+                      <button type="button" className={`tree-show-more ${runListExpanded ? "is-expanded" : ""}`} aria-expanded={runListExpanded} onClick={() => toggleRunList(project.id)}>
+                        {runListExpanded ? "Mostrar menos" : "Mostrar más"}
+                        {!runListExpanded && <span>{collapsedHiddenRuns}</span>}
+                      </button>
+                    </li>
+                  )}
                 </ul>
               ) : <p className="tree-empty">Sin ejecuciones</p>}
             </section>
