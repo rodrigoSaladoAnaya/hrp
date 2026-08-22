@@ -204,8 +204,8 @@ export class HrpMcpClient {
     });
   }
 
-  // force es el 'aprobar sin esperar' del humano frente al gate del plan: el
-  // servicio registra qué auditores faltaban antes de aprobar.
+  // force se conserva para clientes antiguos; aprobar ya no espera la auditoría
+  // del plan.
   async approveNodes(runId: string, nodeIds?: string[], force?: boolean): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/approve`, {
       method: "POST",
@@ -213,8 +213,8 @@ export class HrpMcpClient {
     });
   }
 
-  // Cierre de la pasada de auditoría del plan: es lo que desbloquea la
-  // aprobación humana del grafo, con hallazgos o sin ellos.
+  // Cierre de la pasada de auditoría del plan. La aprobación humana no espera
+  // esta ronda; sus observaciones entran como hallazgos de grafo.
   async planPass(runId: string, agent: string, findings?: number): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/plan-pass`, {
       method: "POST",
@@ -559,7 +559,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
         },
         force: {
           type: "boolean",
-          description: "Aprueba sin esperar a que los auditores cierren la auditoría del plan. Es una decisión del humano y queda registrada con los auditores que faltaban.",
+          description: "Compatibilidad con clientes antiguos; la aprobación normal ya no espera la auditoría del plan.",
         },
       },
       required: ["runId"],
@@ -567,7 +567,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
   },
   {
     name: "hrp_plan_pass",
-    description: "Publica tu pasada de auditoría del plan sobre la versión vigente del grafo. Mientras falte la pasada de algún auditor elegido, el humano no puede aprobar el grafo; publícala con hallazgos o declarando el plan sano.",
+    description: "Publica tu pasada de auditoría del plan sobre la versión vigente del grafo. La aprobación humana no espera esta ronda; publica hallazgos de grafo o declara el plan sano.",
     inputSchema: {
       type: "object",
       properties: {

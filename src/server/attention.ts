@@ -143,18 +143,13 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
     return decide("findings", `Tu acuerdo falta en ${agreementsPending.length} ${agreementsPending.length === 1 ? "hallazgo" : "hallazgos"} (${agreementsPending.map((finding) => finding.id).join(", ")}). Lee el hilo con 'hrp finding show <id>'; si discrepas, responde con 'hrp finding reply <id> --author ${agent} --body ...'. Si aceptas que el reportero implemente la corrección vinculada y que otro agente la audite, publica 'hrp finding agree <id> --author ${agent}'.`);
   }
 
-  // Gate del plan. Mientras la ronda siga abierta no hay ningún nodo aprobado,
-  // así que el único trabajo real del run es la opinión que falta: el auditor
-  // pendiente la recibe como orden accionable y el modelo base como espera
-  // explícita. Sin esta señal el auditor de sesión sólo veía "esperando
-  // implementación" y el gate se volvería un bloqueo que nadie puede abrir.
+  // Auditoría del plan antes del arranque: si un auditor está despierto, puede
+  // revisar el grafo y publicar hallazgos, pero el modelo base y el humano no
+  // quedan retenidos esperando esa pasada.
   const planGate = run.planGate;
   if (planGate?.open && run.control === "active") {
     if (planGate.pending.includes(agent)) {
-      return decide("plan", `Auditoría del plan disponible para ${agent}: el humano no puede aprobar la versión ${planGate.graphVersion} del grafo hasta que opines. Obtén el paquete con 'hrp graph review ${run.id} --agent ${agent}' y revisa el GRAFO, no código —todavía no existe—: nodo faltante, corte incorrecto, dependencia mal declarada, nodo sin verificación observable o fuera del requisito. Reporta con 'hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question --scope plan --reviewer ${agent}' y, con hallazgos o sin ellos, cierra tu pasada con 'hrp graph review done ${run.id} --agent ${agent}'.`);
-    }
-    if (run.baseAgent === agent) {
-      return decide("plan-wait", `Tu grafo (versión ${planGate.graphVersion}) está en auditoría de plan y el humano no puede aprobarlo hasta que cierre: falta la pasada de ${planGate.pending.join(", ")}. No pidas la aprobación todavía ni empieces a editar; atiende los hallazgos de plan que lleguen y permanece atento, que la señal llega sola.`);
+      return decide("plan", `Auditoría del plan disponible para ${agent}: obtén el paquete con 'hrp graph review ${run.id} --agent ${agent}' y revisa la versión ${planGate.graphVersion} del GRAFO, no código —todavía puede no existir—. Busca nodo faltante, corte incorrecto, dependencia mal declarada, nodo sin verificación observable o fuera del requisito. Reporta con 'hrp finding add ${run.id} --title T --body B --severity critical|major|minor|question --scope plan --reviewer ${agent}' y, con hallazgos o sin ellos, cierra tu pasada con 'hrp graph review done ${run.id} --agent ${agent}'.`);
     }
   }
 

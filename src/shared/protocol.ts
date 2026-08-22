@@ -18,20 +18,17 @@ export type Project = {
 };
 
 // Estado de la ronda de auditoría del plan sobre la versión vigente del grafo.
-// 'open' ES el bloqueo: mientras siga abierto, el servidor rechaza la
-// aprobación humana inicial porque algún auditor elegido todavía no publicó su
-// pasada sobre esa versión. Sólo cubre el gate inicial; una vez que hay nodos
-// aprobados, republicar el grafo ya no vuelve a bloquear la ejecución.
+// 'open' significa que aún faltan pasadas de auditores antes de que arranque la
+// implementación; ya no retiene la aprobación humana inicial.
 export type PlanGateStatus = {
   graphVersion: number;
   auditors: string[];
   // Auditores con pasada publicada sobre graphVersion.
   reviewed: string[];
-  // Auditores elegidos que aún no opinan; son los que sostienen el bloqueo.
+  // Auditores elegidos que aún no opinan sobre esta versión.
   pending: string[];
   open: boolean;
-  // Versión que el humano aprobó sin esperar. Sólo libera esa versión: un grafo
-  // republicado vuelve a exigir la ronda.
+  // Compatibilidad con runs antiguos que guardaron una aprobación con override.
   overriddenVersion?: number;
 };
 
@@ -55,9 +52,8 @@ export type RunSummary = {
   // Votos OK que aún faltan para alcanzar la mayoría simple del censo auditor.
   // Este es el dato que bloquea el cierre; pendingAuditorCount es informativo.
   pendingAuditorVotes?: number;
-  // Ronda de auditoría del plan sobre el grafo vigente: con planGate.open la
-  // aprobación inicial está bloqueada hasta que los pendientes publiquen su
-  // pasada o el humano use el override explícito.
+  // Ronda de auditoría del plan sobre el grafo vigente. Es informativa para el
+  // panel y accionable para auditores, pero no bloquea aprobar el grafo.
   planGate?: PlanGateStatus;
   nodeCount: number;
   completedCount: number;

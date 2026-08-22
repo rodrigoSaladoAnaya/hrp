@@ -653,12 +653,11 @@ describe("attentionRank", () => {
       expect(signal.directive).toContain("hrp graph review done");
     });
 
-    it("mantiene esperando al modelo base y le nombra a quien falta", () => {
+    it("no retiene al modelo base mientras faltan pasadas de plan", () => {
       const signal = computeAttention(detail({ nodes: [node({ id: "uno", approved: false })], run: gate(["codex"]) }), "claude");
-      expect(signal.kind).toBe("plan-wait");
+      expect(signal.kind).toBe("idle");
       expect(signal.actionable).toBe(false);
-      expect(signal.waiting).toBe(true);
-      expect(signal.directive).toContain("codex");
+      expect(signal.directive).not.toContain("codex");
     });
 
     it("deja de reclamarle al auditor que ya publicó su pasada", () => {

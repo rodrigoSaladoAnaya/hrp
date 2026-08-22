@@ -368,7 +368,8 @@ export class HrpStore {
     if (!runColumns.some((column) => String(column.name) === "change_branch")) {
       this.database.exec("ALTER TABLE runs ADD COLUMN change_branch TEXT");
     }
-    // Versión del grafo que el humano aprobó sin esperar la auditoría del plan.
+    // Compatibilidad con runs antiguos que registraron una aprobación con
+    // override cuando la auditoría del plan sí bloqueaba.
     // NULL es lo normal: nadie se saltó la ronda. Las ejecuciones anteriores a
     // v3.3 quedan en NULL y sin filas en plan_passes, que es lo correcto porque
     // su gate ya se decidió cuando la ronda todavía no bloqueaba nada.
@@ -888,11 +889,9 @@ export class HrpStore {
     this.database.prepare("DELETE FROM attention_releases WHERE run_id = ? AND agent = ?").run(runId, agent);
   }
 
-  // Regla única del gate del plan: quién ya opinó sobre la versión vigente del
-  // grafo y si por eso la aprobación humana sigue bloqueada. El bloqueo cubre
-  // exclusivamente el gate inicial —con un nodo ya aprobado la ejecución
-  // arrancó, y los descubiertos posteriores no pueden frenarla esperando otra
-  // ronda—, y el override sólo libera la versión exacta que el humano vio.
+  // Ronda de plan: quién ya opinó sobre la versión vigente del grafo. 'open'
+  // sólo significa "hay auditores pendientes antes de que arranque"; no retiene
+  // la aprobación humana.
   planGateStatus(runId: string): PlanGateStatus {
     const row = this.database.prepare("SELECT graph_version, auditors_json, plan_override_version FROM runs WHERE id = ?").get(runId) as Row | undefined;
     if (!row) throw new Error(`Unknown run: ${runId}`);
@@ -931,24 +930,21 @@ export class HrpStore {
     const status = this.planGateStatus(runId);
     this.addActivity(runId, "graph",
       `Auditoría del plan cerrada por ${auditor} · ${findings === 0 ? "sin hallazgos" : `${findings} ${findings === 1 ? "hallazgo" : "hallazgos"}`} sobre la versión ${run.graphVersion}`,
-      status.pending.length ? `Faltan por opinar: ${status.pending.join(", ")}` : "Ronda completa: el humano ya puede aprobar el grafo.",
+      status.pending.length ? `Faltan por opinar: ${status.pending.join(", ")}` : "Ronda completa.",
       undefined, auditor);
     return status;
   }
 
-  // force es la decisión explícita del humano de aprobar sin esperar la ronda
-  // del plan: no la salta en silencio, deja registrado en la actividad qué
-  // auditores faltaban y sobre qué versión del grafo se decidió.
-  approveNodes(runId: string, nodeIds?: string[], options: { force?: boolean } = {}): ChangeNode[] {
+  // La auditoría del plan es paralela al flujo humano: los auditores pueden
+  // publicar hallazgos de grafo cuando despierten, pero no retienen la aprobación
+  // inicial. El parámetro force queda en la API por compatibilidad y ya no cambia
+  // el comportamiento.
+  approveNodes(runId: string, nodeIds?: string[]): ChangeNode[] {
     const run = this.getRun(runId);
     if (!run) throw new Error(`Unknown run: ${runId}`);
     if (run.auditors.length === 0) throw new Error("Choose at least one auditor before approving the graph");
     if (run.auditors.includes("ollama") && !this.getOllamaSettings().apiKey) {
       throw new Error("Ollama is selected as auditor but is not configured; configure its API key or choose another auditor");
-    }
-    const gate = this.planGateStatus(runId);
-    if (gate.open && !options.force) {
-      throw new Error(`The plan audit is still open on graph version ${gate.graphVersion}: ${gate.pending.join(", ")} ${gate.pending.length === 1 ? "has" : "have"} not published a pass yet. Wait for the round to close, or approve without waiting (panel button, or 'hrp node approve --force'), which records who was missing.`);
     }
     const targets = nodeIds?.length
       ? nodeIds.map((id) => this.requireNode(runId, id))
@@ -956,13 +952,6 @@ export class HrpStore {
     const pending = targets.filter((node) => !node.approved);
     if (!pending.length) throw new Error("No nodes are awaiting approval");
     const timestamp = now();
-    if (gate.open) {
-      this.database.prepare("UPDATE runs SET plan_override_version = ?, updated_at = ? WHERE id = ?").run(gate.graphVersion, timestamp, runId);
-      this.addActivity(runId, "graph",
-        `Aprobado sin esperar la auditoría del plan · faltaban ${gate.pending.join(", ")}`,
-        `Versión ${gate.graphVersion} del grafo. El humano decidió no esperar la ronda; ${gate.reviewed.length ? `ya habían opinado: ${gate.reviewed.join(", ")}` : "ningún auditor había opinado"}.`,
-        undefined, "human");
-    }
     const update = this.database.prepare("UPDATE nodes SET approved = 1, updated_at = ? WHERE run_id = ? AND id = ?");
     for (const node of pending) update.run(timestamp, runId, node.id);
     this.touchRun(runId, timestamp);

@@ -446,10 +446,10 @@ Uso:
   hrp run auditors <run-id> <agente...>
   hrp run delete <run-id> --yes
   hrp graph publish <run-id> <graph.json> --agent NOMBRE
-  hrp graph review <run-id> [--agent NOMBRE]   (audita el PLAN antes de aprobarlo)
-  hrp graph review done <run-id> --agent NOMBRE [--findings N]   (cierra tu pasada y desbloquea la aprobación)
+  hrp graph review <run-id> [--agent NOMBRE]   (audita el PLAN y reporta hallazgos de grafo)
+  hrp graph review done <run-id> --agent NOMBRE [--findings N]   (cierra tu pasada de auditoría del plan)
   hrp node discover <run-id> <node.json>
-  hrp node approve <run-id> [node-id...] [--force]   (--force aprueba sin esperar la auditoría del plan)
+  hrp node approve <run-id> [node-id...]
   hrp node assign <run-id> <node-id> <agente|->
   hrp node start <run-id> <node-id> [--agent NOMBRE]
   hrp node retry <run-id> <node-id> [--agent NOMBRE]
@@ -588,9 +588,9 @@ async function main() {
     return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), agent }) }));
   }
   if (group === "graph" && action === "review" && first === "done") {
-    // Cierre de la pasada: es lo que desbloquea la aprobación humana. Se publica
-    // igual con hallazgos que sin ellos, porque lo que la ronda exige es la
-    // opinión del auditor, no su conformidad con el plan.
+    // Cierre de la pasada. Se publica igual con hallazgos que sin ellos, porque
+    // lo que la ronda registra es la opinión del auditor, no su conformidad con
+    // el plan ni un permiso para el humano.
     const agent = value("--agent", process.env.HRP_AGENT);
     if (!second || !agent) throw new Error("Uso: hrp graph review done <run-id> --agent NOMBRE [--findings N]");
     const findings = Number(value("--findings", "0"));
@@ -599,13 +599,13 @@ async function main() {
     if (json) return print(result);
     const gate = result.planGate ?? {};
     return print(gate.pending?.length
-      ? `Pasada publicada por ${agent} sobre la versión ${gate.graphVersion}. La aprobación sigue esperando a: ${gate.pending.join(", ")}.`
-      : `Pasada publicada por ${agent} sobre la versión ${gate.graphVersion}. Ronda completa: el humano ya puede aprobar el grafo.`);
+      ? `Pasada publicada por ${agent} sobre la versión ${gate.graphVersion}. Faltan por opinar: ${gate.pending.join(", ")}.`
+      : `Pasada publicada por ${agent} sobre la versión ${gate.graphVersion}. Ronda completa.`);
   }
   if (group === "graph" && action === "review") {
-    // Auditoría del PLAN: entrega el grafo a los auditores antes de aprobarlo.
-    // Mientras la ronda siga abierta, el servidor rechaza la aprobación humana:
-    // cada auditor la cierra con 'hrp graph review done'.
+    // Auditoría del PLAN: entrega el grafo a los auditores. La aprobación
+    // humana no espera esta ronda; cada auditor publica hallazgos de grafo y
+    // cierra su pasada con 'hrp graph review done'.
     if (!first) throw new Error("Uso: hrp graph review <run-id> [--agent NOMBRE]");
     const detail = await api(`/api/runs/${encodeURIComponent(first)}`);
     const auditors = detail.run?.auditors ?? [];
@@ -631,7 +631,7 @@ async function main() {
       pack = await packResponse.text();
     }
     if (json) return print({ runId: first, ollamaStarted, sessionAuditors, pack });
-    if (ollamaStarted) print("Auditoría del plan relanzada con ollama; sus hallazgos aparecerán en el panel antes de que apruebes el grafo.");
+    if (ollamaStarted) print("Auditoría del plan relanzada con ollama; sus hallazgos aparecerán en Hallazgos.");
     if (pack) {
       print(`Copia este paquete a ${sessionAuditors.join(", ")} para que auditen el plan:`);
       print("");
@@ -640,7 +640,7 @@ async function main() {
     const gate = detail.run?.planGate;
     if (gate?.open) {
       print("");
-      print(`La aprobación del grafo está bloqueada hasta que opinen: ${gate.pending.join(", ")}. Cada uno cierra su pasada con 'hrp graph review done ${first} --agent SU_NOMBRE [--findings N]'.`);
+      print(`Faltan pasadas de auditoría de plan: ${gate.pending.join(", ")}. Cada uno cierra su pasada con 'hrp graph review done ${first} --agent SU_NOMBRE [--findings N]'.`);
     }
     return;
   }
@@ -648,9 +648,9 @@ async function main() {
     return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(readJson(second)) }));
   }
   if (group === "node" && action === "approve") {
-    const nodeIds = args.slice(3);
-    // --force aprueba sin esperar la auditoría del plan; el servicio deja
-    // registrado en la actividad qué auditores faltaban.
+    const nodeIds = args.slice(3).filter((value) => value !== "--force");
+    // --force queda tolerado para scripts viejos; aprobar ya no espera la
+    // auditoría del plan.
     const body = { ...(nodeIds.length ? { nodeIds } : {}), ...(flag("--force") ? { force: true } : {}) };
     return print(await api(`/api/runs/${first}/approve`, { method: "POST", body: JSON.stringify(body) }));
   }
@@ -931,7 +931,7 @@ async function main() {
       }
     }
     if (lastKind === "plan-wait") {
-      throw new Error(`La auditoría del plan sigue abierta después de ${timeoutSeconds}s: falta la pasada de ${pendingAuditors.join(", ") || "algún auditor"}. Vuelve a ejecutar 'hrp wait approval'; el humano no puede aprobar el grafo hasta que cierre, y puede saltarse la espera desde el panel.`);
+      throw new Error(`La auditoría del plan sigue abierta después de ${timeoutSeconds}s: falta la pasada de ${pendingAuditors.join(", ") || "algún auditor"}. La aprobación humana no espera esta ronda; vuelve a ejecutar 'hrp wait approval' si quieres seguir esperando auditores.`);
     }
     if (lastKind === "implementation") {
       throw new Error(`La implementación aún no termina después de ${timeoutSeconds}s. Vuelve a ejecutar 'hrp wait approval'; no necesitas pedir otra aprobación humana.`);

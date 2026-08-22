@@ -14,13 +14,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-// Desde el gate del plan, aprobar exige que los auditores elegidos hayan
-// publicado su pasada sobre esa versión del grafo. Las pruebas que sólo
-// necesitan un grafo aprobado cierran la ronda como lo haría el auditor real,
-// en vez de saltársela con el override del humano.
 function approveGraph(store: HrpStore, runId: string, nodeIds?: string[]) {
-  const gate = store.getRun(runId)?.planGate;
-  if (gate?.open) for (const auditor of gate.pending) store.recordPlanPass(runId, auditor, 0);
   return store.approveNodes(runId, nodeIds);
 }
 
@@ -1240,7 +1234,7 @@ describe("HrpStore", () => {
   describe("gate del plan", () => {
     const plan = [{ id: "uno", file: "A.ts", symbol: "A.a", title: "Uno", description: "Work", rationale: "Required", dependencies: [] }];
 
-    it("rejects approval while an auditor has not published its plan pass", () => {
+    it("lets the human approve while plan auditors are still pending", () => {
       const { store, run } = fixture();
       store.setRunAuditors(run.id, ["codex", "antigravity"]);
       store.publishGraph(run.id, { nodes: plan }, "claude");
@@ -1250,7 +1244,8 @@ describe("HrpStore", () => {
       expect(gate?.reviewed).toEqual(["codex"]);
       expect(gate?.pending).toEqual(["antigravity"]);
       expect(gate?.open).toBe(true);
-      expect(() => store.approveNodes(run.id)).toThrow(/plan audit is still open.*antigravity/s);
+      expect(store.approveNodes(run.id).every((node) => node.approved)).toBe(true);
+      expect(store.getRun(run.id)?.planGate?.open).toBe(false);
     });
 
     it("lets the human approve once every auditor published its pass", () => {
@@ -1264,17 +1259,14 @@ describe("HrpStore", () => {
       expect(store.approveNodes(run.id).every((node) => node.approved)).toBe(true);
     });
 
-    it("records who was missing when the human approves without waiting", () => {
+    it("does not surface plan-audit waiting as a separate human action", () => {
       const { store, run } = fixture();
       store.publishGraph(run.id, { nodes: plan }, "claude");
 
-      store.approveNodes(run.id, undefined, { force: true });
+      store.approveNodes(run.id);
       const detail = store.getRunDetail(run.id)!;
       expect(detail.nodes.every((node) => node.approved)).toBe(true);
-      expect(detail.run.planGate?.overriddenVersion).toBe(detail.run.graphVersion);
-      expect(detail.activity.some((item) => item.agent === "human"
-        && item.message.includes("sin esperar la auditoría del plan")
-        && item.message.includes("codex"))).toBe(true);
+      expect(detail.activity.some((item) => item.message.includes("sin esperar la auditoría del plan"))).toBe(false);
     });
 
     it("asks for the round again when the graph is republished before starting", () => {

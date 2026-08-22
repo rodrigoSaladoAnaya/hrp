@@ -949,9 +949,6 @@ export function App() {
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
   const [approveError, setApproveError] = useState<string>();
-  // El override del gate del plan se arma antes de dispararse: aprobar sin la
-  // revisión que el propio humano pidió no puede quedar a un clic de distancia.
-  const [overrideArmed, setOverrideArmed] = useState(false);
   const observedStatuses = useRef(new Map<string, NodeStatus>());
   const knownRunIds = useRef<Set<string> | undefined>(undefined);
   const loadedRunId = useRef("");
@@ -1280,14 +1277,6 @@ export function App() {
   const unapprovedCount = detail?.nodes.filter((node) => !node.approved).length ?? 0;
   const liveFindingsCount = detail?.findings.filter((finding) => liveFindingStatuses.includes(finding.status)).length ?? 0;
   const escalatedImplementationFindings = detail?.findings.filter((finding) => finding.scope !== "plan" && finding.status === "escalated") ?? [];
-  // Auditoría del plan: sólo la ronda pendiente puede bloquear la aprobación
-  // inicial. Los hallazgos que produzca ya viven en Hallazgos para debate.
-  const planGate = detail?.run.planGate;
-  const planGateOpen = Boolean(planGate?.open);
-  // La confirmación en dos pasos pertenece a la ronda que el humano está
-  // leyendo: cambiar de ejecución, republicar el grafo o cerrar la ronda
-  // desarma el override, para que el segundo clic nunca apruebe otra cosa.
-  useEffect(() => { setOverrideArmed(false); }, [runId, planGate?.graphVersion, planGateOpen]);
   const auditorsReady = Boolean(detail?.run.auditors.length) && (!detail?.run.auditors.includes("ollama") || Boolean(ollama?.configured));
   const globalPending = useMemo(() => globalPendingEntries(catalog.projects), [catalog.projects]);
   const graphMagnifierStyle: CSSProperties = {
@@ -1313,7 +1302,7 @@ export function App() {
 
   // paused = aprobar sin arrancar: el plan queda autorizado pero ningún agente
   // puede iniciar nodos hasta reanudar — tiempo para asignar y conectar agentes.
-  const approveAll = useCallback(async (paused = false, force = false) => {
+  const approveAll = useCallback(async (paused = false) => {
     if (!runId) return;
     setApproveError(undefined);
     const failure = async (response: Response | undefined, fallback: string) => {
@@ -1330,7 +1319,7 @@ export function App() {
         return;
       }
     }
-    const approved = await fetch(`/api/runs/${runId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(force ? { force: true } : {}) }).catch(() => undefined);
+    const approved = await fetch(`/api/runs/${runId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => undefined);
     if (!approved?.ok) {
       await failure(approved, "No se pudo aprobar el grafo.");
       await loadDetail(runId);
@@ -1393,28 +1382,9 @@ export function App() {
                 {unapprovedCount > 0 && (
                   <div className="approval-banner" role="status">
                     <Icon name="warning"/>
-                    <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} {detail.run.auditors.includes("ollama") && !ollama?.configured ? "Configura Ollama Cloud o elige otro auditor antes de iniciar." : detail.run.auditors.length ? `Auditarán: ${detail.run.auditors.join(", ")}.` : "Elige al menos un auditor en la columna izquierda para iniciar."}</p>
-                    <button type="button" disabled={!auditorsReady || planGateOpen} title={planGateOpen ? `La auditoría del plan sigue abierta: falta la pasada de ${planGate?.pending.join(", ")}` : undefined} onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
-                    <button type="button" disabled={!auditorsReady || planGateOpen} className="approve-paused" title={planGateOpen ? `La auditoría del plan sigue abierta: falta la pasada de ${planGate?.pending.join(", ")}` : "Autoriza el plan pero deja la ejecución en pausa: asigna nodos y conecta agentes con calma, y reanuda cuando todo esté listo"} onClick={() => { approveAll(true).catch(() => undefined); }}>Aprobar en pausa</button>
-                    {planGateOpen && planGate && (
-                      <div className="plan-gate">
-                        <p>
-                          <b>La auditoría del plan sigue abierta</b> sobre la versión {planGate.graphVersion} del grafo.
-                          {planGate.reviewed.length ? ` Ya opinaron: ${planGate.reviewed.join(", ")}.` : ""} Falta la pasada de {planGate.pending.join(", ")}.
-                          Los auditores con sesión reciben el aviso solos; si alguno no va a responder, puedes aprobar sin esperar y quedará registrado.
-                        </p>
-                        <button
-                          type="button"
-                          className="plan-gate-override"
-                          onClick={() => {
-                            if (!overrideArmed) { setOverrideArmed(true); return; }
-                            setOverrideArmed(false);
-                            approveAll(false, true).catch(() => undefined);
-                          }}
-                        >{overrideArmed ? `Confirmar: aprobar sin ${planGate.pending.join(", ")}` : "Aprobar sin esperar la auditoría"}</button>
-                        {overrideArmed && <button type="button" className="plan-gate-cancel" onClick={() => setOverrideArmed(false)}>Cancelar</button>}
-                      </div>
-                    )}
+                    <p>{unapprovedCount === 1 ? "1 operación espera tu aprobación." : `${unapprovedCount} operaciones esperan tu aprobación.`} {detail.run.auditors.includes("ollama") && !ollama?.configured ? "Configura Ollama Cloud o elige otro auditor antes de iniciar." : !detail.run.auditors.length ? "Elige al menos un auditor en la columna izquierda para iniciar." : ""}</p>
+                    <button type="button" disabled={!auditorsReady} onClick={() => { approveAll().catch(() => undefined); }}>Aprobar grafo</button>
+                    <button type="button" disabled={!auditorsReady} className="approve-paused" title="Autoriza el plan pero deja la ejecución en pausa: asigna nodos y conecta agentes con calma, y reanuda cuando todo esté listo" onClick={() => { approveAll(true).catch(() => undefined); }}>Aprobar en pausa</button>
                     {approveError && <p className="approve-error" role="alert">{approveError}</p>}
                   </div>
                 )}

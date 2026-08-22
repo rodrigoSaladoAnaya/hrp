@@ -360,10 +360,10 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/approve", (request, response, next) => {
     try {
-      // force es el 'aprobar sin esperar' del humano: el store lo deja
-      // registrado con los auditores que faltaban, no lo salta en silencio.
+      // force queda aceptado por compatibilidad con clientes antiguos; aprobar
+      // ya no espera la auditoría del plan.
       const input = z.object({ nodeIds: z.array(z.string()).min(1).optional(), force: z.boolean().optional() }).strict().parse(request.body ?? {});
-      const nodes = store.approveNodes(request.params.runId, input.nodeIds, { force: input.force });
+      const nodes = store.approveNodes(request.params.runId, input.nodeIds);
       broadcast(projectForRun(request.params.runId), request.params.runId, "graph-approved");
       response.json({ nodes });
     } catch (error) { next(error); }
@@ -575,9 +575,8 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
-  // Un auditor declara que ya opinó sobre esta versión del plan. Es lo único que
-  // cierra el gate desde fuera: sin esta ruta el bloqueo no tendría salida más
-  // que el override del humano.
+  // Un auditor declara que ya opinó sobre esta versión del plan. La aprobación
+  // humana no espera esta ruta; sirve para registrar la ronda y sus hallazgos.
   app.post("/api/runs/:runId/plan-pass", (request, response, next) => {
     try {
       const input = z.object({
