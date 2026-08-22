@@ -18,7 +18,7 @@ import {
 import { auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary } from "../shared/protocol";
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
-import { decideGraphViewportAction, isGraphFlowMounted, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
+import { decideGraphViewportAction, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 import { resolveProjectRunListState } from "./project-tree-runs";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
@@ -69,7 +69,7 @@ type MapNodeData = {
 const supportedAgents = ["claude", "codex", "antigravity", "ollama"] as const;
 const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
-const graphMagnifierScale = 1.65;
+const graphMagnifierTargetScale = 1.45;
 const graphMagnifierSize = 236;
 function readCssPixels(property: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
@@ -211,6 +211,7 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
         )}
       </div>
       <strong className="node-symbol">{change.symbol}</strong>
+      {change.status === "completed" && <span className="node-completion-crumb" aria-hidden="true"><i/><i/><i/></span>}
       <p>{change.title}</p>
       <div className="node-status-row">
         {change.status === "pending" || change.status === "failed" ? (
@@ -272,16 +273,20 @@ function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run:
       data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], ollamaConfigured, onSelect, onAssign },
     };
   });
-  const edges = changes.flatMap((change) => change.dependencies.map((dependency) => ({
-    id: `${dependency}-${change.id}`,
-    source: dependency,
-    target: change.id,
-    type: "smoothstep",
-    animated: change.status === "running",
-    className: `route-edge route-edge-${change.status}`,
-    markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15 },
-    data: { sourceStatus: byId.get(dependency)?.status },
-  })));
+  const edges = changes.flatMap((change) => change.dependencies.map((dependency) => {
+    const sourceStatus = byId.get(dependency)?.status;
+    const completedRoute = sourceStatus === "completed" && change.status === "completed";
+    return {
+      id: `${dependency}-${change.id}`,
+      source: dependency,
+      target: change.id,
+      type: "smoothstep",
+      animated: change.status === "running",
+      className: `route-edge route-edge-${change.status} route-edge-from-${sourceStatus ?? "unknown"} ${completedRoute ? "route-edge-completed-path" : ""}`,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15 },
+      data: { sourceStatus, completedRoute },
+    };
+  }));
   return { nodes, edges };
 }
 
@@ -1279,10 +1284,19 @@ export function App() {
     width: graphMagnifierSize,
     height: graphMagnifierSize,
   };
-  const graphMagnifierContentStyle: CSSProperties = {
-    width: graphMagnifier.width,
+  const graphMagnifierTransform = magnifierContentTransform({
     height: graphMagnifier.height,
-    transform: `translate(${graphMagnifierSize / 2 - graphMagnifier.x * graphMagnifierScale}px, ${graphMagnifierSize / 2 - graphMagnifier.y * graphMagnifierScale}px) scale(${graphMagnifierScale})`,
+    lensSize: graphMagnifierSize,
+    pointerX: graphMagnifier.x,
+    pointerY: graphMagnifier.y,
+    targetScale: graphMagnifierTargetScale,
+    viewport: graphViewport,
+    width: graphMagnifier.width,
+  });
+  const graphMagnifierContentStyle: CSSProperties = {
+    width: graphMagnifierTransform.width,
+    height: graphMagnifierTransform.height,
+    transform: graphMagnifierTransform.transform,
   };
 
   // paused = aprobar sin arrancar: el plan queda autorizado pero ningún agente

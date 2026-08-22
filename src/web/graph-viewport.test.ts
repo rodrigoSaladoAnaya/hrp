@@ -4,6 +4,7 @@ import {
   decideGraphViewportAction,
   graphViewportKey,
   isGraphFlowMounted,
+  magnifierContentTransform,
   shouldPersistGraphViewport,
   type StoredGraphViewport,
 } from "./graph-viewport";
@@ -145,5 +146,60 @@ describe("isGraphFlowMounted", () => {
   it("returns false when node count is 0 or undefined", () => {
     expect(isGraphFlowMounted("map", 0)).toBe(false);
     expect(isGraphFlowMounted("map", undefined)).toBe(false);
+  });
+});
+
+describe("magnifierContentTransform", () => {
+  it("keeps the final node size stable while the graph is zoomed out", () => {
+    const lowZoom = magnifierContentTransform({
+      height: 480,
+      lensSize: 236,
+      pointerX: 120,
+      pointerY: 90,
+      viewport: { x: 0, y: 0, zoom: 0.35 },
+      width: 640,
+    });
+    const highZoom = magnifierContentTransform({
+      height: 480,
+      lensSize: 236,
+      pointerX: 120,
+      pointerY: 90,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      width: 640,
+    });
+
+    expect(lowZoom.scale * 0.35).toBeCloseTo(highZoom.scale);
+    expect(lowZoom.scale * 0.35).toBeCloseTo(1.45);
+  });
+
+  it("keeps a real magnification at the graph max zoom", () => {
+    const maxZoom = magnifierContentTransform({
+      height: 480,
+      lensSize: 236,
+      pointerX: 120,
+      pointerY: 90,
+      viewport: { x: 0, y: 0, zoom: 1.8 },
+      width: 640,
+    });
+
+    expect(maxZoom.scale).toBeGreaterThan(1);
+    expect(maxZoom.scale).toBe(1.15);
+  });
+
+  it("centers the lens around the pointer with the normalized scale", () => {
+    const result = magnifierContentTransform({
+      height: 400,
+      lensSize: 200,
+      pointerX: 50,
+      pointerY: 80,
+      viewport: { x: 0, y: 0, zoom: 2 },
+      width: 300,
+    });
+
+    expect(result.width).toBe(300);
+    expect(result.height).toBe(400);
+    expect(result.scale).toBe(1.15);
+    expect(result.transform).toContain("translate(42.5");
+    expect(result.transform).toContain(", 8px) scale(1.15)");
   });
 });
