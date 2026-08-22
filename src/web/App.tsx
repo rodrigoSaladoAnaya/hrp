@@ -70,7 +70,8 @@ const supportedAgents = ["claude", "codex", "antigravity", "ollama"] as const;
 const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
 const graphMagnifierTargetScale = 1.45;
-const graphMagnifierSize = 236;
+const graphMagnifierFramePadding = 48;
+const graphMagnifierSize = 2 * Math.ceil((changeNodeWidthFallback * graphMagnifierTargetScale + graphMagnifierFramePadding) / 2);
 function readCssPixels(property: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
   const value = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(property));
