@@ -245,6 +245,11 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .tree-run-copy small { overflow: hidden; color: #58655f; font-size: .62rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .tree-run.status-running .tree-run-copy small { color: #744006; font-weight: 750; }
 .tree-run.status-failed .tree-run-copy small { color: #8c3029; font-weight: 750; }
+.tree-more-row::before { display: none; }
+.tree-show-more { width: calc(100% - 72px); min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 1px 34px 6px 38px; padding: 5px 8px; border: 0; border-radius: 3px; color: #7d8782; background: transparent; cursor: pointer; font-size: .72rem; font-weight: 700; text-align: left; opacity: .72; }
+.tree-show-more:hover { color: #3f4c47; background: #dce3de; opacity: 1; }
+.tree-show-more.is-expanded { justify-content: flex-start; color: #8a948f; }
+.tree-show-more span { min-width: 20px; padding: 1px 6px; border-radius: 999px; color: #66716c; background: #ccd4cf; font-size: .62rem; font-weight: 800; text-align: center; }
 .tree-empty { margin: 0; padding: 2px 20px 14px 48px; color: #58655f; font-size: .7rem; }
 
 .content-shell { min-width: 0; min-height: 0; display: grid; grid-template-rows: 58px minmax(0, 1fr); }
