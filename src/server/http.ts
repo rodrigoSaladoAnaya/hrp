@@ -126,6 +126,20 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  app.get("/api/settings/ui", (_request, response) => response.json(store.getUiPreferences()));
+
+  app.put("/api/settings/ui", (request, response, next) => {
+    try {
+      const input = z.object({
+        viewShortcuts: z.object({
+          enabled: z.boolean().optional(),
+          modifier: z.enum(["meta", "ctrl", "either"]).optional(),
+        }).strict().optional(),
+      }).strict().parse(request.body ?? {});
+      response.json(store.setUiPreferences(input));
+    } catch (error) { next(error); }
+  });
+
   // Proxy hacia Ollama Cloud: los agentes delegan sin conocer la key, que
   // se adjunta aquí como Bearer y nunca sale del servicio hacia los clientes.
   app.post("/api/ollama/chat", async (request, response, next) => {

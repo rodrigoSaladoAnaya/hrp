@@ -15,11 +15,12 @@ import {
   type ReactFlowInstance,
   type Viewport,
 } from "@xyflow/react";
-import { auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary } from "../shared/protocol";
+import { DEFAULT_UI_PREFERENCES, auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 import { resolveProjectRunListState } from "./project-tree-runs";
+import { resolveViewShortcut } from "./view-shortcuts";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -945,6 +946,7 @@ export function App() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [buildStale, setBuildStale] = useState(false);
   const [ollama, setOllama] = useState<OllamaSettingsView>();
+  const [uiPreferences, setUiPreferences] = useState<UiPreferences>(DEFAULT_UI_PREFERENCES);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
@@ -1096,6 +1098,33 @@ export function App() {
     } catch { /* la configuración es opcional; el panel sigue funcionando sin ella */ }
   }, []);
 
+  const loadUiPreferences = useCallback(async () => {
+    try {
+      const response = await fetch("/api/settings/ui");
+      if (response.ok) setUiPreferences(await response.json() as UiPreferences);
+    } catch { /* los defaults locales mantienen usable la navegación */ }
+  }, []);
+
+  const saveUiPreferences = useCallback(async (next: UiPreferences) => {
+    const previous = uiPreferences;
+    setUiPreferences(next);
+    try {
+      const response = await fetch("/api/settings/ui", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? "No se pudo guardar la configuración de interfaz");
+      }
+      setUiPreferences(await response.json() as UiPreferences);
+    } catch (cause) {
+      setUiPreferences(previous);
+      throw cause;
+    }
+  }, [uiPreferences]);
+
   const loadHealth = useCallback(async () => {
     try {
       const response = await fetch("/api/health");
@@ -1105,6 +1134,7 @@ export function App() {
 
   useEffect(() => { loadCatalog().catch((cause) => setError(String(cause))); }, [loadCatalog]);
   useEffect(() => { loadOllama().catch(() => undefined); }, [loadOllama]);
+  useEffect(() => { loadUiPreferences().catch(() => undefined); }, [loadUiPreferences]);
   useEffect(() => {
     loadHealth().catch(() => undefined);
     const interval = window.setInterval(() => { loadHealth().catch(() => undefined); }, 15_000);
@@ -1199,6 +1229,13 @@ export function App() {
   const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const nextView = resolveViewShortcut({ currentView: view, event, preferences: uiPreferences });
+      if (nextView) {
+        event.preventDefault();
+        hideGraphMagnifier();
+        setView(nextView);
+        return;
+      }
       if (event.metaKey || event.ctrlKey) showGraphMagnifier(refreshGraphPointer());
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -1212,7 +1249,7 @@ export function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", hideGraphMagnifier);
     };
-  }, [hideGraphMagnifier, refreshGraphPointer, showGraphMagnifier]);
+  }, [hideGraphMagnifier, refreshGraphPointer, showGraphMagnifier, uiPreferences, view]);
   const applyGraphViewport = useCallback((duration = 320) => {
     const instance = flowInstance.current;
     if (!instance) return;
@@ -1329,12 +1366,12 @@ export function App() {
   }, [runId, loadDetail]);
 
   if (error) return <div className="fatal-error"><Icon name="warning"/><h1>HRP no pudo iniciar</h1><p>{error}</p><button onClick={() => location.reload()}>Volver a intentar</button></div>;
-  if (loadingCatalog) return <><TopBar connectionState={connectionState} buildStale={buildStale} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><LoadingState label="Cargando proyectos"/></>;
-  if (!catalog.projects.length) return <><TopBar connectionState={connectionState} buildStale={buildStale} ollama={ollama} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/><EmptyState kind="projects"/></>;
+  if (loadingCatalog) return <><TopBar connectionState={connectionState} buildStale={buildStale} ollama={ollama} uiPreferences={uiPreferences} onOllamaSaved={() => { loadOllama().catch(() => undefined); }} onUiPreferencesSaved={saveUiPreferences}/><LoadingState label="Cargando proyectos"/></>;
+  if (!catalog.projects.length) return <><TopBar connectionState={connectionState} buildStale={buildStale} ollama={ollama} uiPreferences={uiPreferences} onOllamaSaved={() => { loadOllama().catch(() => undefined); }} onUiPreferencesSaved={saveUiPreferences}/><EmptyState kind="projects"/></>;
 
   return (
     <div className="app-shell">
-      <TopBar connectionState={connectionState} buildStale={buildStale} project={project} run={detail?.run} progress={progress} ollama={ollama} pendingEntries={globalPending} currentRunId={runId} onPendingOpenRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }} onPendingControl={setRunControl} onOllamaSaved={() => { loadOllama().catch(() => undefined); }}/>
+      <TopBar connectionState={connectionState} buildStale={buildStale} project={project} run={detail?.run} progress={progress} ollama={ollama} uiPreferences={uiPreferences} pendingEntries={globalPending} currentRunId={runId} onPendingOpenRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }} onPendingControl={setRunControl} onOllamaSaved={() => { loadOllama().catch(() => undefined); }} onUiPreferencesSaved={saveUiPreferences}/>
       <div className="app-body">
         <ProjectTree
           projects={catalog.projects}
@@ -1420,7 +1457,12 @@ export function App() {
   );
 }
 
-function OllamaSettingsPanel({ ollama, onSaved }: { ollama?: OllamaSettingsView; onSaved?: () => void }) {
+function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSaved }: {
+  ollama?: OllamaSettingsView;
+  uiPreferences: UiPreferences;
+  onSaved?: () => void;
+  onUiPreferencesSaved: (next: UiPreferences) => Promise<void>;
+}) {
   const [open, setOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
@@ -1466,16 +1508,31 @@ function OllamaSettingsPanel({ ollama, onSaved }: { ollama?: OllamaSettingsView;
     if (!Object.keys(body).length) { setFeedback({ kind: "error", text: "No hay cambios que guardar." }); return; }
     submit(body, "Configuración guardada.").catch(() => undefined);
   };
+  const saveViewShortcuts = async (patch: Partial<UiPreferences["viewShortcuts"]>) => {
+    setSaving(true);
+    setFeedback(undefined);
+    try {
+      await onUiPreferencesSaved({
+        ...uiPreferences,
+        viewShortcuts: { ...uiPreferences.viewShortcuts, ...patch },
+      });
+      setFeedback({ kind: "ok", text: "Atajos actualizados." });
+    } catch (cause) {
+      setFeedback({ kind: "error", text: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <div className="settings-wrap">
-      <button type="button" className="settings-toggle" aria-expanded={open} aria-label="Configurar Ollama Cloud" title="Configurar Ollama Cloud" onClick={() => setOpen((value) => !value)}>
+      <button type="button" className="settings-toggle" aria-expanded={open} aria-label="Configuración" title="Configuración" onClick={() => setOpen((value) => !value)}>
         <Icon name="sliders"/>
         <span className={`settings-state settings-state-${ollama?.configured ? "on" : "off"}`} aria-hidden="true"/>
       </button>
       {open && (
         <>
           <div className="settings-backdrop" onClick={() => setOpen(false)}/>
-          <section className="settings-panel" role="dialog" aria-label="Configuración de Ollama Cloud">
+          <section className="settings-panel" role="dialog" aria-label="Configuración de HRP">
             <h3>Ollama Cloud</h3>
             <p className="settings-status">
               {ollama?.configured
@@ -1508,6 +1565,37 @@ function OllamaSettingsPanel({ ollama, onSaved }: { ollama?: OllamaSettingsView;
               )}
             </div>
             <p className="settings-hint">La key se guarda en el servicio local de HRP y nunca vuelve al navegador; el modelo puede cambiarse sin reingresarla.</p>
+            <div className="settings-section shortcut-settings">
+              <h3>Atajos de vistas</h3>
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={uiPreferences.viewShortcuts.enabled}
+                  disabled={saving}
+                  onChange={(event) => { saveViewShortcuts({ enabled: event.target.checked }).catch(() => undefined); }}
+                />
+                <span>Flechas izquierda/derecha cambian Mapa, Actividad y Hallazgos</span>
+              </label>
+              <div className="shortcut-options" role="radiogroup" aria-label="Modificador de atajos de vistas">
+                {([
+                  ["meta", "Command"],
+                  ["ctrl", "Ctrl"],
+                  ["either", "Ambos"],
+                ] as const).map(([modifier, label]) => (
+                  <button
+                    key={modifier}
+                    type="button"
+                    className={uiPreferences.viewShortcuts.modifier === modifier ? "active" : ""}
+                    disabled={saving}
+                    role="radio"
+                    aria-checked={uiPreferences.viewShortcuts.modifier === modifier}
+                    onClick={() => { saveViewShortcuts({ modifier: modifier as ViewShortcutModifier }).catch(() => undefined); }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
         </>
       )}
@@ -1673,18 +1761,20 @@ function GlobalPendingPanel({ entries, currentRunId, onOpenRun, onControl }: {
   );
 }
 
-function TopBar({ connectionState, buildStale, project, run, progress = 0, ollama, pendingEntries = [], currentRunId = "", onPendingOpenRun, onPendingControl, onOllamaSaved }: {
+function TopBar({ connectionState, buildStale, project, run, progress = 0, ollama, uiPreferences, pendingEntries = [], currentRunId = "", onPendingOpenRun, onPendingControl, onOllamaSaved, onUiPreferencesSaved }: {
   connectionState: ConnectionState;
   buildStale: boolean;
   project?: Project;
   run?: RunSummary;
   progress?: number;
   ollama?: OllamaSettingsView;
+  uiPreferences: UiPreferences;
   pendingEntries?: GlobalPendingEntry[];
   currentRunId?: string;
   onPendingOpenRun?: (projectId: string, runId: string) => void;
   onPendingControl?: (run: RunSummary, control: "active" | "paused" | "stopped") => Promise<void>;
   onOllamaSaved?: () => void;
+  onUiPreferencesSaved: (next: UiPreferences) => Promise<void>;
 }) {
   const connectionCopy = buildStale ? "Reinicia HRP" : connectionState === "connected" ? "En vivo" : connectionState === "offline" ? "Sin conexión" : "Conectando";
   const connectionClass = buildStale ? "offline" : connectionState;
@@ -1698,7 +1788,7 @@ function TopBar({ connectionState, buildStale, project, run, progress = 0, ollam
       {/* Una sola celda del grid: la barra conserva sus 4 hijos originales. */}
       <div className="topbar-tools">
         {onPendingOpenRun && onPendingControl && <GlobalPendingPanel entries={pendingEntries} currentRunId={currentRunId} onOpenRun={onPendingOpenRun} onControl={onPendingControl}/>}
-        <OllamaSettingsPanel ollama={ollama} onSaved={onOllamaSaved}/>
+        <OllamaSettingsPanel ollama={ollama} uiPreferences={uiPreferences} onSaved={onOllamaSaved} onUiPreferencesSaved={onUiPreferencesSaved}/>
         <HelpPanel/>
       </div>
       <span className={`connection ${connectionClass}`} role="status" title={buildStale ? "El build cambió. Ejecuta ./scripts/update.sh para reiniciar el servicio." : undefined}><i/>{connectionCopy}{!buildStale && connectionState === "offline" && <button type="button" onClick={() => location.reload()}>Reintentar</button>}</span>

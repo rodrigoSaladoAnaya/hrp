@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
+  DEFAULT_UI_PREFERENCES,
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
   auditorIdentity,
@@ -34,7 +35,9 @@ import {
   type RunControl,
   type RunDetail,
   type RunSummary,
+  type UiPreferences,
   type Verification,
+  type ViewShortcutModifier,
 } from "../shared/protocol.js";
 
 type Row = Record<string, unknown>;
@@ -53,6 +56,10 @@ export type AttentionRelease = {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function isViewShortcutModifier(value: unknown): value is ViewShortcutModifier {
+  return value === "meta" || value === "ctrl" || value === "either";
 }
 
 function projectFromRow(row: Row): Project {
@@ -423,6 +430,37 @@ export class HrpStore {
       baseUrl: settings.baseUrl,
       keyMask: settings.apiKey ? `…${settings.apiKey.slice(-4)}` : undefined,
     };
+  }
+
+  getUiPreferences(): UiPreferences {
+    const row = this.database.prepare("SELECT value_json FROM settings WHERE key = 'ui'").get() as Row | undefined;
+    const stored = row ? JSON.parse(String(row.value_json)) as Partial<UiPreferences> : {};
+    const viewShortcuts: Partial<UiPreferences["viewShortcuts"]> = stored.viewShortcuts ?? {};
+    return {
+      viewShortcuts: {
+        enabled: typeof viewShortcuts.enabled === "boolean"
+          ? viewShortcuts.enabled
+          : DEFAULT_UI_PREFERENCES.viewShortcuts.enabled,
+        modifier: isViewShortcutModifier(viewShortcuts.modifier)
+          ? viewShortcuts.modifier
+          : DEFAULT_UI_PREFERENCES.viewShortcuts.modifier,
+      },
+    };
+  }
+
+  setUiPreferences(update: { viewShortcuts?: { enabled?: boolean; modifier?: ViewShortcutModifier } }): UiPreferences {
+    const current = this.getUiPreferences();
+    const next: UiPreferences = {
+      viewShortcuts: {
+        enabled: update.viewShortcuts?.enabled ?? current.viewShortcuts.enabled,
+        modifier: update.viewShortcuts?.modifier ?? current.viewShortcuts.modifier,
+      },
+    };
+    this.database.prepare(`
+      INSERT INTO settings (key, value_json, updated_at) VALUES ('ui', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    `).run(JSON.stringify(next), now());
+    return this.getUiPreferences();
   }
 
   attachProject(workspaceRoot: string): Project {
