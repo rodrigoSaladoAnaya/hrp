@@ -8,6 +8,7 @@ export type ViewShortcutEvent = {
   ctrlKey?: boolean;
   altKey?: boolean;
   shiftKey?: boolean;
+  repeat?: boolean;
   target?: unknown;
 };
 
@@ -40,6 +41,20 @@ function modifierMatches(event: ViewShortcutEvent, preferences: UiPreferences): 
   return event.metaKey === true || event.ctrlKey === true;
 }
 
+export function isViewShortcutEvent({
+  event,
+  preferences = DEFAULT_UI_PREFERENCES,
+}: {
+  event: ViewShortcutEvent;
+  preferences?: UiPreferences;
+}): boolean {
+  if (!preferences.viewShortcuts.enabled) return false;
+  if (event.altKey || event.shiftKey) return false;
+  if (!modifierMatches(event, preferences)) return false;
+  if (isEditableTarget(event.target)) return false;
+  return event.key === "ArrowRight" || event.key === "ArrowLeft";
+}
+
 export function resolveViewShortcut({
   currentView,
   event,
@@ -49,10 +64,8 @@ export function resolveViewShortcut({
   event: ViewShortcutEvent;
   preferences?: UiPreferences;
 }): GraphView | null {
-  if (!preferences.viewShortcuts.enabled) return null;
-  if (event.altKey || event.shiftKey) return null;
-  if (!modifierMatches(event, preferences)) return null;
-  if (isEditableTarget(event.target)) return null;
+  if (!isViewShortcutEvent({ event, preferences })) return null;
+  if (event.repeat) return null;
 
   const currentIndex = viewOrder.indexOf(currentView);
   if (currentIndex === -1) return null;

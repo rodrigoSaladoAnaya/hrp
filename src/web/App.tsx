@@ -20,7 +20,7 @@ import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-att
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 import { resolveProjectRunListState } from "./project-tree-runs";
-import { resolveViewShortcut } from "./view-shortcuts";
+import { isViewShortcutEvent, resolveViewShortcut } from "./view-shortcuts";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -1229,11 +1229,19 @@ export function App() {
   const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const nextView = resolveViewShortcut({ currentView: view, event, preferences: uiPreferences });
+      const shortcutsAvailable = Boolean(runId && detail);
+      const isViewShortcut = shortcutsAvailable && isViewShortcutEvent({ event, preferences: uiPreferences });
+      const nextView = isViewShortcut
+        ? resolveViewShortcut({ currentView: view, event, preferences: uiPreferences })
+        : null;
       if (nextView) {
         event.preventDefault();
         hideGraphMagnifier();
         setView(nextView);
+        return;
+      }
+      if (isViewShortcut) {
+        event.preventDefault();
         return;
       }
       if (event.metaKey || event.ctrlKey) showGraphMagnifier(refreshGraphPointer());
@@ -1249,7 +1257,7 @@ export function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", hideGraphMagnifier);
     };
-  }, [hideGraphMagnifier, refreshGraphPointer, showGraphMagnifier, uiPreferences, view]);
+  }, [detail, hideGraphMagnifier, refreshGraphPointer, runId, showGraphMagnifier, uiPreferences, view]);
   const applyGraphViewport = useCallback((duration = 320) => {
     const instance = flowInstance.current;
     if (!instance) return;
@@ -1576,7 +1584,7 @@ function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSa
                 />
                 <span>Flechas izquierda/derecha cambian Mapa, Actividad y Hallazgos</span>
               </label>
-              <div className="shortcut-options" role="radiogroup" aria-label="Modificador de atajos de vistas">
+              <div className="shortcut-options" role="group" aria-label="Modificador de atajos de vistas">
                 {([
                   ["meta", "Command"],
                   ["ctrl", "Ctrl"],
@@ -1587,8 +1595,7 @@ function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSa
                     type="button"
                     className={uiPreferences.viewShortcuts.modifier === modifier ? "active" : ""}
                     disabled={saving}
-                    role="radio"
-                    aria-checked={uiPreferences.viewShortcuts.modifier === modifier}
+                    aria-pressed={uiPreferences.viewShortcuts.modifier === modifier}
                     onClick={() => { saveViewShortcuts({ modifier: modifier as ViewShortcutModifier }).catch(() => undefined); }}
                   >
                     {label}

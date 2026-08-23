@@ -59,9 +59,26 @@ describe("graph status style contracts", () => {
 
     expect(app).toContain("shortcut-settings");
     expect(app).toContain("shortcut-options");
+    const shortcutOptionsTag = app.match(/<div[^>]*className="shortcut-options"[^>]*>/)?.[0] ?? "";
+    expect(shortcutOptionsTag).toContain("role=\"group\"");
+    expect(shortcutOptionsTag).toContain("aria-label=\"Modificador de atajos de vistas\"");
+    expect(app).toContain("aria-pressed={uiPreferences.viewShortcuts.modifier === modifier}");
+    expect(app).not.toContain("role=\"radiogroup\"");
+    expect(app).not.toContain("role=\"radio\"");
     expect(declarationFor(".settings-section")).toContain("border-top");
     expect(declarationFor(".settings-check")).toContain("grid-template-columns");
     expect(declarationFor(".shortcut-options")).toContain("grid-template-columns");
     expect(declarationFor(".shortcut-options button.active")).toContain("background: #35443f");
+  });
+
+  it("guards view shortcuts when there is no visible run detail", () => {
+    const app = readWebFile("App.tsx");
+
+    expect(app).toContain("isViewShortcutEvent, resolveViewShortcut");
+    expect(app).toContain("const shortcutsAvailable = Boolean(runId && detail);");
+    expect(app).toContain("isViewShortcutEvent({ event, preferences: uiPreferences })");
+    expect(app).toMatch(/isViewShortcut\s*\?\s*resolveViewShortcut/);
+    expect(app).toMatch(/if \(isViewShortcut\) \{\s*event\.preventDefault\(\);\s*return;\s*\}\s*if \(event\.metaKey \|\| event\.ctrlKey\) showGraphMagnifier/);
+    expect(app).toContain("[detail, hideGraphMagnifier, refreshGraphPointer, runId");
   });
 });
