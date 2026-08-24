@@ -1,4 +1,4 @@
-import { auditorIdentity, computeAuditorConsensus, isDelegateAgent, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
+import { agentSessionLabel, auditorIdentity, computeAuditorConsensus, isDelegateAgent, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
 
 // Señales que una ejecución puede dar a un agente concreto, declaradas en
 // orden de prioridad: las cinco primeras exigen acción inmediata, las
@@ -107,12 +107,19 @@ export function computeAttention(detail: RunDetail, agent: string): Attention {
   const pendingAuditors = auditorConsensus.pendingAuditors;
   const pendingAuditorVotes = auditorConsensus.pendingAuditorVotes;
   const auditorNeedsReview = allCompleted && isAuditor && (auditorState?.phase !== "completed" || pendingAuditors.includes(agent));
+  // Una sesión adopta su identidad pegando este comando en una sesión ya
+  // abierta, y la bandera sólo vale para esa invocación: si la señal no se lo
+  // recuerda, el comando siguiente vuelve a publicar como la familia y pisa el
+  // estado de otra sesión. Un carril delegado no lo necesita: no abre sesión.
+  const sessionPreamble = agentSessionLabel(agent) && !isDelegateAgent(agent)
+    ? `Tu identidad en HRP es ${agent}: úsala en --agent en todos los comandos del resto de esta sesión (o expórtala en HRP_AGENT). `
+    : "";
   const decide = (kind: AttentionKind, directive: string): Attention => ({
     runId: run.id,
     projectId: run.projectId,
     agent,
     kind,
-    directive,
+    directive: `${sessionPreamble}${directive}`,
     pendingAuditors,
     pendingAuditorVotes,
     ...flags[kind],

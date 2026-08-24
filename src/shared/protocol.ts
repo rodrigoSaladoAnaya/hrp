@@ -363,14 +363,43 @@ export function runRoster(
   run: Pick<RunSummary, "baseAgent" | "auditors" | "seenAgents">,
   nodes: Pick<ChangeNode, "assignee" | "suggestedAgent">[] = [],
   delegateLanes: string[] = [],
+  // Sesiones que el humano acuñó en el proyecto. Entran aunque la ejecución
+  // todavía no las nombre: acuñar y copiar su comando ocurre antes de que la
+  // sesión exista, y el árbol tiene que poder mostrarla justo en ese momento.
+  sessions: string[] = [],
 ): string[] {
   const referenced = [
     ...run.auditors,
     ...run.seenAgents,
     ...nodes.flatMap((node) => [node.assignee, node.suggestedAgent]),
   ];
-  const ordered = [run.baseAgent, ...agentFamilies, ...referenced, ...delegateLanes];
+  const ordered = [run.baseAgent, ...agentFamilies, ...referenced, ...sessions, ...delegateLanes];
   return [...new Set(ordered.filter((agent): agent is string => isValidAgentId(agent)))];
+}
+
+// Rama del árbol de agentes: la familia con su identidad pelada —si el censo la
+// incluye— y las identidades con etiqueta que cuelgan de ella.
+export type AgentBranch = {
+  family: string;
+  root?: string;
+  sessions: string[];
+};
+
+// El censo plano se lee como un árbol de dos niveles: cada modelo es una rama y
+// sus sesiones cuelgan de él. Las familias salen en el orden en que aparecen en
+// el censo, así que la del modelo base va primera. Los carriles delegados
+// "ollama:<modelo>" cuelgan igual de su familia porque comparten la forma,
+// aunque los administre el modelo base en vez de una sesión propia.
+export function agentTree(roster: string[]): AgentBranch[] {
+  const branches = new Map<string, AgentBranch>();
+  for (const agent of roster) {
+    const family = agentFamily(agent);
+    const branch = branches.get(family) ?? { family, sessions: [] };
+    if (agentSessionLabel(agent)) branch.sessions.push(agent);
+    else branch.root = agent;
+    branches.set(family, branch);
+  }
+  return [...branches.values()];
 }
 
 // Enrutado por dificultad: el nivel decide el modelo y el modelo base decide el

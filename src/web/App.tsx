@@ -15,7 +15,7 @@ import {
   type ReactFlowInstance,
   type Viewport,
 } from "@xyflow/react";
-import { DEFAULT_UI_PREFERENCES, agentFamily, agentSessionLabel, auditorIdentity, isDelegateAgent, isValidAgentId, laneModel, runRoster, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
+import { DEFAULT_UI_PREFERENCES, agentFamily, agentSessionLabel, agentTree, auditorIdentity, isDelegateAgent, laneModel, runRoster, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
@@ -203,7 +203,7 @@ function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   });
 }
 
-function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "bellOff" }) {
+function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "bellOff" | "plus" | "minus" }) {
   const paths = {
     sliders: <><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></>,
     route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 3 4"/></>,
@@ -215,6 +215,8 @@ function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clo
     code: <><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></>,
     copy: <><rect x="8" y="8" width="11" height="11" rx="1"/><path d="M16 8V5H5v11h3"/></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></>,
+    plus: <><path d="M12 5v14M5 12h14"/></>,
+    minus: <><path d="M5 12h14"/></>,
     bellOff: <><path d="m3 3 18 18"/><path d="M6.6 6.6A5.9 5.9 0 0 0 6 8c0 7-3 7-3 9h14"/><path d="M18 14.5c-.6-1.2 0-3.1 0-6.5a6 6 0 0 0-7.4-5.8"/><path d="M10 21h4"/></>,
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" className="icon">{paths[name]}</svg>;
@@ -503,19 +505,19 @@ function elapsedSince(startedAt: string | undefined, tick: number): string | und
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNodeId, onAuditorsChange, onAssign }: {
+function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, sessions, onAuditorsChange }: {
   run: RunSummary;
   nodes: ChangeNode[];
   agentStates: AgentWorkState[];
   workspaceRoot?: string;
   ollama?: OllamaSettingsView;
-  selectedNodeId?: string;
+  sessions: string[];
   onAuditorsChange: (auditors: string[]) => Promise<void>;
-  onAssign: (nodeId: string, assignee: string) => Promise<void>;
 }) {
-  const [sessionDraft, setSessionDraft] = useState("");
   const [sessionError, setSessionError] = useState<string>();
-  const [sessionBusy, setSessionBusy] = useState(false);
+  const [mintingFamily, setMintingFamily] = useState<string>();
+  const [minted, setMinted] = useState<{ agent: string; command: string; copied: boolean }>();
+  const [retiringAgent, setRetiringAgent] = useState<string>();
   const [copyFeedback, setCopyFeedback] = useState<{ agent: string; action: "attend" | "release"; result: "copied" | "failed" }>();
   const [expandedAgent, setExpandedAgent] = useState<string>();
   const [selectionBusy, setSelectionBusy] = useState<string>();
@@ -526,7 +528,8 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNod
   // El censo sale de la ejecución: una sesión ("claude:opus") sólo existe aquí
   // si alguien la nombró —como base, auditora, presente o asignataria—, que es
   // lo que permite al humano repartir papeles entre sesiones del mismo modelo.
-  const roster = useMemo(() => runRoster(run, nodes, delegateLanesOf(ollama)), [run, nodes, ollama]);
+  const roster = useMemo(() => runRoster(run, nodes, delegateLanesOf(ollama), sessions), [run, nodes, ollama, sessions]);
+  const tree = useMemo(() => agentTree(roster), [roster]);
   const hasActiveAgent = agentStates.some((state) => state.phase === "executing" || state.phase === "reviewing");
   useEffect(() => {
     if (!hasActiveAgent) return undefined;
@@ -566,42 +569,67 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNod
     catch (cause) { setSelectionError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setSelectionBusy(undefined); }
   };
-  // Dar de alta = darle papel. Sin papel la identidad no recibiría señal de
-  // atención ni sobreviviría a un refresco, así que no habría alta ninguna.
-  const registerSession = async (papel: "audita" | "implementa") => {
-    const agent = sessionDraft.trim();
-    if (!isValidAgentId(agent)) {
-      setSessionError("Identidad inválida: usa 'familia' o 'familia:sesion', por ejemplo claude:opus.");
-      return;
-    }
-    if (papel === "audita" && run.auditors.includes(agent)) {
-      setSessionError(`${agent} ya audita esta ejecución.`);
-      return;
-    }
-    setSessionBusy(true);
+  // Acuñar y copiar en un gesto: el humano no teclea identidades y el comando
+  // queda listo para pegarlo en la sesión que ya tiene abierta. El censo del
+  // panel se refresca solo con el evento de difusión que emite el servidor.
+  // Retirar sólo quita la identidad del censo del proyecto; el servidor la
+  // rechaza si audita una ejecución viva o tiene nodos sin completar, y ese
+  // mensaje es el que se enseña.
+  const retireSession = async (agent: string) => {
+    setRetiringAgent(agent);
     setSessionError(undefined);
+    setMinted(undefined);
     try {
-      if (papel === "audita") await onAuditorsChange([...run.auditors, agent]);
-      else await onAssign(selectedNodeId!, agent);
-      setSessionDraft("");
+      const response = await fetch(`/api/projects/${run.projectId}/sessions/${encodeURIComponent(agent)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `No se pudo retirar ${agent}`);
+      }
     } catch (cause) {
       setSessionError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setSessionBusy(false);
+      setRetiringAgent(undefined);
+    }
+  };
+
+  const mintSession = async (family: string) => {
+    setMintingFamily(family);
+    setSessionError(undefined);
+    setMinted(undefined);
+    try {
+      const response = await fetch(`/api/projects/${run.projectId}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ family }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? "No se pudo acuñar la sesión");
+      }
+      const { agent } = await response.json() as { agent: string };
+      const command = agentAttentionCommand(agent, workspaceRoot);
+      let copied = true;
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+        await navigator.clipboard.writeText(command);
+      } catch {
+        copied = false;
+      }
+      setMinted({ agent, command, copied });
+    } catch (cause) {
+      setSessionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMintingFamily(undefined);
     }
   };
   const nodeLabel = (id: string) => {
     const node = nodes.find((candidate) => candidate.id === id);
     return node ? `${node.file} · ${node.symbol}` : id;
   };
-  return (
-    <section className="agent-dock" aria-label="Agentes de la ejecución">
-      <header className="agent-dock-head">
-        <div><strong>Agentes</strong><span>{auditorHint}</span></div>
-        <b>{run.auditors.length} aud.</b>
-      </header>
-      {selectionError && <p className="agent-dock-error" role="alert">{selectionError}</p>}
-      {roster.map((agent) => {
+  // Una identidad se pinta igual sea raíz de familia o sesión colgando de ella:
+  // lo único que cambia es la sangría y que la sesión se anuncia como hija de
+  // su modelo, para que el árbol se lea también sin ver la pantalla.
+  const entry = (agent: string, family: string, isSession = false) => {
         const isBase = agent === run.baseAgent;
         // El trato especial del delegado vale para la familia y para cada
         // carril: ninguno abre sesión, así que su presencia es la API key.
@@ -629,7 +657,12 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNod
             ? `No se pudo copiar el comando para dejar de poner atención con ${agent}`
             : `Copiar comando para dejar de poner atención con ${agent}`;
         return (
-          <div className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""}`} key={agent} role="group" aria-label={`${agent}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}>
+          <div
+            className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""} ${isSession ? "is-session" : ""}`}
+            key={agent}
+            role="group"
+            aria-label={`${agent}${isSession ? `, sesión de ${family}` : ""}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}
+          >
             <div className="agent-dock-row">
               <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
               <span className="agent-dock-name" title={isBase ? `Modelo base (${agent}): controla los nodos sin asignar y coordina el cierre de la ejecución` : isOllama && ollama?.configured ? `${agent} · ${lane ?? ollama.model}` : session ? `${agent}: sesión ${session} del modelo ${agentFamily(agent)}` : agent}>
@@ -638,6 +671,30 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNod
               </span>
               <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
               <span className="agent-attention-actions">
+                {/* El delegado no abre sesiones: sus carriles los nombra el
+                    modelo y los elige el enrutado por dificultad. */}
+                {!isSession && !isOllama && (
+                  <button
+                    type="button"
+                    className="agent-attention-button agent-mint-button"
+                    disabled={mintingFamily === family}
+                    aria-label={`Acuñar una sesión nueva de ${family} y copiar su comando`}
+                    title={`Acuñar una sesión nueva de ${family} y copiar su comando para pegarlo en esa sesión`}
+                    onClick={() => { mintSession(family).catch(() => undefined); }}
+                  ><Icon name="plus"/></button>
+                )}
+                {/* Sólo lo acuñado se retira: un carril delegado o una sesión
+                    que la ejecución nombra por su cuenta no salen del censo. */}
+                {isSession && sessions.includes(agent) && (
+                  <button
+                    type="button"
+                    className="agent-attention-button agent-retire-button"
+                    disabled={retiringAgent === agent}
+                    aria-label={`Retirar la sesión ${agent} del proyecto`}
+                    title={`Retirar la sesión ${agent}: sale del árbol y deja de recibir señal; no borra su trabajo`}
+                    onClick={() => { retireSession(agent).catch(() => undefined); }}
+                  ><Icon name="minus"/></button>
+                )}
                 <button
                   type="button"
                   className={`agent-attention-button ${attendResult ? `is-${attendResult}` : ""}`}
@@ -682,29 +739,37 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNod
             )}
           </div>
         );
-      })}
-      {/* Una identidad sólo existe en la ejecución a través de un papel: se da
-          de alta auditando o recibiendo un nodo, y así queda persistida donde
-          HRP la lee en vez de vivir en el estado de esta pestaña. */}
-      <form
-        className="agent-dock-session"
-        aria-label="Dar de alta una sesión"
-        onSubmit={(event) => event.preventDefault()}
-      >
-        <label htmlFor="agent-dock-session-input">Sesión por modelo</label>
-        <input
-          id="agent-dock-session-input"
-          value={sessionDraft}
-          placeholder="claude:opus"
-          aria-invalid={Boolean(sessionError)}
-          onChange={(event) => { setSessionDraft(event.target.value); setSessionError(undefined); }}
-        />
-        <div className="agent-dock-session-actions">
-          <button type="button" disabled={sessionBusy || selectionLocked} onClick={() => { registerSession("audita").catch(() => undefined); }}>Que audite</button>
-          <button type="button" disabled={sessionBusy || !selectedNodeId} title={selectedNodeId ? undefined : "Selecciona antes la operación que implementará"} onClick={() => { registerSession("implementa").catch(() => undefined); }}>Que implemente el nodo</button>
+  };
+
+  return (
+    <section className="agent-dock" aria-label="Agentes de la ejecución">
+      <header className="agent-dock-head">
+        <div><strong>Agentes</strong><span>{auditorHint}</span></div>
+        <b>{run.auditors.length} aud.</b>
+      </header>
+      {selectionError && <p className="agent-dock-error" role="alert">{selectionError}</p>}
+      {tree.map((branch) => (
+        <div className="agent-dock-branch" key={branch.family} role="group" aria-label={`Modelo ${branch.family}${branch.sessions.length ? ` con ${branch.sessions.length} ${branch.sessions.length === 1 ? "sesión" : "sesiones"}` : ""}`}>
+          {branch.root && entry(branch.root, branch.family)}
+          {branch.sessions.length > 0 && (
+            <div className="agent-dock-sessions" role="group" aria-label={`Sesiones de ${branch.family}`}>
+              {branch.sessions.map((agent) => entry(agent, branch.family, true))}
+            </div>
+          )}
         </div>
-        <small>{sessionError ?? "Una sesión entra en la ejecución con un papel: auditora, o implementando la operación seleccionada."}</small>
-      </form>
+      ))}
+      {/* El rechazo del acuñado (familia inválida o delegada, proyecto ausente)
+          se lee aquí: sin este párrafo la variable se escribía y nadie la veía. */}
+      {sessionError && <p className="agent-dock-error" role="alert">{sessionError}</p>}
+      {minted && (
+        <p className="agent-dock-minted" role="status">
+          Sesión <strong>{minted.agent}</strong> acuñada.{" "}
+          {minted.copied
+            ? "Comando copiado: pégalo en la sesión de ese modelo que ya tengas abierta."
+            : "No se pudo copiar; cópialo a mano:"}
+          {!minted.copied && <code>{minted.command}</code>}
+        </p>
+      )}
     </section>
   );
 }
@@ -1049,6 +1114,7 @@ export function App() {
   const [ollama, setOllama] = useState<OllamaSettingsView>();
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(DEFAULT_UI_PREFERENCES);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
+  const [projectSessions, setProjectSessions] = useState<string[]>([]);
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
   const [approveError, setApproveError] = useState<string>();
@@ -1159,6 +1225,22 @@ export function App() {
     }
   }, []);
 
+  // Sesiones acuñadas del proyecto: viven fuera de la ejecución, así que se
+  // cargan al seleccionar proyecto y se refrescan con la misma difusión. Sin
+  // esto, una sesión acuñada sólo existiría en la pestaña que la acuñó.
+  const loadProjectSessions = useCallback(async (id: string) => {
+    if (!id) { setProjectSessions([]); return; }
+    try {
+      const response = await fetch(`/api/projects/${id}/sessions`);
+      if (!response.ok) throw new Error("No se pudieron cargar las sesiones del proyecto");
+      const payload = await response.json() as { sessions?: string[] };
+      setProjectSessions(payload.sessions ?? []);
+    } catch {
+      // El árbol sigue mostrando el censo que deriva de la ejecución.
+      setProjectSessions([]);
+    }
+  }, []);
+
   const loadDetail = useCallback(async (id: string) => {
     if (!id) { loadedRunId.current = ""; setDetail(undefined); setLoadingRun(false); return; }
     // Solo el cambio de ejecución muestra la pantalla de carga; los refrescos
@@ -1251,6 +1333,7 @@ export function App() {
   useEffect(() => { currentProjectId.current = projectId; }, [projectId]);
   useEffect(() => { currentRunId.current = runId; }, [runId]);
   useEffect(() => { loadDetail(runId).catch((cause) => setError(String(cause))); }, [runId, loadDetail]);
+  useEffect(() => { loadProjectSessions(projectId).catch(() => undefined); }, [projectId, loadProjectSessions]);
 
   useEffect(() => {
     setConnectionState("connecting");
@@ -1263,11 +1346,12 @@ export function App() {
       const visibleRunId = currentRunId.current;
       const { focus, shouldReloadDetail } = resolveCatalogChange({ change, visibleProjectId, visibleRunId });
       loadCatalog({ focus, visibleProjectId }).catch(() => undefined);
+      loadProjectSessions(visibleProjectId).catch(() => undefined);
       if (shouldReloadDetail) loadDetail(visibleRunId).catch(() => undefined);
     });
     source.onerror = () => setConnectionState("offline");
     return () => source.close();
-  }, [loadCatalog, loadDetail]);
+  }, [loadCatalog, loadDetail, loadProjectSessions]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -1329,8 +1413,8 @@ export function App() {
 
   const delegateLanes = useMemo(() => delegateLanesOf(ollama), [ollama]);
   const roster = useMemo(
-    () => detail?.run ? runRoster(detail.run, detail.nodes, delegateLanes) : delegateLanes,
-    [detail?.run, detail?.nodes, delegateLanes],
+    () => detail?.run ? runRoster(detail.run, detail.nodes, delegateLanes, projectSessions) : delegateLanes,
+    [detail?.run, detail?.nodes, delegateLanes, projectSessions],
   );
   const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, ollama?.configured ?? false, roster, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, ollama?.configured, roster, assignAgent]);
 
@@ -1516,7 +1600,7 @@ export function App() {
           projects={catalog.projects}
           projectId={projectId}
           runId={runId}
-          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} agentStates={detail.agentStates} workspaceRoot={project?.workspaceRoot} ollama={ollama} selectedNodeId={selectedId} onAuditorsChange={updateAuditors} onAssign={assignAgent}/> : undefined}
+          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} agentStates={detail.agentStates} workspaceRoot={project?.workspaceRoot} ollama={ollama} sessions={projectSessions} onAuditorsChange={updateAuditors}/> : undefined}
           onProject={(nextProject) => { setProjectId(nextProject.id); setRunId(sortRuns(nextProject.runs)[0]?.id ?? ""); }}
           onRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }}
           onDeleteProject={(target) => { deleteProject(target).catch(() => undefined); }}
@@ -1786,7 +1870,7 @@ function HelpPanel() {
             <ol>
               <li>Aprueba el grafo cuando el agente lo publique (botón «Aprobar grafo»).</li>
               <li>En la cajita del nodo elige quién lo implementa: claude, codex, antigravity, un carril de ollama o una sesión por modelo (<code>claude:opus</code>).</li>
-              <li>¿Repartes papeles entre sesiones del mismo modelo? Dala de alta al pie del dock con un papel —que audite, o que implemente el nodo seleccionado— y lanza esa sesión con <code>HRP_AGENT=claude:opus</code>.</li>
+              <li>¿Repartes papeles entre sesiones del mismo modelo? Pulsa <strong>+</strong> en la fila del modelo: HRP acuña la sesión (<code>claude:2</code>) y copia su comando. Pégalo en cualquier sesión de ese modelo que ya tengas abierta y aparecerá colgando de él en el árbol. Si vas a abrir una terminal nueva, <code>HRP_AGENT=claude:2</code> es más sólido: cubre también hooks y MCP.</li>
               <li>En el dock de agentes (abajo a la izquierda) pulsa el icono de copiar junto a ese modelo.</li>
               <li>Pega el comando en la sesión de ese modelo. Su punto se pone verde al engancharse y trabajará solo sus nodos.</li>
             </ol>

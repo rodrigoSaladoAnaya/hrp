@@ -688,3 +688,34 @@ describe("attentionRank", () => {
     });
   });
 });
+
+describe("identidad de sesión en la directiva", () => {
+  // El comando se pega en una sesión ya abierta y la bandera sólo vale para esa
+  // invocación: sin este recordatorio, el comando siguiente vuelve a publicar
+  // como la familia y pisa el estado de la otra sesión.
+  const base = detail({ nodes: [node({ id: "uno" })] });
+
+  it("declara la identidad cuando quien pregunta es una sesión", () => {
+    const { directive } = computeAttention(base, "claude:2");
+    expect(directive.startsWith("Tu identidad en HRP es claude:2:")).toBe(true);
+    expect(directive).toContain("--agent");
+  });
+
+  it("no la declara para la familia pelada", () => {
+    expect(computeAttention(base, "claude").directive).not.toContain("Tu identidad en HRP es");
+  });
+
+  it("ni para un carril delegado, que no abre sesión", () => {
+    expect(computeAttention(base, "ollama:glm-5.2").directive).not.toContain("Tu identidad en HRP es");
+  });
+
+  it("conserva la señal original detrás del preámbulo", () => {
+    // Se compara con otro agente ajeno a la ejecución —no con el modelo base,
+    // que sí tiene trabajo— para que la única diferencia sea el preámbulo.
+    const conSesion = computeAttention(base, "claude:2");
+    const ajeno = computeAttention(base, "codex");
+    expect(conSesion.kind).toBe(ajeno.kind);
+    expect(conSesion.directive.replace(/^Tu identidad en HRP es claude:2:[^.]*\. /, ""))
+      .toBe(ajeno.directive.replaceAll("codex", "claude:2"));
+  });
+});

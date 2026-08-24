@@ -58,6 +58,8 @@ hrp graph publish "$run_id" /ruta/temporal/graph.json   # --agent NOMBRE si no d
 
 **Tu identidad.** `codex` es sólo el valor por defecto: la identidad real la fija `HRP_AGENT` al lanzar la sesión (por ejemplo `codex:auditor`), el CLI la hereda cuando omites `--agent`, y `hrp whoami` te dice cuál es y de dónde sale. Declárala siempre igual: HRP sostiene un nodo en vuelo y un estado por identidad, así que dos sesiones que compartan identidad se pisan el estado. Si el humano te eligió **sólo como auditor**, no reclames los nodos sin asignación —pertenecen al modelo base— y espera con tu propia identidad.
 
+**Identidad pegada.** El humano también puede acuñar una sesión desde el árbol de agentes del panel (botón `+` en la rama de tu modelo) y pegarte su comando: `hrp attention --agent codex:2 --workspace ... --wait 1800`. Si lo recibes, esa es tu identidad para todos tus comandos posteriores —la directiva de la señal te lo recuerda—, porque la bandera sólo vale para la invocación en la que aparece. Expórtala en `HRP_AGENT` si puedes: es lo que cubre además los hooks y el MCP.
+
 Usa identificadores estables con letras, números, `_` o `-`; rutas relativas al workspace; dependencias reales y sin ciclos. No crees nodos por comandos, fases genéricas ni grupos de archivos.
 
 ## 3. Esperar aprobación y respetar asignaciones
