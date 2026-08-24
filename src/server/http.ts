@@ -6,10 +6,21 @@ import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
-import { activityTypes, agentWorkPhases, findingScopes, findingSeverities, findingStatuses, PROTOCOL_VERSION, runControls, type RunDetail } from "../shared/protocol.js";
+import { activityTypes, agentWorkPhases, findingScopes, findingSeverities, findingStatuses, isValidAgentId, nodeDifficulties, PROTOCOL_VERSION, runControls, type RunDetail } from "../shared/protocol.js";
 import { attentionRank, auditableNodes, computeAttention, type Attention } from "./attention.js";
 import { buildPlanReviewPack, buildReviewPack, runAutoReview, runPlanReview, upstreamJson } from "./review.js";
 import { HrpStore } from "./store.js";
+
+// Identidad escrita a mano por el humano en el panel. Una errata crea un
+// agente fantasma al que se le asignan nodos que nadie ejecutará, así que se
+// rechaza aquí en vez de dejarla entrar al censo de la ejecución.
+const agentId = z.string().trim().superRefine((agent, ctx) => {
+  if (isValidAgentId(agent)) return;
+  ctx.addIssue({
+    code: "custom",
+    message: `Identidad de agente inválida: ${JSON.stringify(agent)}. Usa 'familia' o 'familia:sesion' (letras, dígitos, punto, guion o guion bajo), por ejemplo claude o claude:opus.`,
+  });
+});
 
 const nodeInput = z.object({
   id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
@@ -23,6 +34,8 @@ const nodeInput = z.object({
   // Recomendación del modelo base sobre quién debería implementar el nodo
   // (p. ej. "ollama" para trabajo mecánico); el humano decide al aprobar.
   suggestedAgent: z.string().min(1).optional(),
+  // Dificultad declarada: con ella el enrutado elige el modelo delegado.
+  difficulty: z.enum(nodeDifficulties).optional(),
   // Archivos de solo lectura que 'hrp ollama exec' adjunta como referencia al delegar.
   contextFiles: z.array(z.string().min(1)).optional(),
 }).strict();
@@ -121,6 +134,11 @@ export function createApp(store: HrpStore) {
         apiKey: z.string().min(1).nullable().optional(),
         model: z.string().min(1).optional(),
         baseUrl: z.url().optional(),
+        // Modelo delegado por dificultad. La cadena vacía borra ese nivel para
+        // que vuelva a heredar el modelo por defecto.
+        // partialRecord, no record: en zod 4 una clave de enum exige el registro
+        // completo, y aquí cada nivel es opcional e independiente.
+        tiers: z.partialRecord(z.enum(nodeDifficulties), z.string()).optional(),
       }).strict().parse(request.body ?? {});
       response.json(store.setOllamaSettings(input));
     } catch (error) { next(error); }
@@ -260,8 +278,12 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/nodes", (request, response, next) => {
     try {
-      const input = nodeInput.parse({ ...request.body, discovered: true });
-      const node = store.addDiscoveredNode(request.params.runId, input);
+      // La identidad viaja aparte de la spec del nodo: es quien descubre, no
+      // parte de lo que el humano aprobó. Sin ella el descubierto sigue
+      // cayendo en el modelo base, como antes.
+      const { agent, ...body } = z.object({ agent: agentId.optional() }).loose().parse(request.body ?? {});
+      const input = nodeInput.parse({ ...body, discovered: true });
+      const node = store.addDiscoveredNode(request.params.runId, input, agent);
       broadcast(projectForRun(request.params.runId), request.params.runId, "node-discovered");
       response.status(201).json(node);
     } catch (error) { next(error); }
@@ -296,7 +318,7 @@ export function createApp(store: HrpStore) {
 
   app.put("/api/runs/:runId/auditors", (request, response, next) => {
     try {
-      const input = z.object({ auditors: z.array(z.string().trim().min(1)).max(16) }).strict().parse(request.body);
+      const input = z.object({ auditors: z.array(agentId).max(16) }).strict().parse(request.body);
       const run = store.setRunAuditors(request.params.runId, input.auditors);
       broadcast(run.projectId, run.id, "auditors-selected");
       response.json(run);
@@ -385,7 +407,7 @@ export function createApp(store: HrpStore) {
 
   app.post("/api/runs/:runId/nodes/:nodeId/assign", (request, response, next) => {
     try {
-      const input = z.object({ assignee: z.string().min(1).nullable() }).strict().parse(request.body);
+      const input = z.object({ assignee: agentId.nullable() }).strict().parse(request.body);
       const node = store.assignNode(request.params.runId, request.params.nodeId, input.assignee);
       // Una sola señal basta: ni el long-poll de /api/attention ni el cliente
       // de /api/events miran el tipo del evento —el primero reevalúa con

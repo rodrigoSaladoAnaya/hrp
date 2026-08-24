@@ -197,10 +197,12 @@ export class HrpMcpClient {
     });
   }
 
-  async discoverNode(runId: string, node: ChangeNodeInput): Promise<unknown> {
+  // La identidad viaja junto a la spec, no dentro de ella: es quien descubre,
+  // y sin ella el servidor devuelve el descubierto al modelo base.
+  async discoverNode(runId: string, node: ChangeNodeInput, agent?: string): Promise<unknown> {
     return this.request(`/api/runs/${encodeURIComponent(runId)}/nodes`, {
       method: "POST",
-      body: JSON.stringify(node),
+      body: JSON.stringify(agent ? { ...node, agent } : node),
     });
   }
 
@@ -537,6 +539,10 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
             },
           },
           required: ["id", "file", "symbol", "title", "description", "rationale", "dependencies"],
+        },
+        agent: {
+          type: "string",
+          description: "Identidad de quien descubre (opcional): conserva el nodo con esa sesión en vez de devolverlo al modelo base.",
         },
       },
       required: ["runId", "node"],
@@ -910,11 +916,39 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
   },
 ];
 
+// Argumento con el que cada herramienta nombra a QUIEN LLAMA. Sólo estos se
+// corrigen con la identidad de la sesión: 'assignee' de hrp_assign_node nombra
+// a otro agente y jamás debe reescribirse.
+const callerIdentityArgument: Record<string, string> = {
+  hrp_create_run: "agent",
+  hrp_attention: "agent",
+  hrp_publish_graph: "agent",
+  hrp_plan_pass: "agent",
+  hrp_start_node: "agent",
+  hrp_retry_node: "agent",
+  hrp_publish_activity: "agent",
+  hrp_review_pack: "agent",
+  hrp_discover_node: "agent",
+  hrp_finding_add: "reviewer",
+  hrp_finding_reply: "author",
+  hrp_finding_agree: "author",
+  hrp_finding_reject: "author",
+  hrp_finding_reopen: "author",
+};
+
 export async function executeHrpTool(
   client: HrpMcpClient,
   toolName: string,
   args: Record<string, unknown> = {},
 ): Promise<unknown> {
+  // Este servidor MCP lo lanza la sesión del agente y hereda su entorno, así
+  // que HRP_AGENT es la identidad real de quien llama. Sin esta corrección, un
+  // modelo que escriba "claude" mientras su sesión es "claude:opus" publicaría
+  // evidencia a nombre de otra sesión —y recibiría la señal de atención de
+  // otra—, que es justo lo que el reparto por papeles trata de evitar.
+  const sessionAgent = process.env.HRP_AGENT?.trim();
+  const identityArgument = callerIdentityArgument[toolName];
+  if (sessionAgent && identityArgument) args = { ...args, [identityArgument]: sessionAgent };
   switch (toolName) {
     case "hrp_service_start":
       return client.startService(typeof args.workspace === "string" ? args.workspace : undefined);
@@ -963,7 +997,11 @@ export async function executeHrpTool(
       );
 
     case "hrp_discover_node":
-      return client.discoverNode(String(args.runId), args.node as ChangeNodeInput);
+      return client.discoverNode(
+        String(args.runId),
+        args.node as ChangeNodeInput,
+        typeof args.agent === "string" ? args.agent : undefined,
+      );
 
     case "hrp_approve_nodes":
       return client.approveNodes(

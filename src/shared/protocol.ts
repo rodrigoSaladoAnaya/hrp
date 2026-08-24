@@ -9,6 +9,14 @@ export type ActivityType = (typeof activityTypes)[number];
 export const runControls = ["active", "paused", "stopped"] as const;
 export type RunControl = (typeof runControls)[number];
 
+// Dificultad declarada de una operación. La publica el modelo base junto con el
+// resto de la spec, así que el humano la aprueba y puede corregirla: es la
+// semántica con la que se decide qué modelo ataca el nodo, no una heurística
+// que el despachador infiera del diff. Un nodo sin dificultad declarada vale
+// como "standard"; esa resolución vive donde se consulta, no en el dato.
+export const nodeDifficulties = ["trivial", "standard", "hard"] as const;
+export type NodeDifficulty = (typeof nodeDifficulties)[number];
+
 export type Project = {
   id: string;
   name: string;
@@ -80,6 +88,8 @@ export type ChangeNode = {
   approved: boolean;
   assignee?: string;
   suggestedAgent?: string;
+  // Dificultad declarada de la operación: gobierna a qué modelo se enruta.
+  difficulty?: NodeDifficulty;
   // Archivos de solo lectura que 'hrp ollama exec' adjunta como referencia al
   // delegar: el humano aprueba junto con la spec qué material verá el modelo.
   contextFiles?: string[];
@@ -261,7 +271,7 @@ export type RunDetail = {
   agentStates: AgentWorkState[];
 };
 
-export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent" | "contextFiles"> & {
+export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent" | "difficulty" | "contextFiles"> & {
   discovered?: boolean;
 };
 
@@ -270,10 +280,13 @@ export type GraphInput = {
 };
 
 // Configuración persistida de Ollama Cloud; la key solo vive en el servidor.
+// 'tiers' asigna un modelo delegado a cada dificultad; un nivel ausente hereda
+// 'model', de modo que una instalación con un solo modelo sigue funcionando.
 export type OllamaSettings = {
   apiKey: string;
   model: string;
   baseUrl: string;
+  tiers: DelegateTiers;
 };
 
 // Vista para la web: nunca incluye la key completa, solo su terminación.
@@ -281,8 +294,93 @@ export type OllamaSettingsView = {
   configured: boolean;
   model: string;
   baseUrl: string;
+  tiers: DelegateTiers;
   keyMask?: string;
 };
+
+export type DelegateTiers = Partial<Record<NodeDifficulty, string>>;
+
+// Identidad de un agente. Una identidad es "familia" ("claude") o
+// "familia:sesión" ("claude:opus"), y es la unidad con la que HRP cuenta todo:
+// sostiene un nodo en vuelo y un estado de agente por identidad, y dirige a
+// ella la señal de atención. Por eso dos sesiones del mismo modelo deben usar
+// identidades distintas —"claude:fable" que planea y audita, "claude:opus" que
+// implementa—: compartir identidad es compartir estado y pisárselo. La familia
+// sigue siendo una identidad válida por sí sola, que es lo que usa una sesión
+// única. El carril delegado "ollama:<modelo>" comparte esta forma pero no es
+// una sesión: lo administra el modelo base (isDelegateAgent lo distingue).
+const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*(:[A-Za-z0-9][A-Za-z0-9_.-]*)?$/;
+
+export function agentFamily(agent: string): string {
+  const separator = agent.indexOf(":");
+  return separator === -1 ? agent : agent.slice(0, separator);
+}
+
+export function agentSessionLabel(agent: string): string | undefined {
+  const separator = agent.indexOf(":");
+  return separator === -1 ? undefined : agent.slice(separator + 1) || undefined;
+}
+
+export function isValidAgentId(agent: string | undefined): boolean {
+  return typeof agent === "string" && AGENT_ID_PATTERN.test(agent);
+}
+
+// Identidad del ejecutor delegado. HRP permite un solo nodo en vuelo por
+// identidad, así que mientras toda la delegación se llamara "ollama" el trabajo
+// delegado se ejecutaba en serie por construcción. Un carril "ollama:<modelo>"
+// es una identidad ejecutora distinta: dos carriles corren a la vez sin relajar
+// ninguna regla de compatibilidad entre nodos (archivo, contexto, dependencias).
+export const DELEGATE_AGENT = "ollama";
+const LANE_PREFIX = `${DELEGATE_AGENT}:`;
+
+export function delegateLane(model: string): string {
+  return `${LANE_PREFIX}${model.trim()}`;
+}
+
+// Modelo declarado por un carril, o undefined si el agente no es un carril con
+// modelo (incluido el "ollama" pelado, que hereda el modelo por dificultad).
+export function laneModel(agent: string | undefined): string | undefined {
+  if (!agent?.startsWith(LANE_PREFIX)) return undefined;
+  return agent.slice(LANE_PREFIX.length).trim() || undefined;
+}
+
+// Un agente delegado no abre sesión propia: lo administra el modelo base.
+export function isDelegateAgent(agent: string | undefined): boolean {
+  return agent === DELEGATE_AGENT || Boolean(agent?.startsWith(LANE_PREFIX));
+}
+
+// Familias con adaptador propio: son las que el panel ofrece siempre, aunque
+// todavía no hayan aparecido en la ejecución.
+export const agentFamilies = ["claude", "codex", "antigravity", DELEGATE_AGENT] as const;
+
+// Censo de identidades de una ejecución: el modelo base primero, después las
+// familias con adaptador, después toda identidad que la ejecución ya nombra
+// (auditores, presencias, asignaciones y sugerencias) y al final los carriles
+// delegados configurados. Se deriva del run en vez de fijarse en una constante
+// porque una sesión —"claude:opus"— sólo existe si alguien la nombró: sin este
+// censo el panel no puede asignarle nodos ni elegirla auditora.
+export function runRoster(
+  run: Pick<RunSummary, "baseAgent" | "auditors" | "seenAgents">,
+  nodes: Pick<ChangeNode, "assignee" | "suggestedAgent">[] = [],
+  delegateLanes: string[] = [],
+): string[] {
+  const referenced = [
+    ...run.auditors,
+    ...run.seenAgents,
+    ...nodes.flatMap((node) => [node.assignee, node.suggestedAgent]),
+  ];
+  const ordered = [run.baseAgent, ...agentFamilies, ...referenced, ...delegateLanes];
+  return [...new Set(ordered.filter((agent): agent is string => isValidAgentId(agent)))];
+}
+
+// Enrutado por dificultad: el nivel decide el modelo y el modelo base decide el
+// nivel al publicar el grafo. Sin nivel declarado el nodo vale como "standard".
+export function modelForDifficulty(
+  settings: Pick<OllamaSettings, "model" | "tiers">,
+  difficulty?: NodeDifficulty,
+): string {
+  return settings.tiers?.[difficulty ?? "standard"]?.trim() || settings.model;
+}
 
 export type ViewShortcutModifier = "meta" | "ctrl" | "either";
 

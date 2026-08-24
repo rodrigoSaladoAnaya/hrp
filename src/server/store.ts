@@ -27,6 +27,10 @@ import {
   type FindingMessage,
   type FindingStatus,
   type GraphInput,
+  type DelegateTiers,
+  isDelegateAgent,
+  type NodeDifficulty,
+  nodeDifficulties,
   type NodeStatus,
   type OllamaSettings,
   type OllamaSettingsView,
@@ -58,6 +62,18 @@ function now(): string {
   return new Date().toISOString();
 }
 
+// Los niveles persistidos se leen defensivamente: un JSON viejo o editado a
+// mano no debe inyectar niveles inexistentes ni modelos vacíos en el enrutado.
+function sanitizeTiers(stored: unknown): DelegateTiers {
+  const source = (stored ?? {}) as Record<string, unknown>;
+  const tiers: DelegateTiers = {};
+  for (const difficulty of nodeDifficulties) {
+    const model = typeof source[difficulty] === "string" ? String(source[difficulty]).trim() : "";
+    if (model) tiers[difficulty] = model;
+  }
+  return tiers;
+}
+
 function isViewShortcutModifier(value: unknown): value is ViewShortcutModifier {
   return value === "meta" || value === "ctrl" || value === "either";
 }
@@ -87,6 +103,7 @@ function nodeFromRow(row: Row): ChangeNode {
     approved: Number(row.approved) === 1,
     assignee: row.assignee ? String(row.assignee) : undefined,
     suggestedAgent: row.suggested_agent ? String(row.suggested_agent) : undefined,
+    difficulty: row.difficulty ? String(row.difficulty) as NodeDifficulty : undefined,
     contextFiles: row.context_json ? JSON.parse(String(row.context_json)) as string[] : undefined,
     executedBy: row.executed_by ? String(row.executed_by) : undefined,
     dependencies: JSON.parse(String(row.dependencies_json)) as string[],
@@ -311,6 +328,11 @@ export class HrpStore {
     if (!nodeColumns.some((column) => String(column.name) === "context_json")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN context_json TEXT");
     }
+    // NULL es lo esperado en los nodos anteriores al enrutado por dificultad:
+    // se leen como 'standard' allí donde se consulta la dificultad.
+    if (!nodeColumns.some((column) => String(column.name) === "difficulty")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN difficulty TEXT");
+    }
     if (!nodeColumns.some((column) => String(column.name) === "tokens")) {
       this.database.exec("ALTER TABLE nodes ADD COLUMN tokens INTEGER");
     }
@@ -403,17 +425,28 @@ export class HrpStore {
       apiKey: stored.apiKey ?? "",
       model: stored.model?.trim() || DEFAULT_OLLAMA_MODEL,
       baseUrl: stored.baseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL,
+      tiers: sanitizeTiers(stored.tiers),
     };
   }
 
   // apiKey omitida conserva la key actual; null la borra. Así la web puede
   // actualizar el modelo sin obligar al humano a reingresar la credencial.
-  setOllamaSettings(update: { apiKey?: string | null; model?: string; baseUrl?: string }): OllamaSettingsView {
+  // tiers se mezcla nivel a nivel: un modelo lo fija, y una cadena vacía o null
+  // lo borra para que ese nivel vuelva a heredar el modelo por defecto.
+  setOllamaSettings(update: { apiKey?: string | null; model?: string; baseUrl?: string; tiers?: Partial<Record<NodeDifficulty, string | null>> }): OllamaSettingsView {
     const current = this.getOllamaSettings();
+    const tiers: DelegateTiers = { ...current.tiers };
+    for (const difficulty of nodeDifficulties) {
+      if (!(difficulty in (update.tiers ?? {}))) continue;
+      const model = update.tiers?.[difficulty]?.trim();
+      if (model) tiers[difficulty] = model;
+      else delete tiers[difficulty];
+    }
     const next: OllamaSettings = {
       apiKey: update.apiKey === null ? "" : update.apiKey?.trim() || current.apiKey,
       model: update.model?.trim() || current.model,
       baseUrl: (update.baseUrl?.trim() || current.baseUrl).replace(/\/+$/, ""),
+      tiers,
     };
     this.database.prepare(`
       INSERT INTO settings (key, value_json, updated_at) VALUES ('ollama', ?, ?)
@@ -428,6 +461,7 @@ export class HrpStore {
       configured: Boolean(settings.apiKey),
       model: settings.model,
       baseUrl: settings.baseUrl,
+      tiers: settings.tiers,
       keyMask: settings.apiKey ? `…${settings.apiKey.slice(-4)}` : undefined,
     };
   }
@@ -777,7 +811,10 @@ export class HrpStore {
   private nodesForAgent(runId: string, agent: string): ChangeNode[] {
     const detail = this.getRunDetail(runId);
     if (!detail) return [];
-    return detail.nodes.filter((node) => node.assignee === agent || node.executedBy === agent || (agent === detail.run.baseAgent && !node.assignee));
+    // Un agente delegado no abre sesión propia: sus nodos —sin asignar o en
+    // cualquier carril ollama:<modelo>— son trabajo que administra el base.
+    return detail.nodes.filter((node) => node.assignee === agent || node.executedBy === agent
+      || (agent === detail.run.baseAgent && (!node.assignee || isDelegateAgent(node.assignee))));
   }
 
   publishGraph(runId: string, input: GraphInput, agent?: string): ChangeNode[] {
@@ -810,12 +847,13 @@ export class HrpStore {
     };
     for (const nodeId of dependencyGraph.keys()) visit(nodeId, []);
     const upsert = this.database.prepare(`
-      INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, discovered, suggested_agent, context_json, dependencies_json, created_at, updated_at)
-      VALUES (@id, @runId, @file, @symbol, @title, @description, @rationale, 'pending', @discovered, @suggestedAgent, @contextJson, @dependencies, @timestamp, @timestamp)
+      INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, discovered, suggested_agent, difficulty, context_json, dependencies_json, created_at, updated_at)
+      VALUES (@id, @runId, @file, @symbol, @title, @description, @rationale, 'pending', @discovered, @suggestedAgent, @difficulty, @contextJson, @dependencies, @timestamp, @timestamp)
       ON CONFLICT(run_id, id) DO UPDATE SET
         file = excluded.file, symbol = excluded.symbol, title = excluded.title,
         description = excluded.description, rationale = excluded.rationale,
         discovered = excluded.discovered, suggested_agent = excluded.suggested_agent,
+        difficulty = excluded.difficulty,
         context_json = excluded.context_json,
         dependencies_json = excluded.dependencies_json,
         -- La aprobación humana solo se invalida si el contenido semántico del
@@ -826,6 +864,9 @@ export class HrpStore {
             AND nodes.description = excluded.description AND nodes.rationale = excluded.rationale
             AND nodes.dependencies_json = excluded.dependencies_json
             AND COALESCE(nodes.suggested_agent, '') = COALESCE(excluded.suggested_agent, '')
+            -- La dificultad decide a qué modelo se enruta el nodo: cambiarla
+            -- cambia quién lo implementa, así que exige re-aprobación.
+            AND COALESCE(nodes.difficulty, '') = COALESCE(excluded.difficulty, '')
             -- El contexto es parte de lo aprobado: cambiarlo altera lo que el
             -- modelo delegado vera, asi que exige re-aprobacion.
             AND COALESCE(nodes.context_json, '') = COALESCE(excluded.context_json, '')
@@ -843,8 +884,8 @@ export class HrpStore {
     this.database.transaction((nodes: ChangeNodeInput[]) => {
       for (const node of nodes) {
         // contextFiles se separa del spread: el binding nombrado no admite claves sobrantes.
-        const { contextFiles, ...fields } = node;
-        upsert.run({ ...fields, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, contextJson: contextFiles?.length ? JSON.stringify(contextFiles) : null, dependencies: JSON.stringify(node.dependencies), timestamp });
+        const { contextFiles, difficulty, ...fields } = node;
+        upsert.run({ ...fields, runId, discovered: node.discovered ? 1 : 0, suggestedAgent: node.suggestedAgent ?? null, difficulty: difficulty ?? null, contextJson: contextFiles?.length ? JSON.stringify(contextFiles) : null, dependencies: JSON.stringify(node.dependencies), timestamp });
         const assignee = node.suggestedAgent ?? effectiveBaseAgent;
         if (assignee) defaultAssign.run({ runId, id: node.id, assignee });
       }
@@ -864,14 +905,21 @@ export class HrpStore {
     return updated.nodes;
   }
 
-  addDiscoveredNode(runId: string, node: ChangeNodeInput): ChangeNode {
+  // 'agent' es la identidad que publica el descubrimiento. Con varias sesiones
+  // repartidas por papel, el modelo base puede ser la que planea y audita, no
+  // la que implementa: devolverle todo lo descubierto rompería el reparto justo
+  // cuando aparece trabajo nuevo, así que quien descubre conserva su hallazgo y
+  // el base sólo actúa de respaldo.
+  addDiscoveredNode(runId: string, node: ChangeNodeInput, agent?: string): ChangeNode {
     this.publishGraph(runId, { nodes: [{ ...node, discovered: true }] });
+    if (agent) this.registerAgent(runId, agent);
     const run = this.getRun(runId);
-    this.addActivity(runId, "inspect", `Cambio descubierto: ${node.file} · ${node.symbol}`, node.rationale, node.id, run?.baseAgent);
+    this.addActivity(runId, "inspect", `Cambio descubierto: ${node.file} · ${node.symbol}`, node.rationale, node.id, agent ?? run?.baseAgent);
     // Un descubierto sugerido para otro modelo (p. ej. ollama) respeta esa
-    // sugerencia; el resto vuelve al modelo base para no esperar a nadie.
+    // sugerencia; el resto se queda con quien lo descubrió y, si no declaró
+    // identidad, con el modelo base para no esperar a nadie.
     const baseAgent = this.getRun(runId)?.baseAgent;
-    const assignee = node.suggestedAgent ?? baseAgent;
+    const assignee = node.suggestedAgent ?? agent ?? baseAgent;
     if (assignee) this.assignNode(runId, node.id, assignee);
     // El humano ya aprobó la intención de esta ejecución: frenar cada
     // descubrimiento en un clic es lo que dejaba a los agentes bloqueados y
@@ -1098,7 +1146,12 @@ export class HrpStore {
     if (run.control === "stopped") throw new Error("Run was stopped by the human; do not start more nodes and report your progress");
     const node = this.requireNode(runId, nodeId);
     if (!node.approved) throw new Error(`Node awaits human approval: ${nodeId}. Ask the human to approve it in the HRP panel or with 'hrp node approve'`);
-    if (node.assignee && agent && agent !== node.assignee) {
+    // Un nodo delegado se asigna a la familia ('ollama') o a un carril concreto
+    // ('ollama:<modelo>'). El despachador resuelve el carril por dificultad al
+    // arrancar, así que cualquier carril puede tomar un nodo delegado; lo que
+    // sigue prohibido es que un agente con sesión tome trabajo ajeno.
+    const laneTakeover = isDelegateAgent(node.assignee) && isDelegateAgent(agent);
+    if (node.assignee && agent && agent !== node.assignee && !laneTakeover) {
       throw new Error(`Node ${nodeId} is assigned to ${node.assignee}; agent ${agent} must not start it`);
     }
     const blockers = node.dependencies.map((id) => this.getNode(runId, id)).filter((item) => item?.status !== "completed");
@@ -1116,7 +1169,12 @@ export class HrpStore {
       ? inFlight.find((candidate) => (candidate.executedBy ?? candidate.assignee) === executor)
       : undefined;
     if (busy) {
-      throw new Error(`Agent ${executor} is already running ${busy.id}; close it with patch, verify and complete before starting ${nodeId}`);
+      // Un carril es una identidad ejecutora: la exclusión sigue siendo por
+      // identidad, y otro carril con distinto modelo sí puede correr a la vez.
+      const laneHint = isDelegateAgent(executor)
+        ? ". Otro carril delegado con distinto modelo sí puede correr en paralelo"
+        : "";
+      throw new Error(`Agent ${executor} is already running ${busy.id}; close it with patch, verify and complete before starting ${nodeId}${laneHint}`);
     }
     const conflict = inFlight
       .map((running) => ({ running, reason: this.concurrentConflict(node, running, nodesById) }))

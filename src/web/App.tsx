@@ -15,7 +15,7 @@ import {
   type ReactFlowInstance,
   type Viewport,
 } from "@xyflow/react";
-import { DEFAULT_UI_PREFERENCES, auditorIdentity, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
+import { DEFAULT_UI_PREFERENCES, agentFamily, agentSessionLabel, auditorIdentity, isDelegateAgent, isValidAgentId, laneModel, runRoster, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphViewportAction, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
@@ -63,11 +63,11 @@ type MapNodeData = {
   baseAgent?: string;
   seenAgents: string[];
   ollamaConfigured: boolean;
+  roster: string[];
   onSelect: (id: string) => void;
   onAssign: (id: string, assignee: string | null) => void;
 };
 
-const supportedAgents = ["claude", "codex", "antigravity", "ollama"] as const;
 const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
 const graphMagnifierTargetScale = 1.45;
@@ -99,10 +99,45 @@ function TokenCostBadge({ tokens, className = "" }: { tokens?: number; className
   );
 }
 
+// Un carril por modelo configurado: es lo que el humano asigna para que dos
+// nodos delegados corran a la vez, porque HRP sostiene un nodo por identidad.
+function delegateLanesOf(ollama?: OllamaSettingsView): string[] {
+  const models = [ollama?.model, ...Object.values(ollama?.tiers ?? {})].filter((model): model is string => Boolean(model));
+  return [...new Set(models)].map((model) => `ollama:${model}`);
+}
+
+const difficultyCopy: Record<NonNullable<ChangeNode["difficulty"]>, string> = {
+  trivial: "trivial",
+  standard: "estándar",
+  hard: "difícil",
+};
+
+const difficultyHint = "Dificultad declarada por el modelo base: con ella se decide qué modelo implementa la operación.";
+
+// Opciones de asignación: el censo de la ejecución (base, familias con
+// adaptador, sesiones ya nombradas y carriles delegados) y, si el nodo ya tiene
+// un valor fuera de él, ese valor para no perderlo.
+function AgentOptions({ roster, current }: { roster: string[]; current?: string }) {
+  const options = [...roster];
+  if (current && !options.includes(current)) options.push(current);
+  return <>{options.map((agent) => <option key={agent} value={agent}>{agentLabel(agent)}</option>)}</>;
+}
+
+// Una identidad se lee en dos partes: la familia y, si es un carril delegado o
+// una sesión, su etiqueta. Así "claude:opus" y "claude:fable" se distinguen de
+// un vistazo en vez de leerse como dos cadenas casi iguales.
+function agentLabel(agent: string): string {
+  const lane = laneModel(agent);
+  if (lane) return `ollama · ${lane}`;
+  const session = agentSessionLabel(agent);
+  return session ? `${agentFamily(agent)} · ${session}` : agent;
+}
+
 function agentMissing(change: ChangeNode, baseAgent: string | undefined, seenAgents: string[], ollamaConfigured = false): boolean {
   // ollama no abre sesión propia: el modelo base delega vía el servicio, así
   // que basta con que exista una API key configurada para considerarlo listo.
-  if (change.assignee === "ollama" && ollamaConfigured) return false;
+  // Vale igual para cualquier carril 'ollama:<modelo>'.
+  if (isDelegateAgent(change.assignee) && ollamaConfigured) return false;
   return Boolean(change.assignee
     && change.status !== "completed" && change.status !== "running"
     && change.assignee !== baseAgent
@@ -211,6 +246,7 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
         {change.suggestedAgent && change.status !== "completed" && (
           <span className="suggested-label" title={`El modelo base sugiere que esta operación la implemente ${change.suggestedAgent}`}>sugiere {change.suggestedAgent}</span>
         )}
+        {change.difficulty && <span className="suggested-label" title={difficultyHint}>{difficultyCopy[change.difficulty]}</span>}
       </div>
       <strong className="node-symbol">{change.symbol}</strong>
       {change.status === "completed" && <span className="node-completion-crumb" aria-hidden="true"><i/><i/><i/></span>}
@@ -228,7 +264,7 @@ function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
             onChange={(event) => { event.stopPropagation(); data.onAssign(change.id, event.target.value || null); }}
           >
             <option value="">{data.baseAgent ? `base · ${data.baseAgent}` : "modelo base"}</option>
-            {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+            <AgentOptions roster={data.roster} current={change.assignee}/>
           </select>
         ) : (change.executedBy ?? change.assignee ?? data.baseAgent) && (
           <span className="node-assignee" title={`${change.status === "completed" ? "Implementado" : "En ejecución"} por ${change.executedBy ?? change.assignee ?? data.baseAgent}`}>{change.executedBy ?? change.assignee ?? data.baseAgent}</span>
@@ -257,7 +293,7 @@ const graphAriaLabels: Partial<AriaLabelConfig> = {
   "handle.ariaLabel": "Conexión de dependencia",
 };
 
-function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, ollamaConfigured: boolean, onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
+function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, ollamaConfigured: boolean, roster: string[], onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
   const nodeWidth = readCssPixels("--change-node-width", changeNodeWidthFallback);
   const nodeHeight = readCssPixels("--change-node-layout-height", changeNodeLayoutHeightFallback);
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
@@ -272,7 +308,7 @@ function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run:
       id: change.id,
       type: "change",
       position: { x: point.x - nodeWidth / 2, y: point.y - nodeHeight / 2 },
-      data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], ollamaConfigured, onSelect, onAssign },
+      data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], ollamaConfigured, roster, onSelect, onAssign },
     };
   });
   const edges = changes.flatMap((change) => change.dependencies.map((dependency) => {
@@ -306,7 +342,7 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, activity, runId, runControl, attribution, baseAgent, seenAgents, ollamaConfigured, canApprove, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; runControl: RunSummary["control"]; attribution: FileAttribution[]; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; canApprove: boolean; onChanged: () => void }) {
+function Inspector({ node, nodes, activity, runId, runControl, attribution, baseAgent, seenAgents, ollamaConfigured, roster, canApprove, onChanged }: { node?: ChangeNode; nodes: ChangeNode[]; activity: Activity[]; runId: string; runControl: RunSummary["control"]; attribution: FileAttribution[]; baseAgent?: string; seenAgents: string[]; ollamaConfigured: boolean; roster: string[]; canApprove: boolean; onChanged: () => void }) {
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
@@ -374,7 +410,7 @@ function Inspector({ node, nodes, activity, runId, runControl, attribution, base
               onChange={(event) => post(`/nodes/${node.id}/assign`, { assignee: event.target.value || null })}
             >
               <option value="">{baseAgent ? `modelo base · ${baseAgent}` : "modelo base"}</option>
-              {supportedAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+              <AgentOptions roster={roster} current={node.assignee}/>
             </select>
             {agentMissing(node, baseAgent, seenAgents, ollamaConfigured) && baseAgent && (
               <button type="button" onClick={() => post(`/nodes/${node.id}/assign`, { assignee: baseAgent })}>Devolver a {baseAgent}</button>
@@ -398,7 +434,7 @@ function Inspector({ node, nodes, activity, runId, runControl, attribution, base
       )}
 
       <section className="change-history planned-history">
-        <div className="history-heading"><h3>Qué hará</h3><span>Plan original</span></div>
+        <div className="history-heading"><h3>Qué hará</h3><span>{node.difficulty ? `Plan original · dificultad ${difficultyCopy[node.difficulty]}` : "Plan original"}</span></div>
         <p className="history-summary">{node.description}</p>
         <div className="history-rationale"><strong>Por qué se planeó</strong><p>{node.rationale}</p></div>
         {node.contextFiles && node.contextFiles.length > 0 && (<div className="history-rationale"><strong>Contexto de referencia (solo lectura)</strong><p>{node.contextFiles.join(", ")}</p></div>)}
@@ -461,14 +497,19 @@ function elapsedSince(startedAt: string | undefined, tick: number): string | und
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsChange }: {
+function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, selectedNodeId, onAuditorsChange, onAssign }: {
   run: RunSummary;
   nodes: ChangeNode[];
   agentStates: AgentWorkState[];
   workspaceRoot?: string;
   ollama?: OllamaSettingsView;
+  selectedNodeId?: string;
   onAuditorsChange: (auditors: string[]) => Promise<void>;
+  onAssign: (nodeId: string, assignee: string) => Promise<void>;
 }) {
+  const [sessionDraft, setSessionDraft] = useState("");
+  const [sessionError, setSessionError] = useState<string>();
+  const [sessionBusy, setSessionBusy] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<{ agent: string; action: "attend" | "release"; result: "copied" | "failed" }>();
   const [expandedAgent, setExpandedAgent] = useState<string>();
   const [selectionBusy, setSelectionBusy] = useState<string>();
@@ -476,6 +517,10 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
   const [tick, setTick] = useState(Date.now());
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
+  // El censo sale de la ejecución: una sesión ("claude:opus") sólo existe aquí
+  // si alguien la nombró —como base, auditora, presente o asignataria—, que es
+  // lo que permite al humano repartir papeles entre sesiones del mismo modelo.
+  const roster = useMemo(() => runRoster(run, nodes, delegateLanesOf(ollama)), [run, nodes, ollama]);
   const hasActiveAgent = agentStates.some((state) => state.phase === "executing" || state.phase === "reviewing");
   useEffect(() => {
     if (!hasActiveAgent) return undefined;
@@ -515,6 +560,30 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
     catch (cause) { setSelectionError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setSelectionBusy(undefined); }
   };
+  // Dar de alta = darle papel. Sin papel la identidad no recibiría señal de
+  // atención ni sobreviviría a un refresco, así que no habría alta ninguna.
+  const registerSession = async (papel: "audita" | "implementa") => {
+    const agent = sessionDraft.trim();
+    if (!isValidAgentId(agent)) {
+      setSessionError("Identidad inválida: usa 'familia' o 'familia:sesion', por ejemplo claude:opus.");
+      return;
+    }
+    if (papel === "audita" && run.auditors.includes(agent)) {
+      setSessionError(`${agent} ya audita esta ejecución.`);
+      return;
+    }
+    setSessionBusy(true);
+    setSessionError(undefined);
+    try {
+      if (papel === "audita") await onAuditorsChange([...run.auditors, agent]);
+      else await onAssign(selectedNodeId!, agent);
+      setSessionDraft("");
+    } catch (cause) {
+      setSessionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSessionBusy(false);
+    }
+  };
   const nodeLabel = (id: string) => {
     const node = nodes.find((candidate) => candidate.id === id);
     return node ? `${node.file} · ${node.symbol}` : id;
@@ -526,16 +595,20 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
         <b>{run.auditors.length} aud.</b>
       </header>
       {selectionError && <p className="agent-dock-error" role="alert">{selectionError}</p>}
-      {supportedAgents.map((agent) => {
+      {roster.map((agent) => {
         const isBase = agent === run.baseAgent;
-        const isOllama = agent === "ollama";
+        // El trato especial del delegado vale para la familia y para cada
+        // carril: ninguno abre sesión, así que su presencia es la API key.
+        const isOllama = isDelegateAgent(agent);
+        const lane = laneModel(agent);
+        const session = agentSessionLabel(agent);
         const present = isBase || run.seenAgents.includes(agent) || (isOllama && Boolean(ollama?.configured));
         const count = nodes.filter((node) => node.status !== "completed" && (node.assignee === agent || (isBase && !node.assignee))).length;
         const state = agentStates.find((candidate) => candidate.agent === agent);
         const selectedAuditor = run.auditors.includes(agent);
         const elapsed = state && (state.phase === "executing" || state.phase === "reviewing") ? elapsedSince(state.startedAt, tick) : undefined;
         const presenceLabel = isBase ? "Modelo base"
-          : isOllama ? (ollama?.configured ? `Ollama Cloud · ${ollama.model}` : "Sin API key configurada")
+          : isOllama ? (ollama?.configured ? `Ollama Cloud · ${lane ?? ollama.model}` : "Sin API key configurada")
             : present ? "Presente" : "Sin señal";
         const attendResult = copyFeedback?.agent === agent && copyFeedback.action === "attend" ? copyFeedback.result : undefined;
         const releaseResult = copyFeedback?.agent === agent && copyFeedback.action === "release" ? copyFeedback.result : undefined;
@@ -553,9 +626,9 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
           <div className={`agent-dock-entry phase-${state?.phase ?? "idle"} ${isBase ? "is-base-agent" : ""}`} key={agent} role="group" aria-label={`${agent}${isBase ? ", modelo base" : ""}${selectedAuditor ? ", auditor" : ""}`}>
             <div className="agent-dock-row">
               <span className={`agent-presence-dot agent-presence-${present ? "present" : "absent"}`} role="img" aria-label={presenceLabel} title={presenceLabel}/>
-              <span className="agent-dock-name" title={isBase ? "Modelo base: controla los nodos sin asignar y coordina el cierre de la ejecución" : isOllama && ollama?.configured ? `${agent} · ${ollama.model}` : agent}>
-                <span className="agent-name-text">{agent}</span>
-                {isOllama && ollama?.configured && <small>{ollama.model}</small>}
+              <span className="agent-dock-name" title={isBase ? `Modelo base (${agent}): controla los nodos sin asignar y coordina el cierre de la ejecución` : isOllama && ollama?.configured ? `${agent} · ${lane ?? ollama.model}` : session ? `${agent}: sesión ${session} del modelo ${agentFamily(agent)}` : agent}>
+                <span className="agent-name-text">{session ? agentFamily(agent) : agent}</span>
+                {session ? <small>{session}</small> : isOllama && ollama?.configured && <small>{ollama.model}</small>}
               </span>
               <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
               <span className="agent-attention-actions">
@@ -604,6 +677,28 @@ function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, onAuditorsC
           </div>
         );
       })}
+      {/* Una identidad sólo existe en la ejecución a través de un papel: se da
+          de alta auditando o recibiendo un nodo, y así queda persistida donde
+          HRP la lee en vez de vivir en el estado de esta pestaña. */}
+      <form
+        className="agent-dock-session"
+        aria-label="Dar de alta una sesión"
+        onSubmit={(event) => event.preventDefault()}
+      >
+        <label htmlFor="agent-dock-session-input">Sesión por modelo</label>
+        <input
+          id="agent-dock-session-input"
+          value={sessionDraft}
+          placeholder="claude:opus"
+          aria-invalid={Boolean(sessionError)}
+          onChange={(event) => { setSessionDraft(event.target.value); setSessionError(undefined); }}
+        />
+        <div className="agent-dock-session-actions">
+          <button type="button" disabled={sessionBusy || selectionLocked} onClick={() => { registerSession("audita").catch(() => undefined); }}>Que audite</button>
+          <button type="button" disabled={sessionBusy || !selectedNodeId} title={selectedNodeId ? undefined : "Selecciona antes la operación que implementará"} onClick={() => { registerSession("implementa").catch(() => undefined); }}>Que implemente el nodo</button>
+        </div>
+        <small>{sessionError ?? "Una sesión entra en la ejecución con un papel: auditora, o implementando la operación seleccionada."}</small>
+      </form>
     </section>
   );
 }
@@ -1177,7 +1272,13 @@ export function App() {
 
   const assignAgent = useCallback(async (nodeId: string, assignee: string | null) => {
     if (!runId) return;
-    await fetch(`/api/runs/${runId}/nodes/${nodeId}/assign`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee }) });
+    const response = await fetch(`/api/runs/${runId}/nodes/${nodeId}/assign`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee }) });
+    // El alta de sesión asigna con una identidad escrita a mano: si el servidor
+    // la rechaza, el humano tiene que leer por qué en vez de ver que no pasa nada.
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? "No se pudo asignar la operación");
+    }
     await loadDetail(runId);
   }, [runId, loadDetail]);
 
@@ -1220,7 +1321,12 @@ export function App() {
     if (run.id === runId) await loadDetail(run.id);
   }, [projectId, runId, loadCatalog, loadDetail]);
 
-  const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, ollama?.configured ?? false, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, ollama?.configured, assignAgent]);
+  const delegateLanes = useMemo(() => delegateLanesOf(ollama), [ollama]);
+  const roster = useMemo(
+    () => detail?.run ? runRoster(detail.run, detail.nodes, delegateLanes) : delegateLanes,
+    [detail?.run, detail?.nodes, delegateLanes],
+  );
+  const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, detail?.run, ollama?.configured ?? false, roster, setSelectedId, (nodeId, assignee) => { assignAgent(nodeId, assignee).catch(() => undefined); }), [detail?.nodes, detail?.run, selectedId, ollama?.configured, roster, assignAgent]);
 
   // El layout se re-acomoda cuando aparecen o desaparecen nodos (descubiertos,
   // grafo republicado) y el contenido puede quedar fuera del viewport: reencuadra
@@ -1385,7 +1491,7 @@ export function App() {
           projects={catalog.projects}
           projectId={projectId}
           runId={runId}
-          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} agentStates={detail.agentStates} workspaceRoot={project?.workspaceRoot} ollama={ollama} onAuditorsChange={updateAuditors}/> : undefined}
+          agentDock={!loadingRun && detail?.run.id === runId ? <AgentDock run={detail.run} nodes={detail.nodes} agentStates={detail.agentStates} workspaceRoot={project?.workspaceRoot} ollama={ollama} selectedNodeId={selectedId} onAuditorsChange={updateAuditors} onAssign={assignAgent}/> : undefined}
           onProject={(nextProject) => { setProjectId(nextProject.id); setRunId(sortRuns(nextProject.runs)[0]?.id ?? ""); }}
           onRun={(nextProjectId, nextRunId) => { setProjectId(nextProjectId); setRunId(nextRunId); }}
           onDeleteProject={(target) => { deleteProject(target).catch(() => undefined); }}
@@ -1456,7 +1562,7 @@ export function App() {
                     : <div className="map-empty"><Icon name="route"/><h2>El mapa aún no ha sido publicado</h2><p>La ejecución existe, pero el agente todavía no declaró sus operaciones.</p>{publishedActivity > 0 && <button type="button" className="map-empty-cta" onClick={() => setView("activity")}><Icon name="activity"/>{publishedActivity === 1 ? "Ver 1 evento publicado en Actividad" : `Ver ${publishedActivity} eventos publicados en Actividad`}</button>}</div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>} 
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} runControl={detail.run.control} attribution={attribution} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} canApprove={auditorsReady} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} activity={detail.activity} runId={detail.run.id} runControl={detail.run.control} attribution={attribution} baseAgent={detail.run.baseAgent} seenAgents={detail.run.seenAgents} ollamaConfigured={ollama?.configured ?? false} roster={roster} canApprove={auditorsReady} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }}/>
             </main>
           )}
         </div>
@@ -1475,6 +1581,9 @@ function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSa
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  // Roster editable por dificultad. 'hard' no aparece: esa dificultad no se
+  // delega, se queda con el modelo base de la ejecución.
+  const [tiers, setTiers] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string }>();
   useEffect(() => {
@@ -1490,9 +1599,10 @@ function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSa
     setApiKey("");
     setModel(ollama?.model ?? "");
     setBaseUrl(ollama?.baseUrl ?? "");
+    setTiers({ trivial: ollama?.tiers?.trivial ?? "", standard: ollama?.tiers?.standard ?? "" });
     setFeedback(undefined);
   }, [open, ollama]);
-  const submit = async (body: Record<string, string | null>, confirmation: string) => {
+  const submit = async (body: Record<string, unknown>, confirmation: string) => {
     setSaving(true);
     setFeedback(undefined);
     try {
@@ -1509,10 +1619,16 @@ function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSa
     }
   };
   const save = () => {
-    const body: Record<string, string> = {};
+    const body: Record<string, unknown> = {};
     if (apiKey.trim()) body.apiKey = apiKey.trim();
     if (model.trim()) body.model = model.trim();
     if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
+    // Sólo viajan los niveles que cambiaron; la cadena vacía borra el nivel
+    // para que vuelva a heredar el modelo por defecto.
+    const changedTiers = Object.fromEntries(Object.entries(tiers)
+      .filter(([difficulty, value]) => value.trim() !== (ollama?.tiers?.[difficulty as "trivial" | "standard"] ?? ""))
+      .map(([difficulty, value]) => [difficulty, value.trim()]));
+    if (Object.keys(changedTiers).length) body.tiers = changedTiers;
     if (!Object.keys(body).length) { setFeedback({ kind: "error", text: "No hay cambios que guardar." }); return; }
     submit(body, "Configuración guardada.").catch(() => undefined);
   };
@@ -1573,6 +1689,22 @@ function OllamaSettingsPanel({ ollama, uiPreferences, onSaved, onUiPreferencesSa
               )}
             </div>
             <p className="settings-hint">La key se guarda en el servicio local de HRP y nunca vuelve al navegador; el modelo puede cambiarse sin reingresarla.</p>
+            <div className="settings-section">
+              <h3>Modelo por dificultad</h3>
+              <p className="settings-hint">Cada modelo distinto es un carril propio: dos operaciones delegadas sólo corren a la vez si las ataca un modelo diferente. Un nivel vacío hereda el modelo de arriba.</p>
+              {(["trivial", "standard"] as const).map((difficulty) => (
+                <label className="settings-field" key={difficulty}>
+                  <span>{difficultyCopy[difficulty]}</span>
+                  <input
+                    type="text"
+                    value={tiers[difficulty] ?? ""}
+                    placeholder={`Hereda ${ollama?.model ?? "el modelo por defecto"}`}
+                    onChange={(event) => setTiers((current) => ({ ...current, [difficulty]: event.target.value }))}
+                  />
+                </label>
+              ))}
+              <p className="settings-hint">La dificultad «{difficultyCopy.hard}» no se delega: esas operaciones se quedan con el modelo base de la ejecución.</p>
+            </div>
             <div className="settings-section shortcut-settings">
               <h3>Atajos de vistas</h3>
               <label className="settings-check">
@@ -1628,7 +1760,8 @@ function HelpPanel() {
             <h3>Delegar trabajo a otro modelo</h3>
             <ol>
               <li>Aprueba el grafo cuando el agente lo publique (botón «Aprobar grafo»).</li>
-              <li>En la cajita del nodo elige quién lo implementa: claude, codex o antigravity.</li>
+              <li>En la cajita del nodo elige quién lo implementa: claude, codex, antigravity, un carril de ollama o una sesión por modelo (<code>claude:opus</code>).</li>
+              <li>¿Repartes papeles entre sesiones del mismo modelo? Dala de alta al pie del dock con un papel —que audite, o que implemente el nodo seleccionado— y lanza esa sesión con <code>HRP_AGENT=claude:opus</code>.</li>
               <li>En el dock de agentes (abajo a la izquierda) pulsa el icono de copiar junto a ese modelo.</li>
               <li>Pega el comando en la sesión de ese modelo. Su punto se pone verde al engancharse y trabajará solo sus nodos.</li>
             </ol>
@@ -1661,6 +1794,13 @@ function GlobalPendingPanel({ entries, currentRunId, onOpenRun, onControl }: {
   const [attentionByRun, setAttentionByRun] = useState<Record<string, AttentionSignal[]>>({});
   const [loadingAttention, setLoadingAttention] = useState(false);
   const pendingRunKey = useMemo(() => entries.map((entry) => entry.run.id).sort().join("|"), [entries]);
+  // Las identidades de las que hay que pedir señal salen de las propias
+  // ejecuciones pendientes: con sesiones por modelo, una lista fija de familias
+  // dejaría fuera justo a la sesión que tiene trabajo.
+  const pendingAgentKey = useMemo(
+    () => [...new Set(entries.flatMap((entry) => runRoster(entry.run)))].sort().join("|"),
+    [entries],
+  );
   const toggleButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const restoreFocusOnCloseRef = useRef(false);
@@ -1686,7 +1826,7 @@ function GlobalPendingPanel({ entries, currentRunId, onOpenRun, onControl }: {
     let cancelled = false;
     const runIds = new Set(pendingRunKey.split("|"));
     setLoadingAttention(true);
-    Promise.all(supportedAgents.map(async (agent) => {
+    Promise.all(pendingAgentKey.split("|").map(async (agent) => {
       const response = await fetch(`/api/attention?agent=${encodeURIComponent(agent)}&waitMs=0`);
       if (!response.ok) return [];
       const payload = await response.json() as { runs?: AttentionSignal[] };
@@ -1704,7 +1844,7 @@ function GlobalPendingPanel({ entries, currentRunId, onOpenRun, onControl }: {
       if (!cancelled) setLoadingAttention(false);
     });
     return () => { cancelled = true; };
-  }, [open, pendingRunKey]);
+  }, [open, pendingRunKey, pendingAgentKey]);
   const runControl = async (entry: GlobalPendingEntry, control: "active" | "paused" | "stopped") => {
     if (control === "stopped" && !window.confirm(`¿Detener "${entry.run.title}"? Dejará de despertar a los agentes hasta que la reanudes desde su ejecución.`)) return;
     setBusyRunId(entry.run.id);

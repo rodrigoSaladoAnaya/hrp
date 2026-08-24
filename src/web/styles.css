@@ -441,6 +441,19 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .auditor-toggle:has(input:checked) { color: #244f40; background: #cfe1d7; }
 .auditor-toggle:has(input:disabled) { opacity: .7; cursor: default; }
 .auditor-toggle input { width: 13px; height: 13px; margin: 0; accent-color: #2d6a50; }
+/* Alta de una sesión por modelo: cierra el dock con el mismo espaciado y borde
+   que las entradas de agente, para que se lea como un pie del listado y no
+   como un formulario ajeno. */
+.agent-dock-session { display: grid; gap: 6px; padding: 9px 10px 11px 13px; border-top: 1px solid #c2cac5; background: #e8eee8; }
+.agent-dock-session label { color: #41504b; font-size: .64rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.agent-dock-session input { min-height: 30px; min-width: 0; padding: 3px 7px; border: 1px solid #9ba69f; border-radius: 3px; color: #24332e; background: #f6f8f4; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .72rem; }
+.agent-dock-session input[aria-invalid="true"] { border-color: var(--failed); background: #f7e9e7; }
+.agent-dock-session-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.agent-dock-session-actions button { min-height: 30px; flex: 1 1 auto; padding: 0 9px; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .68rem; font-weight: 750; }
+.agent-dock-session-actions button:hover:not(:disabled) { background: #d2d9d2; }
+.agent-dock-session-actions button:disabled { opacity: .55; cursor: default; }
+.agent-dock-session small { color: #56635e; font-size: .64rem; line-height: 1.42; }
+.agent-dock-session:has(input[aria-invalid="true"]) small { color: var(--failed); }
 .agent-attention-actions { display: inline-flex; align-items: center; gap: 4px; }
 .agent-attention-button { width: 34px; height: 36px; display: inline-grid; flex: none; place-items: center; padding: 0; border: 1px solid #7c8983; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; }
 .agent-attention-button .icon { width: 17px; height: 17px; }

@@ -230,6 +230,24 @@ describe("computeAttention", () => {
     expect(signal.directive).toContain("delegado");
   });
 
+  it("el modelo base administra cada carril delegado ollama:<modelo>", () => {
+    // Un carril no abre sesión propia: si la señal no se lo atribuye al base,
+    // el nodo queda sin dueño y la ejecución se cuelga esperando a nadie.
+    const signal = computeAttention(detail({
+      nodes: [node({ id: "carril-uno", assignee: "ollama:modelo-uno" })],
+    }), "claude");
+    expect(signal.actionable).toBe(true);
+    expect(signal.directive).toContain("carril-uno");
+  });
+
+  it("un carril delegado no es trabajo de un agente que no es el base", () => {
+    const signal = computeAttention(detail({
+      nodes: [node({ id: "carril-uno", assignee: "ollama:modelo-uno" })],
+    }), "antigravity");
+    expect(signal.actionable).toBe(false);
+    expect(signal.kind).toBe("idle");
+  });
+
   it("un nodo de otro agente no genera señal para quien no es su dueño", () => {
     const signal = computeAttention(detail({
       nodes: [node({ id: "de-codex", assignee: "codex" })],

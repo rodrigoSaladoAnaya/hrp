@@ -28,7 +28,7 @@ This skill defines how Antigravity integrates with HRP v3 following `docs/agent-
 3. **Approval Gate & Identity (Protocol v3)**:
    - Nodes published with `publishGraph` start unapproved (`approved: false`) and require a human click before starting.
    - Discovered nodes (added with `hrp node discover` during an active run) start **approved automatically**: implement them immediately without waiting for a human click.
-   - The agent MUST declare its identity (`--agent antigravity` or `{ agent: "antigravity" }`) and respect assignments made by the user.
+   - The agent MUST declare its identity and respect assignments made by the user. Your identity is whatever `HRP_AGENT` declares — a session identity such as `antigravity:review` — and plain `antigravity` only when that variable is unset; check it with `hrp whoami`. The CLI inherits it when you omit `--agent`, and an explicit flag still wins. Always use the same one: HRP holds one running node and one agent state per identity, so two sessions sharing an identity overwrite each other's state.
    - Several nodes may be `running` at once, but only the ones HRP accepts as compatible: start is rejected when the
      candidate depends on a running node, when a running node depends on it, when both modify the same file, or when one
      modifies a file the other declared as approved context. The same agent never holds two running nodes at once.
@@ -43,6 +43,14 @@ This skill defines how Antigravity integrates with HRP v3 following `docs/agent-
 
 5. **Mandatory Verification**:
    - A node can only be completed when it has a non-empty attributable diff and its most recent verification passed with exit code 0.
+
+6. **Difficulty & Model Selection**:
+   - Each published node declares `difficulty` (`trivial` | `standard` | `hard`; absent defaults to `standard`).
+   - Difficulty decides which model implements the node: the Ollama roster associates a model with each level, and `hard` is never delegated — those operations remain yours as the base model.
+
+7. **Delegated Lanes**:
+   - A delegated lane is named `ollama:<model>` and is a distinct executor identity.
+   - Multiple lanes run concurrently under the same compatibility rules already described (same file, approved context, dependencies), without relaxing any of them.
 
 ---
 
@@ -105,10 +113,10 @@ Before modifying files, inspect the codebase and plan granular operations:
 - Using CLI:
   Save `graph.json` and execute:
   ```sh
-  hrp graph publish "$run_id" graph.json --agent antigravity
+  hrp graph publish "$run_id" graph.json   # --agent NAME if you did not export HRP_AGENT
   ```
 
-Declaring `--agent antigravity` registers you as the run's **base model** when you are the first publisher: unassigned nodes belong to you by default, and any node discovered during execution is auto-assigned to the base model so the run never stalls waiting for an agent that does not know new work exists.
+Declaring your identity registers you as the run's **base model** when you are the first publisher: unassigned nodes belong to you by default, and any node discovered during execution is auto-assigned to the base model so the run never stalls waiting for an agent that does not know new work exists.
 
 ### 3b. Plan Audit — the round that gates approval (protocol 3.3)
 
@@ -120,7 +128,7 @@ Its findings arrive with `scope: "plan"` and no `nodeId`. Handle them before the
 
 1. Read them with `hrp finding show <finding-id>` (or `hrp_finding_show`).
 2. If a finding holds, **fix the graph and publish it again** — do not open a discovered node: what is wrong is the plan, and republishing sends the uncompleted nodes back to the human gate and reopens the round on the new version. Then accept the finding citing that version.
-3. If it does not hold, reject it with `hrp finding reject <id> --author antigravity --body REASON`, giving a technical, verifiable reason. Your answer shows next to the approve button, so it is what the human reads to decide.
+3. If it does not hold, reject it with `hrp finding reject <id> --author YOUR_IDENTITY --body REASON`, giving a technical, verifiable reason. Your answer shows next to the approve button, so it is what the human reads to decide.
 
 Findings themselves do not block — the human decides whether to approve as is or ask for a corrected graph. What blocks is an auditor who has not spoken yet.
 
@@ -129,9 +137,9 @@ If the auditors are session models rather than `ollama`, produce the package wit
 **When you are the plan auditor**, HRP wakes you with the actionable `plan` signal — the human is stopped at the approve button waiting for your opinion:
 
 ```sh
-hrp graph review "$run_id" --agent antigravity
-hrp finding add "$run_id" --title T --body B --severity major --scope plan --reviewer antigravity
-hrp graph review done "$run_id" --agent antigravity --findings N
+hrp graph review "$run_id"
+hrp finding add "$run_id" --title T --body B --severity major --scope plan --reviewer YOUR_IDENTITY
+hrp graph review done "$run_id" --findings N
 ```
 
 Always close your pass, **including when the plan looks sound** (`--findings 0`, or the `hrp_plan_pass` MCP tool): without it nobody can approve. Do not invent findings to justify the round.
@@ -147,9 +155,9 @@ Graph nodes start unapproved. Stay parked on the MCP blocking tool until work is
   Call it in a loop: it returns as soon as HRP signals work or the timer expires, then call again if no actionable work is ready yet.
 - Using CLI fallback:
   ```sh
-  hrp attention --agent antigravity --wait 600
+  hrp attention --wait 600   # identity comes from HRP_AGENT
   ```
-  It exits as soon as HRP has a signal for your identity; on timeout, call it again instead of ending the turn. On older HRP installs that do not have `hrp attention`, use `hrp wait approval "$run_id" --agent antigravity --timeout 300` only for compatibility with the initial approval gate.
+  It exits as soon as HRP has a signal for your identity; on timeout, call it again instead of ending the turn. On older HRP installs that do not have `hrp attention`, use `hrp wait approval "$run_id" --timeout 300` only for compatibility with the initial approval gate.
 
 **Never end your turn while an active run still has work for you.** Park on `hrp_attention` instead of returning control to the user. Approval is a human control: call `hrp_approve_nodes` (or `hrp node approve "$run_id"`) only when the user explicitly asks to approve nodes, never by inferring permission from general task autonomy.
 
@@ -164,7 +172,7 @@ For each node whose dependencies are completed and is approved:
 
 1. **Start the node**:
    - MCP: `hrp_start_node(runId, nodeId, agent="antigravity")`
-   - CLI: `hrp node start "$run_id" nodeId --agent antigravity`
+   - CLI: `hrp node start "$run_id" nodeId`
 2. **Capture baseline state** of the target file before editing.
 3. **Apply the code modification**.
 4. **Compute exclusive diff** (e.g. `git diff -- path/to/file` or unified diff format).
@@ -178,6 +186,8 @@ For each node whose dependencies are completed and is approved:
    - MCP: `hrp_complete_node(runId, nodeId)`
    - CLI: `hrp node complete "$run_id" nodeId --tokens N`
    - Report `--tokens` (your real token usage for this node) only if your environment exposes actual usage; omit it otherwise. Never fabricate the number.
+
+**Delegated nodes (assigned to `ollama` or `ollama:<model>`)**: Launch them in parallel with `hrp dispatch <run-id> [--max N]`. This command only generates outputs — reviewing, applying the change, publishing the diff, verifying and completing remains the base model's responsibility.
 
 ### 6. Handling Failures and Retries
 
@@ -206,7 +216,7 @@ Publish technical inspections or notes when relevant:
 
 ### 9. Review Another Agent
 
-When `antigravity` is selected in `run.auditors`, park on `hrp_attention` (or `hrp attention --agent antigravity --wait 600`) until it reports **Auditoría disponible**. Unassigned nodes belong to the base model; never claim or edit them as a reviewer. Publish `hrp agent status` with `phase reviewing` before reading `hrp review pack`, then update `--completed`, `--reviewed`, and `--remaining` as coverage advances.
+When your identity is selected in `run.auditors`, park on `hrp_attention` (or `hrp attention --wait 600`) until it reports **Auditoría disponible**. Unassigned nodes belong to the base model; never claim or edit them as a reviewer. Publish `hrp agent status` with `phase reviewing` before reading `hrp review pack`, then update `--completed`, `--reviewed`, and `--remaining` as coverage advances.
 
 Audit integration boundaries, broken contracts, approved-spec versus diff deviations, and missing edge cases. Report real problems with `hrp_finding_add`, debate with `hrp_finding_reply`, and register `hrp_finding_agree` only after accepting the linked correction; disagreement stays in the finding thread. While acting only as a reviewer, never edit the workspace.
 

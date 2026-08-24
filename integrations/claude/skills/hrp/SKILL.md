@@ -73,6 +73,7 @@ Lee el código suficiente para descomponer la tarea en nodos. Escribe el grafo e
       "title": "Qué hace, corto",
       "description": "Qué hará exactamente este nodo.",
       "rationale": "Por qué es necesario para el requerimiento.",
+      "difficulty": "trivial | standard | hard",
       "dependencies": ["ids-de-prerrequisitos-reales"]
     }
   ]
@@ -80,12 +81,12 @@ Lee el código suficiente para descomponer la tarea en nodos. Escribe el grafo e
 ```
 
 ```sh
-hrp graph publish "$run_id" /ruta/temporal/graph.json --agent claude
+hrp graph publish "$run_id" /ruta/temporal/graph.json   # --agent NOMBRE sólo si no declaraste HRP_AGENT
 ```
 
 Los ids: únicos, estables, solo `[A-Za-z0-9_-]`. Sin ciclos; toda dependencia debe existir.
 
-`--agent claude` te registra como **modelo base** de la ejecución: ejecutas por defecto todos los nodos sin asignación, y los nodos que descubras se te asignan automáticamente para que el proceso no espere a otro agente.
+Publicar con tu identidad te registra como **modelo base** de la ejecución: ejecutas por defecto todos los nodos sin asignación, y los nodos que descubras se te asignan automáticamente para que el proceso no espere a otro agente.
 
 Como modelo base también decides qué conviene delegar, con un criterio **económico**, no solo de mecanicidad. Sugiere `"suggestedAgent": "ollama"` únicamente en nodos tipo **fábrica** y solo cuando la cuenta salga positiva:
 
@@ -97,19 +98,23 @@ ahorro del nodo ≈ salida que no escribes − (spec + revisión fiel + ~1k de c
 - **Nunca delegues** nodos creativos, de diseño, seguridad o núcleo novedoso, **aunque puedas especificarlos**: revisarlos fielmente cuesta igual o más que escribirlos (medido: delegar un motor de juego completo consumió más tokens del modelo base que la autoría directa).
 - En caso de duda, quédatelo: el modelo más capaz ataca lo creativo; ollama fabrica lo repetitivo.
 
-HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al aprobar.
+**Declara la dificultad de cada nodo.** `"difficulty"` es `trivial`, `standard` o `hard` (ausente equivale a `standard`), y es lo que decide **qué modelo ataca qué problema**: el roster de Ollama asocia un modelo a cada nivel y `hard` no se delega nunca — esas operaciones son tuyas. La dificultad es semántica que el humano aprueba junto con la spec, así que clasifícala por el trabajo real (¿hay diseño, contratos nuevos, seguridad? entonces `hard`; ¿es mecánico y verificable de un vistazo? `trivial`), no por lo largo que sea el archivo. Cambiarla después obliga a re-aprobar el nodo.
+
+HRP pre-asigna a `ollama` los nodos sugeridos y el humano confirma o reasigna al aprobar. Puedes sugerir un carril concreto (`"suggestedAgent": "ollama:<modelo>"`) cuando quieras fijar el modelo; si sólo dices `ollama`, el carril lo decide la dificultad.
+
+**Reparte para ganar velocidad.** Un carril `ollama:<modelo>` es una identidad ejecutora distinta y HRP sostiene un nodo por identidad, así que el paralelismo real equivale al número de modelos distintos en juego. Si vas a delegar varios nodos, dales dificultades (o carriles) que se repartan entre modelos distintos: dos nodos del mismo modelo se ejecutan en serie aunque no choquen.
 
 ### 2a. Auditoría del plan: la ronda que bloquea la aprobación (protocolo 3.3)
 
 Publicar el grafo abre una ronda de auditoría **sobre el plan**: los auditores elegidos revisan el grafo, no código, buscando lo que ningún diff podría revelar después —un nodo faltante, un corte incorrecto, una dependencia mal declarada, un nodo sin verificación observable o uno fuera del requerimiento—. Una sola ronda por versión del grafo, y **bloquea la aprobación humana inicial**: mientras un auditor elegido no publique su pasada, el servidor rechaza aprobar el grafo.
 
-**Como modelo base, después de publicar el grafo no pidas la aprobación: espera.** La señal `plan-wait` te dice quién falta; estaciónate en `hrp attention --agent claude --wait 600` (o la herramienta MCP) hasta que la ronda cierre y el humano apruebe. Leer `hrp state "$run_id" --json` te da lo mismo en `run.planGate` (`pending`, `open`).
+**Como modelo base, después de publicar el grafo no pidas la aprobación: espera.** La señal `plan-wait` te dice quién falta; estaciónate en `hrp attention --wait 600` (o la herramienta MCP) hasta que la ronda cierre y el humano apruebe. Leer `hrp state "$run_id" --json` te da lo mismo en `run.planGate` (`pending`, `open`).
 
 Los hallazgos llegan con `scope: "plan"` y sin `nodeId`. Atiéndelos antes de que el humano apruebe:
 
 1. Léelos con `hrp finding show <finding-id>`.
 2. Si el hallazgo procede, **corrige el grafo y vuelve a publicarlo** — no abras un nodo descubierto: lo que está mal es el plan, y republicar devuelve los nodos no completados al gate humano y reabre la ronda sobre la versión nueva. Después acepta el hallazgo citando esa versión.
-3. Si no procede, recházalo con `hrp finding reject <id> --author claude --body RAZON`, con una razón técnica y verificable. Tu respuesta se ve junto al botón de aprobar, así que es lo que el humano leerá para decidir.
+3. Si no procede, recházalo con `hrp finding reject <id> --author TU_IDENTIDAD --body RAZON`, con una razón técnica y verificable. Tu respuesta se ve junto al botón de aprobar, así que es lo que el humano leerá para decidir.
 
 Los hallazgos no bloquean por sí mismos —el humano decide si aprueba así o pide el grafo corregido—; lo que bloquea es que un auditor todavía no haya hablado.
 
@@ -118,9 +123,9 @@ Si tus auditores son modelos con sesión (no `ollama`), genera el paquete con `h
 **Cuando el auditor eres tú.** Si HRP te entrega la señal `plan` (accionable), el humano está detenido frente al botón de aprobar esperando tu opinión:
 
 ```sh
-hrp graph review "$run_id" --agent claude          # el paquete del plan
-hrp finding add "$run_id" --title T --body B --severity major --scope plan --reviewer claude
-hrp graph review done "$run_id" --agent claude --findings N
+hrp graph review "$run_id"                         # el paquete del plan
+hrp finding add "$run_id" --title T --body B --severity major --scope plan --reviewer TU_IDENTIDAD
+hrp graph review done "$run_id" --findings N
 ```
 
 Cierra siempre tu pasada, **también cuando el plan te parezca sano** (`--findings 0`): sin ella nadie puede aprobar. No inventes hallazgos para justificar la ronda.
@@ -130,19 +135,21 @@ Cierra siempre tu pasada, **también cuando el plan te parezca sano** (`--findin
 Los nodos del **grafo inicial** nacen **sin aprobar** y el servidor rechaza `node start` hasta el visto bueno del humano (botón «Aprobar grafo» del panel, o `hrp node approve <run-id>`). Lo que **descubras** después ya no pasa por ese gate. Tras publicar el grafo, espera el clic del humano con el comando bloqueante:
 
 ```sh
-hrp wait approval "$run_id" --agent claude --timeout 300
+hrp wait approval "$run_id" --timeout 300
 ```
 
 Sale con éxito en cuanto exista trabajo aprobado disponible para ti; si agota el timeout, vuelve a ejecutarlo o pregunta al humano. Así el humano solo da un clic y tú continúas solo. No apruebes tú mismo con el CLI: la aprobación es del humano.
 
-El humano puede asignar nodos a agentes concretos. Tu identidad es `claude`: trabaja solo nodos asignados a `claude` o sin asignar, y decláralo al iniciar.
+El humano puede asignar nodos a agentes concretos. **Tu identidad es la que declare `HRP_AGENT`** —por ejemplo `claude:opus`— y `claude` sólo cuando esa variable no existe; compruébala con `hrp whoami` (el aviso de inicio de sesión de HRP también te la dice). El CLI la hereda, así que puedes omitir `--agent`; si lo pasas, gana lo que escribas. Trabaja sólo nodos asignados a tu identidad o sin asignar, y decláralo al iniciar.
+
+Varias sesiones de Claude pueden repartirse los papeles en la misma ejecución —una publica el grafo y audita, otra implementa— porque HRP sostiene un nodo en vuelo y un estado por identidad: dos sesiones que compartan identidad se pisan el estado. En ese reparto, los nodos sin asignar siguen perteneciendo al **modelo base** (quien publicó el grafo), así que si tú planeas y otra sesión implementa, enruta el trabajo con `"suggestedAgent": "claude:opus"` en el grafo o pídele al humano que lo asigne; y lo que descubras se queda contigo, que eres quien lo descubrió.
 
 ### 3. Ciclo por nodo: start → editar → patch → verify → complete
 
-Elige siempre un nodo aprobado cuyas dependencias estén completadas (HRP rechaza `start` si no lo están). Puede haber varios nodos en curso si HRP confirma que no comparten archivo, contexto aprobado ni rama de dependencias. Tu propia sesión nunca sostiene dos nodos en curso: cierra el tuyo con patch, verify y complete antes de tomar otro. Si `start` se rechaza por conflicto con otro nodo en vuelo, no edites y espera a que termine. Mientras otro nodo esté en vuelo, el comando de `hrp verify run` debe nombrar el archivo, el símbolo o el id de este nodo; un comando integral se rechaza porque lee lo que el otro nodo está editando.
+Elige siempre un nodo aprobado cuyas dependencias estén completadas (HRP rechaza `start` si no lo están). Puede haber varios nodos en curso si HRP confirma que no comparten archivo, contexto aprobado ni rama de dependencias — incluidos los carriles delegados corriendo mientras tú trabajas el tuyo. Tu propia sesión nunca sostiene dos nodos en curso: cierra el tuyo con patch, verify y complete antes de tomar otro. Si `start` se rechaza por conflicto con otro nodo en vuelo, no edites y espera a que termine. Mientras otro nodo esté en vuelo, el comando de `hrp verify run` debe nombrar el archivo, el símbolo o el id de este nodo; un comando integral se rechaza porque lee lo que el otro nodo está editando.
 
 ```sh
-hrp node start "$run_id" <node-id> --agent claude
+hrp node start "$run_id" <node-id>
 ```
 
 **Captura el estado previo antes de editar.** El diff publicado debe contener solo el cambio de este nodo, no el acumulado del workspace. Si el nodo es el único cambio pendiente del archivo, `git diff -- <archivo>` basta. Si varios nodos tocan el mismo archivo, copia el archivo a tu scratchpad antes de editar y compara después:
@@ -174,12 +181,24 @@ Si tu entorno te muestra el presupuesto de tokens restante (por ejemplo `<total_
 
 ### 3b. Nodos asignados a ollama: delega y revisa como administrador
 
-Un nodo asignado a `ollama` no espera a otra sesión: tú lo administras, y `hrp wait approval` ya lo cuenta como trabajo tuyo (regresa en cuanto el humano lo aprueba). El ciclo es el mismo, pero la generación del cambio se delega al modelo configurado de Ollama Cloud:
+Un nodo delegado —asignado a `ollama` o a un carril `ollama:<modelo>`— no espera a otra sesión: tú lo administras, y `hrp wait approval` ya lo cuenta como trabajo tuyo (regresa en cuanto el humano lo aprueba). El ciclo es el mismo, pero la generación del cambio se delega a Ollama Cloud.
+
+**Despacha el lote completo, no un nodo a la vez.** Encadenar un `exec` bloqueante por nodo desperdicia el paralelismo que el grafo ya permite:
+
+```sh
+hrp dispatch "$run_id" --out-dir /ruta/scratchpad/despacho
+```
+
+`dispatch` elige los nodos delegados que pueden generarse a la vez —aprobados, con dependencias completas, sin conflicto entre sí ni con lo que esté en curso, y con su carril libre—, los arranca en su carril y lanza las consultas en paralelo, cada una con el modelo que le toca. Deja la salida de cada nodo en `<out-dir>/<node-id>.out` e informa carril, modelo, tokens y, para lo que no despachó, la razón exacta. Un fallo no cancela el lote: ese nodo queda en curso para que lo retomes. Mientras el lote se genera puedes trabajar tu propio nodo, siempre que no choque con los delegados.
+
+Para un solo nodo, o cuando quieras controlar el prompt, sigue disponible la vía directa:
 
 ```sh
 hrp node start "$run_id" <node-id> --agent ollama
 hrp ollama exec "$run_id" <node-id> > /ruta/scratchpad/salida.txt
 ```
+
+`exec` toma el modelo del carril del nodo y, si no lo declara, de su dificultad; `--model` lo anula explícitamente.
 
 `exec` arma el prompt automáticamente con la descripción aprobada del nodo, sus `contextFiles` como referencia de solo lectura y el contenido actual del archivo — no redactes un prompt artesanal que duplique la spec. Usa `hrp ollama run --prompt-file ... --run "$run_id" --node <node-id>` solo cuando necesites un prompt a medida (fragmentos de un archivo grande), siempre con `--run`/`--node` para conservar la auditoría. Ambas vías quedan registradas en la Actividad con modelo y tokens.
 
@@ -187,14 +206,14 @@ Si `exec` falla con **«Ollama necesita más contexto — NECESITO: ...»**, el 
 
 La verificación de un nodo delegado es **ejecutable sin excepciones**: el código corre sus casos y la documentación ejecuta sus ejemplos contra el código real («se ve bien» no es verificación).
 
-Después actúas como revisor: valida la salida, corrige lo que haga falta, aplica el cambio al workspace con tus herramientas y sigue el ciclo normal (patch → verify → complete). En el `--summary` del parche distingue qué generó ollama y qué corregiste tú. `hrp ollama run` reporta por stderr los tokens de prompt/respuesta del modelo delegado: úsalo para `--tokens` al completar. Nunca completes un nodo delegado sin haber revisado y verificado su resultado; si la salida es inservible, corrígela tú mismo y anótalo en el resumen.
+**El despacho sólo genera.** Después actúas como revisor de cada salida: valídala, corrige lo que haga falta, aplica el cambio al workspace con tus herramientas y sigue el ciclo normal (patch → verify → complete) nodo por nodo. Con varios nodos del lote en vuelo, el comando de `hrp verify run` de cada uno debe nombrar su archivo, su símbolo o su id: un comando integral lee lo que otro carril tiene a medio escribir. En el `--summary` del parche distingue qué generó ollama y qué corregiste tú. `hrp ollama run` reporta por stderr los tokens de prompt/respuesta del modelo delegado: úsalo para `--tokens` al completar. Nunca completes un nodo delegado sin haber revisado y verificado su resultado; si la salida es inservible, corrígela tú mismo y anótalo en el resumen.
 
 ### 4. Fallos: reintenta el MISMO nodo
 
 Si la verificación falla, el nodo queda `failed` y sus dependientes bloqueados. Diagnostica, corrige, y:
 
 ```sh
-hrp node retry "$run_id" <node-id> --agent claude
+hrp node retry "$run_id" <node-id>
 # aplicar la corrección, capturar nuevo diff
 hrp patch publish "$run_id" <node-id> --summary "Qué se corrigió" --diff-file <nuevo.diff>
 hrp verify run "$run_id" <node-id> -- <comando>
@@ -211,7 +230,7 @@ Si durante la implementación aparece una operación que no estaba en el grafo, 
 hrp node discover "$run_id" /ruta/temporal/discovered.json
 ```
 
-**Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo con el mismo criterio económico del triaje inicial: si es tipo fábrica y la cuenta sale positiva (salida ≥ ~2-3k tokens o serie de 3+ del mismo patrón), inclúyele `"suggestedAgent": "ollama"` en el JSON; si implica diseño, seguridad, integración delicada, ambigüedad o simplemente no da el umbral, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
+**Triaje del ejecutor en el momento.** Si ollama está activo y configurado (consulta `hrp ollama status --json` una vez por sesión y recuérdalo), decide antes de publicar cada descubierto quién debería implementarlo con el mismo criterio económico del triaje inicial: si es tipo fábrica y la cuenta sale positiva (salida ≥ ~2-3k tokens o serie de 3+ del mismo patrón), inclúyele `"suggestedAgent": "ollama"` y su `"difficulty"` en el JSON; si implica diseño, seguridad, integración delicada, ambigüedad o simplemente no da el umbral, no pongas sugerencia y quedará asignado a ti como modelo base. Así el modelo avanzado se reserva para el trabajo de alto valor en lugar de gastarse en lo trivial.
 
 **Regla de la spec delegable.** Un nodo sugerido para ollama se redacta con la descripción como **spec a nivel contrato** — firma o punto de inserción exacto, invariantes («tal bloque queda igual»), casos borde y criterio de verificación — nunca pseudocódigo línea a línea. La delegación paga cuando la spec es corta y la salida larga; si describir el nodo te cuesta casi lo mismo que escribir el código, no lo sugieras para ollama: quédatelo. Esa descripción es la que el humano aprueba y la que `hrp ollama exec` enviará tal cual al modelo, así que se escribe una sola vez.
 
@@ -245,21 +264,21 @@ El objetivo de la v3 es la calidad del producto: otros modelos auditan tus nodos
 2. Si el hallazgo procede: publica el nodo de corrección como trabajo descubierto y acéptalo vinculándolo — `hrp finding accept <id> --resolution-node <nodo>`. **La aceptación autoriza el nodo en el acto** (sin clic humano) y registra el acuerdo del base; no lo inicies mientras falten acuerdos del censo.
 3. El reportero ya acuerda al crear el hallazgo. Cada auditor seleccionado que acepte la corrección registra `hrp finding agree <id> --author SU_NOMBRE`; quien discrepe responde con `hrp finding reply` y mantiene abierto el debate.
 4. Con unanimidad del base y todos los auditores, HRP reasigna la corrección descubierta al reportero elegible sólo si existe otro auditor seleccionado distinto que pueda revisarla y no hay una asignación manual incompatible. Sin ese revisor independiente, permanece con el modelo base. Lee `hrp state`: impleméntala únicamente si está asignada a `claude`; de lo contrario, espera a su dueño.
-5. Si no procede: recházalo tú mismo — `hrp finding reject <id> --author claude --body RAZON` — también frente a revisores sin sesión (`ollama:*`). La razón debe ser técnica y verificable (spec aprobada, requisito, evidencia ejecutable); un rechazo por autoridad, sin argumento, es abuso.
+5. Si no procede: recházalo tú mismo — `hrp finding reject <id> --author TU_IDENTIDAD --body RAZON` — también frente a revisores sin sesión (`ollama:*`). La razón debe ser técnica y verificable (spec aprobada, requisito, evidencia ejecutable); un rechazo por autoridad, sin argumento, es abuso.
 6. `hrp finding escalate <id>` queda como recurso **opcional** para dudas genuinas que no puedes resolver con evidencia (ambigüedad del requisito, decisión de producto). Ya no es la salida del desacuerdo.
 
 El modelo que implemente la corrección no puede auditar ese nodo; otro auditor debe cubrirlo. Reabrir el hallazgo reinicia los acuerdos y conserva sólo el del reportero. Esta unanimidad decide quién corrige y no sustituye la mayoría simple de votos `phase completed` que usa el gate final.
 
 El gate humano inicial del grafo sigue vigente: tu autoridad cubre el ciclo de revisión, no el plan. Nunca cierres el debate borrando o ignorando hallazgos: `hrp review gate "$run_id"` fallará mientras haya hallazgos vivos o falten votos para la mayoría, y esa es la señal correcta.
 
-Si el humano te convierte en **revisor** de otro agente, mantén `hrp wait approval <run-id> --agent claude` hasta recibir **Auditoría disponible**; los nodos sin asignación pertenecen al base y no debes reclamarlos. Publica `hrp agent status` con `phase reviewing` antes de obtener `hrp review pack`, y actualiza `--completed`, `--reviewed` y `--remaining` mientras auditas integración entre nodos, contratos rotos y desviaciones spec↔diff. Reporta con `hrp finding add`, debate con `hrp finding reply` y acuerda correcciones aceptables con `hrp finding agree`. Mientras actúes sólo como revisor no edites código; si HRP te asigna por unanimidad la corrección de tu hallazgo, ejecútala como nodo normal y exclúyela de tu propia cobertura. Publica `phase completed` sólo al cubrir todos los nodos ajenos; después vuelve a esperar porque una corrección puede exigir otra pasada de los demás auditores. Si no encuentras nada real, dilo — no inventes hallazgos ni marques cobertura que no realizaste.
+Si el humano te convierte en **revisor** de otro agente, mantén `hrp wait approval <run-id>` con tu identidad hasta recibir **Auditoría disponible**; los nodos sin asignación pertenecen al base y no debes reclamarlos. Publica `hrp agent status` con `phase reviewing` antes de obtener `hrp review pack`, y actualiza `--completed`, `--reviewed` y `--remaining` mientras auditas integración entre nodos, contratos rotos y desviaciones spec↔diff. Reporta con `hrp finding add`, debate con `hrp finding reply` y acuerda correcciones aceptables con `hrp finding agree`. Mientras actúes sólo como revisor no edites código; si HRP te asigna por unanimidad la corrección de tu hallazgo, ejecútala como nodo normal y exclúyela de tu propia cobertura. Publica `phase completed` sólo al cubrir todos los nodos ajenos; después vuelve a esperar porque una corrección puede exigir otra pasada de los demás auditores. Si no encuentras nada real, dilo — no inventes hallazgos ni marques cobertura que no realizaste.
 
 ## No te quedes ciego: espera en lugar de terminar el turno
 
 Mientras la ejecución siga viva, terminar tu turno es quedarte ciego: nadie puede devolverte el control salvo tu propio entorno. En vez de cerrar, estaciónate en la señal de HRP:
 
 ```sh
-hrp attention --agent claude --wait 600      # bloquea hasta que haya algo para ti
+hrp attention --wait 600      # bloquea hasta que haya algo para ti (identidad: HRP_AGENT)
 ```
 
 Sale con código 0 e imprime la directiva accionable cuando hay trabajo (nodos iniciables, hallazgos por responder, auditoría disponible o cierre pendiente), y con código 3 si el plazo se agota sin novedad — en cuyo caso vuelve a ejecutarlo. Acepta `--run <id>` para una ejecución concreta y `--workspace <ruta>` para todas las del proyecto; `--json` entrega la señal completa (`kind`, `actionable`, `waiting`, `terminal`, `directive`).
@@ -276,7 +295,7 @@ hrp agent install claude    # idempotente; 'hrp agent status' muestra qué hay i
 
 El humano puede pausar, detener o reanudar la ejecución (panel o `hrp run pause|resume|stop`). El servidor rechaza `node start` en esos estados para todos los agentes; no es un error tuyo:
 
-- Rechazo por **pausa** (`Run is paused by the human…`): espera sin abandonar — deja corriendo `hrp attention --agent claude --wait 600` o `hrp wait approval`, y al reanudarse **relee `hrp state <run-id> --json` antes de retomar**: la pausa es justo el momento en que el humano puede reconfigurar quién implementa cada nodo y quién audita, así que el nodo que creías tuyo puede haber cambiado de dueño (incluso uno que tenías en curso, que vuelve a `pending` con otro asignado).
+- Rechazo por **pausa** (`Run is paused by the human…`): espera sin abandonar — deja corriendo `hrp attention --wait 600` o `hrp wait approval`, y al reanudarse **relee `hrp state <run-id> --json` antes de retomar**: la pausa es justo el momento en que el humano puede reconfigurar quién implementa cada nodo y quién audita, así que el nodo que creías tuyo puede haber cambiado de dueño (incluso uno que tenías en curso, que vuelve a `pending` con otro asignado).
 - Rechazo por **detención** (`Run was stopped by the human…`): cierra ordenadamente — no inicies más nodos, conserva lo completado y reporta al humano el avance y lo pendiente.
 
 ## Reanudación
