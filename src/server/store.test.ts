@@ -1414,3 +1414,115 @@ describe("HrpStore", () => {
     });
   });
 });
+
+describe("project sessions", () => {
+  function setup() {
+    const root = mkdtempSync(path.join(os.tmpdir(), "hrp-sessions-"));
+    roots.push(root);
+    const workspace = path.join(root, "workspace");
+    mkdirSync(workspace);
+    const store = new HrpStore(path.join(root, "data"));
+    const project = store.attachProject(workspace);
+    return { root, store, project };
+  }
+
+  it("mints sequential identities and lists them in order", () => {
+    const { store, project } = setup();
+    expect(store.mintProjectSession(project.id, "claude")).toBe("claude:2");
+    expect(store.mintProjectSession(project.id, "claude")).toBe("claude:3");
+    expect(store.listProjectSessions(project.id)).toEqual(["claude:2", "claude:3"]);
+  });
+
+  it("does not mix sessions between projects", () => {
+    const { store, project } = setup();
+    const root2 = mkdtempSync(path.join(os.tmpdir(), "hrp-sessions-"));
+    roots.push(root2);
+    const workspace2 = path.join(root2, "workspace");
+    mkdirSync(workspace2);
+    const project2 = store.attachProject(workspace2);
+
+    expect(store.mintProjectSession(project.id, "claude")).toBe("claude:2");
+    expect(store.mintProjectSession(project2.id, "claude")).toBe("claude:2");
+    expect(store.listProjectSessions(project.id)).toEqual(["claude:2"]);
+    expect(store.listProjectSessions(project2.id)).toEqual(["claude:2"]);
+  });
+
+  it("rejects invalid or already labeled families", () => {
+    const { store, project } = setup();
+    expect(() => store.mintProjectSession(project.id, "invalid family")).toThrow();
+    expect(() => store.mintProjectSession(project.id, "claude:2")).toThrow();
+  });
+
+  it("rejects the delegate family, which has lanes instead of sessions", () => {
+    const { store, project } = setup();
+    expect(() => store.mintProjectSession(project.id, "ollama")).toThrow(/does not open sessions/);
+    expect(store.listProjectSessions(project.id)).toEqual([]);
+  });
+
+  it("rejects unknown projects", () => {
+    const { store } = setup();
+    expect(() => store.mintProjectSession("unknown", "claude")).toThrow();
+  });
+
+  it("retires a minted session and frees its number", () => {
+    const { store, project } = setup();
+    store.mintProjectSession(project.id, "claude");
+    store.mintProjectSession(project.id, "claude");
+    store.mintProjectSession(project.id, "codex");
+
+    expect(store.retireProjectSession(project.id, "claude:2")).toEqual(["claude:3", "codex:2"]);
+    expect(store.listProjectSessions(project.id)).toEqual(["claude:3", "codex:2"]);
+    expect(store.mintProjectSession(project.id, "claude")).toBe("claude:2");
+  });
+
+  it("rejects retiring what was never minted or an unknown project", () => {
+    const { store, project } = setup();
+    store.mintProjectSession(project.id, "claude");
+    expect(() => store.retireProjectSession(project.id, "claude:9")).toThrow(/not a minted session/);
+    expect(() => store.retireProjectSession("unknown", "claude:2")).toThrow(/Unknown project/);
+    expect(store.listProjectSessions(project.id)).toEqual(["claude:2"]);
+  });
+
+  it("refuses to retire a session with live work", () => {
+    const { store, project } = setup();
+    store.mintProjectSession(project.id, "claude");   // claude:2
+    store.mintProjectSession(project.id, "claude");   // claude:3
+    const run = store.createRun(project.id, "Viva", "r");
+    store.publishGraph(run.id, { nodes: [{ id: "uno", file: "uno.ts", symbol: "uno", title: "Uno", description: "d", rationale: "r", dependencies: [] }] }, "claude");
+
+    store.setRunAuditors(run.id, ["claude:2"]);
+    expect(() => store.retireProjectSession(project.id, "claude:2")).toThrow(/audits "Viva"/);
+
+    store.assignNode(run.id, "uno", "claude:3");
+    expect(() => store.retireProjectSession(project.id, "claude:3")).toThrow(/still has uno\.ts/);
+    expect(store.listProjectSessions(project.id)).toEqual(["claude:2", "claude:3"]);
+  });
+
+  it("retires a session whose only trace is a finished run", () => {
+    const { store, project } = setup();
+    store.mintProjectSession(project.id, "claude");   // claude:2
+    const run = store.createRun(project.id, "Cerrada", "r");
+    store.publishGraph(run.id, { nodes: [{ id: "dos", file: "dos.ts", symbol: "dos", title: "Dos", description: "d", rationale: "r", dependencies: [] }] }, "claude");
+    store.setRunAuditors(run.id, ["codex"]);
+    store.approveNodes(run.id);
+    store.assignNode(run.id, "dos", "claude:2");
+    store.startNode(run.id, "dos", "claude:2");
+    store.publishPatch(run.id, "dos", "s", "--- a/dos.ts\n+++ b/dos.ts\n@@ -0,0 +1 @@\n+x\n");
+    store.publishVerification(run.id, "dos", { command: "true", output: "", exitCode: 0 });
+    store.completeNode(run.id, "dos");
+    expect(store.getRun(run.id)?.status).toBe("completed");
+
+    expect(store.retireProjectSession(project.id, "claude:2")).toEqual([]);
+    // La ejecución terminada la sigue nombrando: retirar no borra evidencia.
+    expect(store.getRunDetail(run.id)?.nodes[0].assignee).toBe("claude:2");
+  });
+
+  it("persists minted identities across store instances", () => {
+    const { root, store, project } = setup();
+    store.mintProjectSession(project.id, "claude");
+    store.mintProjectSession(project.id, "claude");
+
+    const newStore = new HrpStore(path.join(root, "data"));
+    expect(newStore.listProjectSessions(project.id)).toEqual(["claude:2", "claude:3"]);
+  });
+});

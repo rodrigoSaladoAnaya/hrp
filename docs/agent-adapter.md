@@ -198,7 +198,19 @@ HRP_AGENT=codex:auditor codex    # sólo audita
 - `hrp whoami` imprime la identidad resuelta y de dónde sale (bandera, variable o sin declarar).
 - En los **hooks** nativos `HRP_AGENT` gana sobre `--agent`: el instalador escribe un hook por modelo con la familia y ese archivo lo comparten todas sus sesiones, así que sólo la variable distingue una de otra. El contexto de inicio de sesión anuncia la identidad con la que HRP ve a esa sesión.
 - En el **MCP**, el servidor se lanza dentro de la sesión y hereda su entorno: `HRP_AGENT` corrige el argumento que nombra a quien llama, de modo que una llamada escrita como `claude` se publica igual como `claude:opus`. El argumento que nombra a otro agente (el `assignee` de una asignación) nunca se toca.
-- El humano ve cada identidad en el dock del panel y da de alta una sesión nueva **con un papel**: que audite, o que implemente la operación seleccionada. Una identidad sin papel no participa en la ejecución ni recibe señal.
+- El humano ve el censo como un **árbol** en el dock del panel: una rama por modelo y, colgando de ella, sus sesiones.
+
+**Las dos vías de adopción.** Lanzar la sesión con `HRP_AGENT` es la sólida —cubre también los hooks nativos y el MCP—, pero no siempre se puede: cuando la sesión ya está abierta, el humano pulsa `+` en la rama de ese modelo y HRP **acuña** la siguiente identidad libre (`claude:2`, `claude:3`…) y copia su comando de atención:
+
+```sh
+hrp attention --agent claude:2 --workspace /ruta/al/workspace --wait 1800
+```
+
+Pegar ese comando es lo que adopta la identidad. Un adaptador que lo recibe debe **usar esa identidad en `--agent` en todos sus comandos posteriores** —la propia señal se lo recuerda en su directiva— o exportarla en `HRP_AGENT` si puede: la bandera vale sólo para la invocación en la que aparece, así que el comando siguiente volvería a publicar como la familia y pisaría el estado de otra sesión.
+
+El humano también puede **retirar** una sesión desde su fila del árbol. Retirar sólo la saca del censo del proyecto: no borra evidencia ni cambia ejecuciones, así que una sesión que ya trabajó sigue apareciendo en el árbol de esas ejecuciones —son ellas quienes la nombran, como auditora o asignataria—; lo que pierde es la pertenencia al proyecto, y con ella la señal que recibía por vigilarlo. HRP rechaza la retirada mientras esa identidad audite una ejecución no completada o tenga nodos sin completar asignados, y el mensaje nombra qué lo impide.
+
+La identidad acuñada se **persiste por proyecto**, no por ejecución: aparece en el árbol desde que se acuña —antes de que la sesión exista— y sirve para todas las ejecuciones de ese workspace. Estacionarse con ella (la espera bloqueante del comando copiado) **registra su presencia**: ahí es cuando el punto de la rama se pone verde. Un sondeo sin espera consulta la señal sin fingir presencia.
 
 Tres consecuencias del reparto, que un adaptador debe respetar:
 

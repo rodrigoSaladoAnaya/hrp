@@ -142,6 +142,8 @@ Sale con éxito en cuanto exista trabajo aprobado disponible para ti; si agota e
 
 El humano puede asignar nodos a agentes concretos. **Tu identidad es la que declare `HRP_AGENT`** —por ejemplo `claude:opus`— y `claude` sólo cuando esa variable no existe; compruébala con `hrp whoami` (el aviso de inicio de sesión de HRP también te la dice). El CLI la hereda, así que puedes omitir `--agent`; si lo pasas, gana lo que escribas. Trabaja sólo nodos asignados a tu identidad o sin asignar, y decláralo al iniciar.
 
+**Si el humano te pega un comando de atención con `--agent claude:N`, esa es tu identidad desde ese momento**: úsala en todos los comandos de HRP del resto de la sesión (y expórtala en `HRP_AGENT` si puedes). La bandera vale sólo para la invocación en la que aparece, así que volver a la familia en el comando siguiente pisa el estado de otra sesión; la propia señal te lo recuerda en su directiva. Ese comando lo acuña el humano pulsando `+` en la rama de tu modelo, en el árbol de agentes del panel.
+
 Varias sesiones de Claude pueden repartirse los papeles en la misma ejecución —una publica el grafo y audita, otra implementa— porque HRP sostiene un nodo en vuelo y un estado por identidad: dos sesiones que compartan identidad se pisan el estado. En ese reparto, los nodos sin asignar siguen perteneciendo al **modelo base** (quien publicó el grafo), así que si tú planeas y otra sesión implementa, enruta el trabajo con `"suggestedAgent": "claude:opus"` en el grafo o pídele al humano que lo asigne; y lo que descubras se queda contigo, que eres quien lo descubrió.
 
 ### 3. Ciclo por nodo: start → editar → patch → verify → complete

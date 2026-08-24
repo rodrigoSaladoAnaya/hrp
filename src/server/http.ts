@@ -230,6 +230,35 @@ export function createApp(store: HrpStore) {
     response.status(deleted ? 204 : 404).end();
   });
 
+  // Censo de sesiones acuñadas del proyecto: el árbol del dock lo carga al
+  // abrir y acuña desde él, para que el humano no teclee identidades.
+  app.get("/api/projects/:projectId/sessions", (request, response) => {
+    if (!store.getProject(request.params.projectId)) return response.status(404).json({ error: `Unknown project: ${request.params.projectId}` });
+    response.json({ sessions: store.listProjectSessions(request.params.projectId) });
+  });
+
+  app.post("/api/projects/:projectId/sessions", (request, response, next) => {
+    try {
+      if (!store.getProject(request.params.projectId)) return response.status(404).json({ error: `Unknown project: ${request.params.projectId}` });
+      const input = z.object({ family: agentId }).strict().parse(request.body);
+      const agent = store.mintProjectSession(request.params.projectId, input.family);
+      broadcast(request.params.projectId, "", "session-minted");
+      response.status(201).json({ agent, sessions: store.listProjectSessions(request.params.projectId) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/projects/:projectId/sessions/:agent", (request, response, next) => {
+    try {
+      if (!store.getProject(request.params.projectId)) return response.status(404).json({ error: `Unknown project: ${request.params.projectId}` });
+      // El store decide si la identidad puede retirarse; su mensaje es el que
+      // el panel enseña, así que se deja pasar tal cual como error 400.
+      const agent = agentId.parse(request.params.agent);
+      const sessions = store.retireProjectSession(request.params.projectId, agent);
+      broadcast(request.params.projectId, "", "session-retired");
+      response.json({ sessions });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/projects/:projectId/runs", (request, response) => response.json({ runs: store.listRuns(request.params.projectId) }));
 
   app.post("/api/projects/:projectId/runs", (request, response, next) => {
@@ -664,17 +693,39 @@ export function createApp(store: HrpStore) {
       return projects.flatMap((project) => store.listRuns(project.id).map((run) => run.id));
     };
 
+    // Una sesión acuñada en el panel pertenece al proyecto aunque todavía no
+    // haya tocado ninguna ejecución: es lo que permite pegar su comando en una
+    // sesión abierta y que empiece a recibir señal en el acto.
+    const mintedIn = (projectId: string): boolean => store.listProjectSessions(projectId).includes(agent);
+
     if (waitMs > 0) {
-      for (const id of scopedRunIds()) store.clearAttentionRelease(id, agent);
+      for (const id of scopedRunIds()) {
+        store.clearAttentionRelease(id, agent);
+        // Estacionarse es presentarse. Sólo en la espera: el panel sondea con
+        // waitMs=0 por cada identidad del censo, y registrar presencia ahí
+        // pintaría de verde a sesiones acuñadas que nadie ha abierto todavía.
+        const run = store.getRun(id);
+        if (run && run.status !== "completed" && run.control !== "stopped" && mintedIn(run.projectId)) {
+          const yaPresente = run.seenAgents.includes(agent);
+          store.helloAgent(id, agent);
+          // Un panel abierto sólo se entera por /api/events, así que presentarse
+          // tiene que difundirse igual que en POST /runs/:runId/agents; si no, el
+          // árbol no pinta la presencia hasta el siguiente evento ajeno. Sólo la
+          // primera vez: las esperas sucesivas de la misma sesión no son novedad.
+          if (!yaPresente) broadcast(run.projectId, id, "agent-seen");
+        }
+      }
     }
 
     // Sin un run explícito solo cuentan las ejecuciones donde ese agente
-    // participa: ser base, auditor, tener nodos asignados o haber aparecido.
+    // participa: ser base, auditor, tener nodos asignados, haber aparecido o
+    // ser una sesión acuñada en el proyecto de esa ejecución.
     const involves = (detail: RunDetail): boolean => runId !== undefined
       || detail.run.baseAgent === agent
       || detail.run.auditors.includes(agent)
       || detail.run.seenAgents.includes(agent)
-      || detail.nodes.some((node) => node.assignee === agent);
+      || detail.nodes.some((node) => node.assignee === agent)
+      || mintedIn(detail.run.projectId);
 
     const evaluate = (): { best?: Attention; runs: Attention[] } => {
       const runs = scopedRunIds()

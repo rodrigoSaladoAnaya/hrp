@@ -8,6 +8,7 @@ import {
   DEFAULT_UI_PREFERENCES,
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
+  agentSessionLabel,
   auditorIdentity,
   computeAuditorConsensus,
   type AgentWorkState,
@@ -29,6 +30,7 @@ import {
   type GraphInput,
   type DelegateTiers,
   isDelegateAgent,
+  isValidAgentId,
   type NodeDifficulty,
   nodeDifficulties,
   type NodeStatus,
@@ -495,6 +497,83 @@ export class HrpStore {
       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
     `).run(JSON.stringify(next), now());
     return this.getUiPreferences();
+  }
+
+  // Sesiones que el humano acuñó en el panel. Viven en 'settings' —un mapa
+  // projectId -> identidades— porque no son datos de una ejecución: la sesión
+  // que se acuña hoy vigila el workspace y sirve para las ejecuciones de
+  // mañana. El alcance es el proyecto porque el comando que se copia lleva
+  // --workspace, no un run concreto.
+  private readSessionRegistry(): Record<string, string[]> {
+    const row = this.database.prepare("SELECT value_json FROM settings WHERE key = 'agent-sessions'").get() as Row | undefined;
+    if (!row) return {};
+    const stored = JSON.parse(String(row.value_json)) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(stored)
+      .map(([projectId, value]) => [projectId, Array.isArray(value) ? value.filter((agent): agent is string => typeof agent === "string" && isValidAgentId(agent)) : []]));
+  }
+
+  private writeSessionRegistry(registry: Record<string, string[]>): void {
+    this.database.prepare(`
+      INSERT INTO settings (key, value_json, updated_at) VALUES ('agent-sessions', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    `).run(JSON.stringify(registry), now());
+  }
+
+  listProjectSessions(projectId: string): string[] {
+    return this.readSessionRegistry()[projectId] ?? [];
+  }
+
+  // Acuña la siguiente identidad libre de esa familia. Empieza en 2 porque la 1
+  // es la familia pelada: la identidad que usa una sesión que no declara nada.
+  mintProjectSession(projectId: string, family: string): string {
+    if (!this.getProject(projectId)) throw new Error(`Unknown project: ${projectId}`);
+    const requested = family.trim();
+    if (!isValidAgentId(requested) || agentSessionLabel(requested)) {
+      throw new Error(`Invalid agent family: ${JSON.stringify(family)}. Use a bare family such as "claude"`);
+    }
+    // El delegado no abre sesión: "ollama:<modelo>" es un carril que administra
+    // el modelo base y que decide el enrutado por dificultad, así que acuñarlo
+    // prometería una sesión que nadie puede adoptar pegando un comando.
+    if (isDelegateAgent(requested)) {
+      throw new Error(`${requested} does not open sessions: its lanes are named after the delegated model and chosen by node difficulty`);
+    }
+    const registry = this.readSessionRegistry();
+    const sessions = registry[projectId] ?? [];
+    const taken = new Set(sessions);
+    let ordinal = 2;
+    while (taken.has(`${requested}:${ordinal}`)) ordinal += 1;
+    const minted = `${requested}:${ordinal}`;
+    registry[projectId] = [...sessions, minted];
+    this.writeSessionRegistry(registry);
+    return minted;
+  }
+
+  // Retirar es lo contrario de acuñar y sólo toca el censo: no borra evidencia
+  // ni cambia ejecuciones, así que una identidad que ya trabajó sigue viéndose
+  // en el árbol de esas ejecuciones, que la nombran por su cuenta. Lo que no
+  // se permite es retirarle el sitio a quien tiene trabajo vivo.
+  retireProjectSession(projectId: string, agent: string): string[] {
+    if (!this.getProject(projectId)) throw new Error(`Unknown project: ${projectId}`);
+    const requested = agent.trim();
+    const registry = this.readSessionRegistry();
+    const sessions = registry[projectId] ?? [];
+    if (!sessions.includes(requested)) {
+      throw new Error(`${JSON.stringify(agent)} is not a minted session of this project`);
+    }
+    for (const run of this.listRuns(projectId)) {
+      if (run.status === "completed") continue;
+      if (run.auditors.includes(requested)) {
+        throw new Error(`${requested} audits "${run.title}"; remove it from that run's auditors before retiring the session`);
+      }
+      const assigned = (this.getRunDetail(run.id)?.nodes ?? [])
+        .find((node) => node.assignee === requested && node.status !== "completed");
+      if (assigned) {
+        throw new Error(`${requested} still has ${assigned.file} · ${assigned.symbol} to finish in "${run.title}"`);
+      }
+    }
+    registry[projectId] = sessions.filter((session) => session !== requested);
+    this.writeSessionRegistry(registry);
+    return registry[projectId];
   }
 
   attachProject(workspaceRoot: string): Project {
