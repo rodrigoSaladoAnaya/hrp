@@ -448,6 +448,19 @@ export function createApp(store: HrpStore) {
     } catch (error) { next(error); }
   });
 
+  // La asignación por lote existe por el conteo de eventos: doce nodos por la
+  // ruta de uno en uno serían doce peticiones y doce broadcasts, y el panel
+  // recargaría el detalle completo de la ejecución doce veces. Aquí es una
+  // petición y, si algo cambió, un solo evento.
+  app.post("/api/runs/:runId/assign", (request, response, next) => {
+    try {
+      const input = z.object({ nodeIds: z.array(z.string().min(1)).min(1), assignee: agentId.nullable() }).strict().parse(request.body);
+      const result = store.assignNodes(request.params.runId, input.nodeIds, input.assignee);
+      if (result.assigned.length) broadcast(projectForRun(request.params.runId), request.params.runId, "node-assigned");
+      response.json(result);
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/runs/:runId/nodes/:nodeId/start", (request, response, next) => {
     try {
       const input = z.object({ agent: z.string().min(1).optional() }).strict().parse(request.body ?? {});

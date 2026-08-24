@@ -1526,3 +1526,81 @@ describe("project sessions", () => {
     expect(newStore.listProjectSessions(project.id)).toEqual(["claude:2", "claude:3"]);
   });
 });
+
+describe("bulk node assignment", () => {
+  function setup() {
+    const root = mkdtempSync(path.join(os.tmpdir(), "hrp-bulk-"));
+    roots.push(root);
+    const workspace = path.join(root, "workspace");
+    mkdirSync(workspace);
+    const store = new HrpStore(path.join(root, "data"));
+    const project = store.attachProject(workspace);
+    const run = store.createRun(project.id, "Lote", "Asignar varios nodos a la vez");
+    store.setRunAuditors(run.id, ["codex"]);
+    store.publishGraph(run.id, {
+      nodes: [
+        { id: "uno", file: "src/uno.ts", symbol: "uno", title: "uno", description: "", rationale: "", dependencies: [] },
+        { id: "dos", file: "src/dos.ts", symbol: "dos", title: "dos", description: "", rationale: "", dependencies: [] },
+        { id: "tres", file: "src/tres.ts", symbol: "tres", title: "tres", description: "", rationale: "", dependencies: [] },
+      ],
+    }, "claude");
+    store.approveNodes(run.id);
+    return { store, run };
+  }
+
+  it("assigns what it can and reports each skipped node with its reason", () => {
+    const { store, run } = setup();
+    store.startNode(run.id, "uno", "claude");
+    const lot = store.assignNodes(run.id, ["uno", "dos", "tres", "fantasma"], "codex");
+    expect(lot.assigned.map((node) => node.id)).toEqual(["dos", "tres"]);
+    expect(lot.skipped.map((entry) => entry.id)).toEqual(["uno", "fantasma"]);
+    expect(lot.skipped[0].reason).toContain("pause it with 'hrp run pause'");
+    expect(lot.skipped[1].reason).toContain("fantasma");
+    const nodes = store.getRunDetail(run.id)!.nodes;
+    expect(nodes.find((node) => node.id === "dos")!.assignee).toBe("codex");
+    expect(nodes.find((node) => node.id === "uno")!.assignee).toBe("claude");
+  });
+
+  it("skips a completed node instead of failing the whole lot", () => {
+    const { store, run } = setup();
+    store.startNode(run.id, "uno", "claude");
+    store.publishPatch(run.id, "uno", "Cambia uno", "--- a/src/uno.ts\n+++ b/src/uno.ts\n@@\n+uno\n");
+    store.publishVerification(run.id, "uno", { command: "npm test -- src/uno.ts", output: "ok", exitCode: 0 });
+    store.completeNode(run.id, "uno");
+    const lot = store.assignNodes(run.id, ["uno", "dos"], "codex");
+    expect(lot.assigned.map((node) => node.id)).toEqual(["dos"]);
+    expect(lot.skipped).toEqual([{ id: "uno", reason: "Completed nodes cannot be reassigned" }]);
+  });
+
+  it("assigns a repeated id once", () => {
+    const { store, run } = setup();
+    const lot = store.assignNodes(run.id, ["dos", "dos", "dos"], "codex");
+    expect(lot.assigned.map((node) => node.id)).toEqual(["dos"]);
+    const assignments = store.getRunDetail(run.id)!.activity
+      .filter((entry) => entry.nodeId === "dos" && entry.message.startsWith("Asignado a codex"));
+    expect(assignments).toHaveLength(1);
+  });
+
+  it("takes a running node back only while the execution is paused", () => {
+    const { store, run } = setup();
+    store.startNode(run.id, "uno", "claude");
+    expect(store.assignNodes(run.id, ["uno"], "codex").assigned).toEqual([]);
+    store.setRunControl(run.id, "paused");
+    const lot = store.assignNodes(run.id, ["uno"], "codex");
+    expect(lot.skipped).toEqual([]);
+    expect(lot.assigned[0].status).toBe("pending");
+    expect(lot.assigned[0].assignee).toBe("codex");
+  });
+
+  it("rejects the whole lot when the run does not exist", () => {
+    const { store } = setup();
+    expect(() => store.assignNodes("no-existe", ["dos"], "codex")).toThrow(/Unknown run/);
+  });
+
+  it("clears the assignment of every node in the lot", () => {
+    const { store, run } = setup();
+    store.assignNodes(run.id, ["dos", "tres"], "codex");
+    const lot = store.assignNodes(run.id, ["dos", "tres"], null);
+    expect(lot.assigned.every((node) => node.assignee === undefined)).toBe(true);
+  });
+});

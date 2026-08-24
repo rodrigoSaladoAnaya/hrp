@@ -521,7 +521,7 @@ Uso:
   hrp graph review done <run-id> --agent NOMBRE [--findings N]   (cierra tu pasada de auditoría del plan)
   hrp node discover <run-id> <node.json> [--agent NOMBRE]   (se hereda de HRP_AGENT; quien descubre conserva el nodo)
   hrp node approve <run-id> [node-id...]
-  hrp node assign <run-id> <node-id> <agente|->
+  hrp node assign <run-id> <node-id...> <agente|->   (varios nodos van en un solo lote)
   hrp node start <run-id> <node-id> [--agent NOMBRE]
   hrp node retry <run-id> <node-id> [--agent NOMBRE]
   hrp patch publish <run-id> <node-id> --summary TEXTO [--rationale TEXTO] --diff-file PATH|-
@@ -733,9 +733,22 @@ async function main() {
     return print(await api(`/api/runs/${first}/approve`, { method: "POST", body: JSON.stringify(body) }));
   }
   if (group === "node" && action === "assign") {
-    const assignee = args[4];
-    if (!assignee) throw new Error("Falta el agente: hrp node assign <run-id> <node-id> <agente|->");
-    return print(await api(`/api/runs/${first}/nodes/${second}/assign`, { method: "POST", body: JSON.stringify({ assignee: assignee === "-" ? null : assignee }) }));
+    // El agente va al final y los nodos en medio: así la forma de un solo nodo,
+    // que ya está documentada, sigue significando lo mismo.
+    const nodeIds = args.slice(3, -1);
+    const last = args.length > 4 ? args[args.length - 1] : undefined;
+    if (!nodeIds.length || !last) throw new Error("Falta el agente: hrp node assign <run-id> <node-id...> <agente|->");
+    const assignee = last === "-" ? null : last;
+    if (nodeIds.length === 1) {
+      return print(await api(`/api/runs/${first}/nodes/${nodeIds[0]}/assign`, { method: "POST", body: JSON.stringify({ assignee }) }));
+    }
+    const lote = await api(`/api/runs/${first}/assign`, { method: "POST", body: JSON.stringify({ nodeIds, assignee }) });
+    if (json) return print(lote);
+    print(`Asignados a ${assignee ?? "nadie"}: ${lote.assigned.map((node) => node.id).join(", ") || "(ninguno)"}`);
+    // Lo omitido se imprime siempre: un lote que aplica a medias en silencio es
+    // peor que uno que falla, porque parece que hizo lo que se le pidió.
+    for (const omitido of lote.skipped) print(`Sin cambio · ${omitido.id}: ${omitido.reason}`);
+    return;
   }
   if (group === "node" && (action === "start" || action === "retry")) {
     const agent = agentValue();

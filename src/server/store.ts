@@ -54,6 +54,11 @@ export type AgentStateInput =
   Omit<AgentWorkState, "updatedAt" | "completed" | "total" | "reviewedNodeIds" | "remainingNodeIds">
   & Partial<Pick<AgentWorkState, "completed" | "total" | "reviewedNodeIds" | "remainingNodeIds">>;
 
+// Lo omitido viaja con su motivo: quien pide un lote tiene que poder decirle al
+// humano por qué un nodo se quedó fuera, no sólo cuántos.
+export type SkippedAssignment = { id: string; reason: string };
+export type BulkAssignment = { assigned: ChangeNode[]; skipped: SkippedAssignment[] };
+
 export type AttentionRelease = {
   runId: string;
   agent: string;
@@ -1181,6 +1186,29 @@ export class HrpStore {
       ? `Estaba en curso con ${node.executedBy ?? node.assignee ?? "otro agente"} y el humano lo recuperó con la ejecución pausada: vuelve a pendiente conservando el diff y la verificación del intento.`
       : undefined, nodeId, "human");
     return this.requireNode(runId, nodeId);
+  }
+
+  // Un gesto sobre el mapa —un archivo entero, una rama— alcanza nodos que no se
+  // pueden reasignar: uno ya completado, o uno en vuelo con la ejecución activa.
+  // Rechazar el lote entero obligaría al humano a rehacer una selección que no
+  // puede esquivarlos, así que el lote aplica lo que puede; lo que no, sale con
+  // el motivo del propio 'assignNode' para que el panel lo muestre. Un descarte
+  // silencioso sería lo inaceptable, no el parcial.
+  assignNodes(runId: string, nodeIds: string[], assignee: string | null): BulkAssignment {
+    if (!this.getRun(runId)) throw new Error(`Unknown run: ${runId}`);
+    const assigned: ChangeNode[] = [];
+    const skipped: SkippedAssignment[] = [];
+    // Sin deduplicar, un id repetido por dos gestos que se solapan —una rama y
+    // el archivo que la contiene— asignaría dos veces y publicaría dos entradas
+    // de actividad para el mismo nodo.
+    for (const id of new Set(nodeIds)) {
+      try {
+        assigned.push(this.assignNode(runId, id, assignee));
+      } catch (error) {
+        skipped.push({ id, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { assigned, skipped };
   }
 
   // El control es del humano: pausar/detener bloquea el inicio de nodos para

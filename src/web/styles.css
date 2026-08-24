@@ -285,6 +285,32 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .react-flow__pane { cursor: grab; }
 .react-flow__pane:active { cursor: grabbing; }
 .flow-wrap.is-magnifying > .react-flow .react-flow__pane { cursor: zoom-in; }
+/* Flota sobre el mapa sin robarle sitio al grafo: aparece sólo con selección y
+   se queda anclada abajo, donde no tapa las tarjetas altas del centro. */
+.selection-layer { position: absolute; z-index: 9; right: 16px; bottom: 16px; left: 16px; display: flex; justify-content: center; pointer-events: none; }
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  padding: 11px 13px;
+  border: 2px solid #35443f;
+  border-radius: 4px;
+  background: rgba(248, 246, 236, .97);
+  box-shadow: 5px 9px 22px rgba(31,41,37,.26);
+  pointer-events: auto;
+}
+.selection-count { font-size: .82rem; font-weight: 800; }
+.selection-agent { min-height: 34px; max-width: 210px; padding: 0 9px; border: 1px solid #9aa69f; border-radius: 3px; background: #fff; font: inherit; font-size: .78rem; }
+.selection-bar .approve-button { min-height: 34px; }
+.selection-clear { min-height: 34px; padding: 0 11px; border: 1px solid #35443f; border-radius: 3px; color: #35443f; background: transparent; cursor: pointer; font-size: .78rem; font-weight: 750; }
+.selection-clear:hover { background: #dfe5e1; }
+.selection-queue { flex-basis: 100%; display: flex; align-items: center; gap: 6px; margin: 0; color: #5a6862; font-size: .72rem; }
+.selection-queue .icon { flex: none; width: 13px; height: 13px; }
+.selection-bar .assign-warning { flex-basis: 100%; margin: 0; }
+.selection-skipped { flex-basis: 100%; max-height: 108px; overflow-y: auto; margin: 0; padding-left: 18px; color: #6b3f14; font-size: .72rem; }
+.selection-skipped code { font-size: .72rem; font-weight: 750; }
 .graph-magnifier {
   position: absolute;
   z-index: 8;
@@ -353,6 +379,16 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .change-node.is-selected { border-color: var(--selected-border); }
 .change-node.is-selected:hover { border-color: var(--selected-border); }
 .change-node.is-selected:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+/* La marca de lote no puede confundirse con la del inspector: 'is-selected' es
+   la operación abierta y 'is-picked' la que entrará en la próxima asignación,
+   así que una cambia el borde y la otra pinta el fondo y un realce lateral. */
+.change-node.is-picked { background: #e8f0e6; box-shadow: inset 5px 0 0 #2d6a50, 4px 7px 16px rgba(45,106,80,.18); }
+.change-node.is-picked.is-selected { box-shadow: inset 5px 0 0 #2d6a50, 0 0 0 1px var(--selected-border); }
+.node-pick-file { min-width: 0; padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; }
+.node-pick-file:hover { color: #2d6a50; text-decoration: underline; }
+.node-pick-branch { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid #b3bdb6; border-radius: 3px; color: #4c5b56; background: transparent; cursor: pointer; }
+.node-pick-branch:hover { color: #2d6a50; border-color: #2d6a50; background: #e8f0e6; }
+.node-pick-branch .icon { width: 13px; height: 13px; }
 .change-node-running { border-color: var(--running); box-shadow: 4px 7px 16px rgba(187,107,19,.22); animation: node-running-pulse 1.35s ease-in-out infinite; }
 .change-node-completed { border: 3px solid var(--completed); padding: 12px 14px 11px; }
 .change-node-failed { border: 3px solid var(--failed); padding: 12px 14px 11px; }
