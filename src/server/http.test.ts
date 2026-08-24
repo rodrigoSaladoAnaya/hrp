@@ -202,3 +202,95 @@ describe("sesiones del proyecto y atención", () => {
     });
   });
 });
+
+describe("bulk assign endpoint", () => {
+  function runFixture() {
+    const root = mkdtempSync(path.join(os.tmpdir(), "hrp-http-bulk-"));
+    roots.push(root);
+    mkdirSync(path.join(root, "workspace"));
+    const store = new HrpStore(path.join(root, "data"));
+    const project = store.attachProject(path.join(root, "workspace"));
+    const run = store.createRun(project.id, "Lote", "Asignar varios nodos");
+    store.setRunAuditors(run.id, ["codex"]);
+    store.publishGraph(run.id, { nodes: [
+      { id: "uno", file: "src/uno.ts", symbol: "uno", title: "uno", description: "d", rationale: "r", dependencies: [] },
+      { id: "dos", file: "src/dos.ts", symbol: "dos", title: "dos", description: "d", rationale: "r", dependencies: [] },
+    ] }, "claude");
+    store.approveNodes(run.id);
+    return { store, run };
+  }
+
+  const assign = (baseUrl: string, runId: string, body: unknown) => fetch(`${baseUrl}/api/runs/${runId}/assign`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  it("answers with what it assigned and what it skipped, each with a reason", async () => {
+    const { store, run } = runFixture();
+    store.startNode(run.id, "uno", "claude");
+    await withServer(store, async (baseUrl) => {
+      const response = await assign(baseUrl, run.id, { nodeIds: ["uno", "dos", "fantasma"], assignee: "codex" });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { assigned: { id: string }[]; skipped: { id: string; reason: string }[] };
+      expect(body.assigned.map((node) => node.id)).toEqual(["dos"]);
+      expect(body.skipped.map((entry) => entry.id)).toEqual(["uno", "fantasma"]);
+      expect(body.skipped[0].reason).toContain("hrp run pause");
+    });
+  });
+
+  it("rejects an empty list and an invalid agent id", async () => {
+    const { store, run } = runFixture();
+    await withServer(store, async (baseUrl) => {
+      expect((await assign(baseUrl, run.id, { nodeIds: [], assignee: "codex" })).status).toBe(400);
+      expect((await assign(baseUrl, run.id, { nodeIds: ["dos"], assignee: "codex vale?" })).status).toBe(400);
+      expect((await assign(baseUrl, run.id, { nodeIds: ["dos"], assignee: "codex", extra: 1 })).status).toBe(400);
+      expect(store.getRunDetail(run.id)!.nodes.find((node) => node.id === "dos")!.assignee).toBe("claude");
+    });
+  });
+
+  it("clears the assignment when the lot carries a null assignee", async () => {
+    const { store, run } = runFixture();
+    await withServer(store, async (baseUrl) => {
+      const response = await assign(baseUrl, run.id, { nodeIds: ["uno", "dos"], assignee: null });
+      expect(response.status).toBe(200);
+      expect(store.getRunDetail(run.id)!.nodes.every((node) => node.assignee === undefined)).toBe(true);
+    });
+  });
+
+  it("emits one event for the whole lot, and none when nothing changed", async () => {
+    const { store, run } = runFixture();
+    await withServer(store, async (baseUrl) => {
+      // La razón de existir del endpoint es el conteo: doce nodos por la ruta de
+      // uno en uno recargarían doce veces el detalle en cada panel abierto.
+      const eventos: string[] = [];
+      const stream = await fetch(`${baseUrl}/api/events`);
+      const lector = stream.body!.getReader();
+      const decoder = new TextDecoder();
+      const leyendo = (async () => {
+        try {
+          for (;;) {
+            const { value, done } = await lector.read();
+            if (done) break;
+            for (const linea of decoder.decode(value).split("\n")) {
+              if (linea.startsWith("data:") && linea.includes(run.id)) eventos.push(linea);
+            }
+          }
+        } catch { /* el cierre del flujo termina la lectura */ }
+      })();
+      const reposar = () => new Promise((resolve) => { setTimeout(resolve, 200); });
+
+      await reposar();
+      await assign(baseUrl, run.id, { nodeIds: ["uno", "dos"], assignee: "codex" });
+      await reposar();
+      expect(eventos).toHaveLength(1);
+
+      await assign(baseUrl, run.id, { nodeIds: ["fantasma"], assignee: "codex" });
+      await reposar();
+      expect(eventos).toHaveLength(1);
+
+      await lector.cancel().catch(() => undefined);
+      await leyendo;
+    });
+  });
+});

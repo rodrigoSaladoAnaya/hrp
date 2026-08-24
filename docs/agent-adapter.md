@@ -218,6 +218,8 @@ Tres consecuencias del reparto, que un adaptador debe respetar:
 2. **El trabajo descubierto se queda con quien lo descubre** (`hrp node discover` manda la identidad), con el modelo base como respaldo cuando no se declara ninguna. Así el implementador conserva lo que encuentra en vez de devolvérselo al planificador.
 3. **Un carril `ollama:<modelo>` no es una sesión**: comparte la forma `familia:etiqueta` pero no abre sesión propia — lo administra el modelo base y su presencia es la API key configurada, no una conexión.
 
+   En el árbol de agentes del panel eso se ve así: la rama de `ollama` **no acuña identidades** —el servidor rechaza acuñar sobre la familia delegada—, y su botón `+` lleva a configurar un modelo, que es lo único que crea un carril nuevo. Los carriles cuelgan de la rama **sólo cuando hay más de un modelo distinto configurado**: con uno solo, ese carril sería el propio nodo base y colgarlo repetía la misma fila. Con varios, la raíz deja de nombrar un modelo y dice «por dificultad», porque es la dificultad de cada nodo la que elige el suyo.
+
 Advertencia sobre la auditoría: para HRP dos sesiones del mismo modelo son identidades independientes y pueden auditarse entre sí, pero comparten los puntos ciegos del modelo. Una revisión verdaderamente independiente necesita al menos un auditor de otra familia.
 
 Requisitos del grafo:
@@ -278,8 +280,15 @@ Sale con éxito en cuanto hay trabajo aprobado disponible para esa identidad (o 
 El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 
 ```sh
-hrp node assign "$run_id" nodo-a codex   # '-' retira la asignación
+hrp node assign "$run_id" nodo-a codex                 # '-' retira la asignación
+hrp node assign "$run_id" nodo-a nodo-b nodo-c codex   # varios nodos en un solo lote
 ```
+
+Con varios nodos el comando usa `POST /api/runs/:runId/assign` (`{ nodeIds, assignee }`), que responde `{ assigned, skipped }`: aplica lo que puede y devuelve cada nodo omitido con su motivo, en vez de rechazar el lote entero porque uno ya estaba completado. La CLI imprime esas omisiones; un adaptador que use el endpoint debe mostrárselas al humano, porque un lote aplicado a medias en silencio parece un lote aplicado entero.
+
+En el panel el humano no elige los nodos uno a uno: el nombre del archivo de una tarjeta selecciona todas las operaciones de ese archivo, y el botón de rama selecciona la operación y todas las que dependen de ella, directa o transitivamente. Ambos gestos suman a la selección y la retiran si el grupo ya estaba entero dentro. La selección se aplica desde una barra flotante sobre el mapa.
+
+Un lote no reparte trabajo en paralelo: HRP mantiene **un solo nodo en curso por identidad**, así que asignar diez operaciones a una sesión es ponerle una fila de diez. Para repartir de verdad hay que asignar a identidades distintas —varias sesiones del mismo modelo cuentan como identidades distintas—.
 
 Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a`, con la identidad heredada de `HRP_AGENT` o forzada con `--agent`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base). La asignación se congela mientras el nodo está en curso: el humano solo puede reasignar nodos pendientes o fallidos.
 
