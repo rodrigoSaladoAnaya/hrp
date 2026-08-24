@@ -18,7 +18,7 @@ import {
 import { DEFAULT_UI_PREFERENCES, agentFamily, agentSessionLabel, auditorIdentity, isDelegateAgent, isValidAgentId, laneModel, runRoster, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
-import { decideGraphViewportAction, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
+import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 import { resolveProjectRunListState } from "./project-tree-runs";
 import { isViewShortcutEvent, resolveViewShortcut } from "./view-shortcuts";
 
@@ -293,7 +293,7 @@ const graphAriaLabels: Partial<AriaLabelConfig> = {
   "handle.ariaLabel": "Conexión de dependencia",
 };
 
-function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, ollamaConfigured: boolean, roster: string[], onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
+export function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run: RunSummary | undefined, ollamaConfigured: boolean, roster: string[], onSelect: (id: string) => void, onAssign: (id: string, assignee: string | null) => void): { nodes: Node<MapNodeData>[]; edges: Edge[] } {
   const nodeWidth = readCssPixels("--change-node-width", changeNodeWidthFallback);
   const nodeHeight = readCssPixels("--change-node-layout-height", changeNodeLayoutHeightFallback);
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
@@ -308,6 +308,12 @@ function layoutGraph(changes: ChangeNode[], selectedId: string | undefined, run:
       id: change.id,
       type: "change",
       position: { x: point.x - nodeWidth / 2, y: point.y - nodeHeight / 2 },
+      // ReactFlow esconde el nodo y descarta el encuadre mientras no tenga
+      // medidas, y sólo las obtiene de un ResizeObserver que no entrega nada
+      // en una pestaña que el navegador no pinta. Declaramos las mismas que
+      // usó dagre; no width/height sueltos, que ReactFlow volvería estilo
+      // inline y recortarían la tarjeta, más alta que su altura de layout.
+      measured: { width: nodeWidth, height: nodeHeight },
       data: { change, isSelected: change.id === selectedId, baseAgent: run?.baseAgent, seenAgents: run?.seenAgents ?? [], ollamaConfigured, roster, onSelect, onAssign },
     };
   });
@@ -1370,24 +1376,43 @@ export function App() {
     const action = decideGraphViewportAction({ appliedKey: appliedGraphViewportKey.current, nodeSetKey, runId, saved: graphViewports.current.get(runId) });
     if (action.kind === "skip") return;
     cancelPendingGraphFit();
-    appliedGraphViewportKey.current = action.graphKey;
     if (action.kind === "restore") {
+      appliedGraphViewportKey.current = action.graphKey;
       void instance.setViewport(action.viewport, { duration: 0 });
       return;
     }
-    // ReactFlow ingiere el layout nuevo de forma asíncrona: un solo fitView puede
-    // ejecutarse contra los límites viejos y dejar el grafo fuera de vista.
-    // Encuadra en el siguiente frame y reintenta una vez ya asentado el render.
+    // fitView no encuadra por sí mismo en un montaje controlado: encola el
+    // encuadre y el lote lo entrega dentro de un requestAnimationFrame que una
+    // pestaña sin pintado nunca ejecuta. Calculamos el viewport y lo aplicamos
+    // con setViewport, que sí transforma en el acto, y sólo entonces damos la
+    // clave por aplicada: un encuadre descartado debe poder reintentarse.
     let cancelled = false;
-    const fit = () => { if (!cancelled) flowInstance.current?.fitView({ padding: 0.22, maxZoom: 1, duration }); };
-    let frame2 = 0;
-    const frame1 = requestAnimationFrame(() => { frame2 = requestAnimationFrame(fit); });
-    const settle = setTimeout(fit, 400);
+    let timer = 0;
+    const attempt = (index: number) => {
+      if (cancelled) return;
+      const current = flowInstance.current;
+      const size = flowWrapRef.current?.getBoundingClientRect();
+      const nodes = current?.getNodes() ?? [];
+      const measured = graphNodesMeasured(nodes);
+      const decision = decideGraphFit({
+        attempt: index,
+        bounds: current && measured ? current.getNodesBounds(nodes) : undefined,
+        documentHidden: document.hidden,
+        duration,
+        measured,
+        size,
+      });
+      if (decision.kind === "apply" && current) {
+        appliedGraphViewportKey.current = action.graphKey;
+        void current.setViewport(decision.viewport, { duration: decision.duration });
+        return;
+      }
+      if (decision.kind === "retry") timer = window.setTimeout(() => attempt(index + 1), decision.delay);
+    };
+    timer = window.setTimeout(() => attempt(0), 0);
     const cancel = () => {
       cancelled = true;
-      cancelAnimationFrame(frame1);
-      cancelAnimationFrame(frame2);
-      clearTimeout(settle);
+      window.clearTimeout(timer);
     };
     pendingGraphFitCancel.current = cancel;
     return cancel;
@@ -1550,11 +1575,11 @@ export function App() {
                   <FindingsPanel findings={detail.findings} nodes={detail.nodes} runId={detail.run.id} onChanged={() => { loadDetail(detail.run.id).catch(() => undefined); }} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
                 ) : view === "map" ? (
                   detail.nodes.length ? <div className={`flow-wrap ${graphMagnifier.active ? "is-magnifying" : ""}`} ref={setFlowWrapElement} onPointerEnter={enterGraphMagnifier} onPointerMove={updateGraphMagnifier} onPointerLeave={leaveGraphMagnifier}>
-                    <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; updateGraphViewport(instance.getViewport()); appliedGraphViewportKey.current = ""; applyGraphViewport(0); }} onViewportChange={updateGraphViewport} onMoveStart={(event) => { if (event) { graphViewportUserMoved.current = true; cancelPendingGraphFit(); } }} onMoveEnd={(_event, viewport) => { updateGraphViewport(viewport); if (shouldPersistGraphViewport({ nodeSetKey, runId, userMoved: graphViewportUserMoved.current })) graphViewports.current.set(runId, { nodeSetKey, viewport }); graphViewportUserMoved.current = false; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow>
+                    <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} onInit={(instance) => { flowInstance.current = instance; updateGraphViewport(instance.getViewport()); appliedGraphViewportKey.current = ""; applyGraphViewport(0); }} onViewportChange={updateGraphViewport} onMoveStart={(event) => { if (event) { graphViewportUserMoved.current = true; cancelPendingGraphFit(); } }} onMoveEnd={(_event, viewport) => { updateGraphViewport(viewport); if (shouldPersistGraphViewport({ nodeSetKey, runId, userMoved: graphViewportUserMoved.current })) graphViewports.current.set(runId, { nodeSetKey, viewport }); graphViewportUserMoved.current = false; }} onNodeClick={(_event, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId("")} ariaLabelConfig={graphAriaLabels} minZoom={graphMinZoom} maxZoom={graphMaxZoom} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/><Controls showInteractive={false} aria-label="Controles del mapa"/></ReactFlow>
                     {graphMagnifier.active && (
                       <div className="graph-magnifier" style={graphMagnifierStyle} aria-hidden="true" inert>
                         <div className="graph-magnifier__content" style={graphMagnifierContentStyle}>
-                          <ReactFlow className="graph-magnifier__flow" nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} viewport={graphViewport} zoomOnScroll={false} zoomOnPinch={false} zoomOnDoubleClick={false} panOnDrag={false} panOnScroll={false} preventScrolling={false} ariaLabelConfig={graphAriaLabels} minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/></ReactFlow>
+                          <ReactFlow className="graph-magnifier__flow" nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} viewport={graphViewport} zoomOnScroll={false} zoomOnPinch={false} zoomOnDoubleClick={false} panOnDrag={false} panOnScroll={false} preventScrolling={false} ariaLabelConfig={graphAriaLabels} minZoom={graphMinZoom} maxZoom={graphMaxZoom} proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#aab5af"/></ReactFlow>
                         </div>
                       </div>
                     )}
