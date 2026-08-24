@@ -51,10 +51,12 @@ Inspecciona antes de editar. Cada nodo declara un solo archivo, un símbolo o se
 ```
 
 ```sh
-hrp graph publish "$run_id" /ruta/temporal/graph.json --agent codex
+hrp graph publish "$run_id" /ruta/temporal/graph.json   # --agent NOMBRE si no declaraste HRP_AGENT
 ```
 
-`--agent codex` te registra como **modelo base** si eres el primer publicador: ejecutas por defecto los nodos sin asignación y los nodos descubiertos se te asignan automáticamente.
+`--agent` te registra como **modelo base** si eres el primer publicador: ejecutas por defecto los nodos sin asignación y los nodos descubiertos se te asignan automáticamente.
+
+**Tu identidad.** `codex` es sólo el valor por defecto: la identidad real la fija `HRP_AGENT` al lanzar la sesión (por ejemplo `codex:auditor`), el CLI la hereda cuando omites `--agent`, y `hrp whoami` te dice cuál es y de dónde sale. Declárala siempre igual: HRP sostiene un nodo en vuelo y un estado por identidad, así que dos sesiones que compartan identidad se pisan el estado. Si el humano te eligió **sólo como auditor**, no reclames los nodos sin asignación —pertenecen al modelo base— y espera con tu propia identidad.
 
 Usa identificadores estables con letras, números, `_` o `-`; rutas relativas al workspace; dependencias reales y sin ciclos. No crees nodos por comandos, fases genéricas ni grupos de archivos.
 
@@ -63,7 +65,7 @@ Usa identificadores estables con letras, números, `_` o `-`; rutas relativas al
 Todo nodo del grafo inicial queda con `approved: false`. Espera el visto bueno del humano con el comando bloqueante:
 
 ```sh
-hrp wait approval "$run_id" --agent codex --timeout 300
+hrp wait approval "$run_id" --timeout 300
 ```
 
 Sale con éxito en cuanto hay trabajo aprobado disponible para ti; al agotar el timeout devuelve error: reintenta, o entrega al humano el enlace del panel y termina el turno. Para inspeccionar el detalle usa `hrp state "$run_id" --json`.
@@ -79,7 +81,7 @@ Antes de elegir trabajo, consulta `run.baseAgent` en el estado. Si es `codex`, t
 Después del gate inicial, la espera normal no es terminar el turno: usa la herramienta MCP bloqueante `hrp_attention` o, si no está disponible, el CLI:
 
 ```sh
-hrp attention --agent codex --wait 600
+hrp attention --wait 600   # la identidad sale de HRP_AGENT
 ```
 
 El plugin de Codex instala un hook `Stop` en `hooks.json`: antes de cerrar, consulta HRP y bloquea la parada cuando hay trabajo accionable o cuando debes quedarte estacionado esperando la siguiente señal. El hook `SessionStart` añade contexto al abrir una sesión si el workspace tiene ejecuciones HRP relevantes.
@@ -89,7 +91,7 @@ El plugin de Codex instala un hook `Stop` en `hooks.json`: antes de cerrar, cons
 Antes de editar:
 
 ```sh
-hrp node start "$run_id" settings-schema --agent codex
+hrp node start "$run_id" settings-schema
 ```
 
 Si otro nodo está `running`, espera. Si el nodo pertenece a otro agente, no lo tomes. Si una dependencia está pendiente, ejecuta primero los prerrequisitos aprobados.
@@ -117,7 +119,7 @@ El resumen y la justificación del patch describen el resultado observado, no re
 Una verificación fallida marca el nodo como `failed`. Diagnostica sin crear otra ejecución y reintenta el mismo nodo:
 
 ```sh
-hrp node retry "$run_id" settings-schema --agent codex
+hrp node retry "$run_id" settings-schema
 # aplicar la corrección y generar un diff exclusivo nuevo
 hrp patch publish "$run_id" settings-schema \
   --summary "Se corrigió el contrato tras la verificación" \
@@ -155,7 +157,7 @@ Al reportar, el autor queda acordado; al aceptar, queda acordado el base. Despu�
 
 El reportero inicia esa corrección sólo cuando `hrp state` confirme la asignación, la ejecuta con el ciclo normal y queda excluido de auditarla. Otro auditor debe cubrir el nodo nuevo. `hrp finding reopen` reinicia los acuerdos para la nueva evidencia. Esta unanimidad pertenece al hallazgo; el gate final conserva mayoría simple.
 
-Al completarse todos los nodos, el servidor ejecuta la auditoría final automáticamente. Mantente atento con `hrp_attention` o `hrp attention --agent codex --wait 600`, resuelve todo hallazgo vivo y confirma:
+Al completarse todos los nodos, el servidor ejecuta la auditoría final automáticamente. Mantente atento con `hrp_attention` o `hrp attention --wait 600`, resuelve todo hallazgo vivo y confirma:
 
 ```sh
 hrp review gate "$run_id"
@@ -167,7 +169,7 @@ Si `run.baseAgent` pertenece a Claude u otro agente, completa sólo los nodos as
 
 ### Codex como revisor
 
-Si estás seleccionado en `run.auditors`, mantén activa la espera con `hrp_attention` o `hrp attention --agent codex --wait 600`. Al recibir **Auditoría disponible**, no reclames nodos sin asignación: publica `hrp agent status <run-id> --agent codex --phase reviewing ...`, genera `hrp review pack <run-id>` y busca errores de integración, contratos rotos y desviaciones entre spec y diff. Durante pasadas largas actualiza `--completed`, `--reviewed` y `--remaining` para que el humano vea la cobertura real.
+Si estás seleccionado en `run.auditors`, mantén activa la espera con `hrp_attention` o `hrp attention --wait 600`. Al recibir **Auditoría disponible**, no reclames nodos sin asignación: publica `hrp agent status <run-id> --phase reviewing ...`, genera `hrp review pack <run-id>` y busca errores de integración, contratos rotos y desviaciones entre spec y diff. Durante pasadas largas actualiza `--completed`, `--reviewed` y `--remaining` para que el humano vea la cobertura real.
 
 Registra problemas con `hrp finding add`, debate con `hrp finding reply` y acuerda una corrección aceptable con `hrp finding agree`; mientras actúes sólo como revisor no edites el workspace ni inventes hallazgos para rellenar. Si HRP te asigna por unanimidad la corrección de tu hallazgo, cambia al rol ejecutor para ese nodo y no lo incluyas en tu propia cobertura. Cuando todos los nodos ajenos estén cubiertos, publica `phase completed` con sus IDs en `--reviewed` y sin `--remaining`. Después vuelve a la espera con `hrp_attention` o `hrp attention`: una corrección completada puede restablecer a otros auditores a `waiting` y solicitar otra pasada. Nunca publiques `completed` sólo porque aún no existen hallazgos.
 

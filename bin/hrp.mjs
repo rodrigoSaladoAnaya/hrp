@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,8 +14,27 @@ function value(name, fallback) {
   return index >= 0 ? argv[index + 1] : fallback;
 }
 
+// Banderas repetibles: '--tier trivial=modelo --tier standard=otro' configura
+// varios niveles en una sola invocación.
+function values(name) {
+  const result = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === name && argv[index + 1] !== undefined) result.push(argv[index + 1]);
+  }
+  return result;
+}
+
 function flag(name) {
   return argv.includes(name);
+}
+
+// Identidad con la que este proceso habla con HRP. La bandera explícita manda;
+// si falta, la declara la sesión con HRP_AGENT. Con varias sesiones del mismo
+// modelo en una ejecución ("claude:fable" planea, "claude:opus" implementa),
+// repetir --agent en cada comando es la forma más fácil de publicar evidencia
+// con la identidad de otra sesión: la variable la fija una sola vez.
+function agentValue() {
+  return value("--agent") ?? process.env.HRP_AGENT;
 }
 
 const url = value("--url", process.env.HRP_URL ?? "http://127.0.0.1:4317");
@@ -25,12 +44,64 @@ const json = flag("--json");
 
 function positional() {
   const result = [];
-  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--scope", "--findings", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait"]);
+  const optionsWithValues = new Set(["--url", "--port", "--data-dir", "--project", "--title", "--requirement", "--summary", "--rationale", "--diff-file", "--type", "--detail", "--node", "--agent", "--phase", "--completed", "--total", "--reviewed", "--remaining", "--timeout", "--tokens", "--api-key", "--base-url", "--model", "--prompt-file", "--system-file", "--run", "--severity", "--scope", "--findings", "--body", "--reviewer", "--author", "--resolution-node", "--workspace", "--wait", "--max", "--out-dir", "--tier"]);
   for (let index = 0; index < argv.length; index += 1) {
     if (optionsWithValues.has(argv[index])) index += 1;
     else if (!argv[index].startsWith("--")) result.push(argv[index]);
   }
   return result;
+}
+
+// El prompt delegado se arma una sola vez para 'ollama exec' y para el despacho
+// concurrente: si divergieran, el mismo nodo produciría resultados distintos
+// según el comando que lo lanzara.
+function buildDelegatePrompt(node) {
+  const filePath = path.resolve(process.cwd(), node.file);
+  const exists = existsSync(filePath);
+  const content = exists ? readFileSync(filePath, "utf8") : "";
+  // Contexto de referencia aprobado en el nodo: los contratos reales que
+  // el modelo modesto necesita ver para no inventar nada.
+  const references = [];
+  for (const contextFile of node.contextFiles ?? []) {
+    const contextPath = path.resolve(process.cwd(), contextFile);
+    if (!existsSync(contextPath)) throw new Error(`El archivo de contexto del nodo no existe en el workspace: ${contextFile}`);
+    references.push({ file: contextFile, content: readFileSync(contextPath, "utf8") });
+  }
+  if (content.length + references.reduce((sum, ref) => sum + ref.content.length, 0) > 200_000) {
+    throw new Error(`El archivo del nodo más su contexto exceden 200KB; usa 'hrp ollama run --prompt-file' con solo los fragmentos relevantes`);
+  }
+  return [
+    "Eres un asistente de programación. Aplica la siguiente operación y devuelve ÚNICAMENTE el contenido completo del archivo resultante, sin explicaciones, sin markdown y sin fences de código.",
+    "",
+    `Archivo: ${node.file}`,
+    `Símbolo u objetivo: ${node.symbol}`,
+    `Operación: ${node.title}`,
+    `Especificación: ${node.description}`,
+    `Motivo: ${node.rationale}`,
+    "",
+    "No cambies nada fuera de lo especificado: conserva el resto del archivo exactamente igual.",
+    "Si la especificación no define el contrato de algo que necesitas (una función, un campo, un formato), NO lo supongas ni lo inventes: responde únicamente una línea que empiece con 'NECESITO: ' describiendo qué te falta.",
+    ...references.flatMap((ref) => ["", `REFERENCIA (solo lectura, NO la modifiques): ${ref.file}`, "", ref.content.trimEnd()]),
+    "",
+    exists ? `Contenido actual de ${node.file}:` : `El archivo ${node.file} no existe todavía: genera su contenido completo.`,
+    ...(exists ? ["", content] : []),
+  ].join("\n");
+}
+
+// Los helpers de carril viven en el contrato compartido compilado: el CLI no
+// reimplementa cómo se resuelve un modelo, para no discrepar del servidor.
+async function loadSharedProtocol() {
+  const entry = path.join(root, "dist/server/shared/protocol.js");
+  if (!existsSync(entry)) throw new Error("Falta el build del servicio: ejecuta 'npm run build' primero");
+  return import(pathToFileURL(entry).href);
+}
+
+// El planificador vive en el servicio compilado: el CLI lo reutiliza para no
+// mantener una segunda copia de las reglas de compatibilidad.
+async function loadDispatchPlanner() {
+  const entry = path.join(root, "dist/server/server/dispatch.js");
+  if (!existsSync(entry)) throw new Error("Falta el build del servicio: ejecuta 'npm run build' antes de despachar");
+  return (await import(pathToFileURL(entry).href)).planDispatch;
 }
 
 function print(valueToPrint) {
@@ -448,7 +519,7 @@ Uso:
   hrp graph publish <run-id> <graph.json> --agent NOMBRE
   hrp graph review <run-id> [--agent NOMBRE]   (audita el PLAN y reporta hallazgos de grafo)
   hrp graph review done <run-id> --agent NOMBRE [--findings N]   (cierra tu pasada de auditoría del plan)
-  hrp node discover <run-id> <node.json>
+  hrp node discover <run-id> <node.json> [--agent NOMBRE]   (se hereda de HRP_AGENT; quien descubre conserva el nodo)
   hrp node approve <run-id> [node-id...]
   hrp node assign <run-id> <node-id> <agente|->
   hrp node start <run-id> <node-id> [--agent NOMBRE]
@@ -459,8 +530,9 @@ Uso:
   hrp node complete <run-id> <node-id> [--tokens N]
   hrp activity publish <run-id> --type run|graph|inspect|node|patch|verify|note --summary TEXTO [--detail TEXTO] [--node ID] [--agent NOMBRE]
   hrp agent status <run-id> --agent NOMBRE --phase idle|waiting|executing|reviewing|completed|failed --summary TEXTO [--detail TEXTO] [--node ID] [--completed N --total N --reviewed ID,ID --remaining ID,ID]
+  hrp dispatch <run-id> [--max N] [--out-dir DIR]   (genera en paralelo los nodos delegados compatibles)
   hrp ollama status
-  hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--clear-key]
+  hrp ollama config [--api-key KEY] [--model MODELO] [--base-url URL] [--tier NIVEL=MODELO] [--clear-key]
   hrp ollama exec <run-id> <node-id> [--model MODELO]
   hrp ollama run --prompt-file PATH|- [--system-file PATH] [--model MODELO] [--run RUN_ID --node NODE_ID]
   hrp ollama review <run-id> [--node ID] [--model MODELO]
@@ -476,10 +548,12 @@ Uso:
   hrp finding reopen <finding-id> --author NOMBRE --body RAZON
   hrp finding escalate <finding-id>
   hrp state <run-id>
+  hrp whoami                                         (identidad de esta sesión y de dónde sale)
   hrp version
   hrp attention [run-id] [--agent NOMBRE] [--run RUN_ID] [--workspace PATH] [--wait SEGUNDOS]
+  (--agent se hereda de HRP_AGENT: es la identidad de esta sesión, p. ej. claude:opus)
   hrp attention release <run-id> --agent NOMBRE
-  hrp hook <stop|session-start> --agent NOMBRE   (lee el evento por stdin; lo instalan los agentes)
+  hrp hook <stop|session-start> --agent NOMBRE   (lee el evento por stdin; lo instalan los agentes; HRP_AGENT gana sobre --agent)
   hrp wait approval <run-id> [--agent NOMBRE] [--timeout SEGUNDOS]
   hrp agent install <claude|codex|antigravity|all>   (skill + MCP + despertador nativo del modelo)
   hrp agent status                                   (qué quedó instalado por modelo)
@@ -547,7 +621,7 @@ async function main() {
 
   if (group === "run" && action === "create") {
     const projectId = await resolveProject(value("--project"));
-    const agent = value("--agent") ?? value("--author");
+    const agent = agentValue() ?? value("--author");
     const body = { title: value("--title"), requirement: value("--requirement") };
     if (agent) body.agent = agent;
     const run = await api(`/api/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify(body) });
@@ -583,16 +657,16 @@ async function main() {
   }
 
   if (group === "graph" && action === "publish") {
-    const agent = value("--agent");
-    if (!agent) throw new Error("Uso: hrp graph publish <run-id> <graph.json> --agent NOMBRE");
+    const agent = agentValue();
+    if (!agent) throw new Error("Uso: hrp graph publish <run-id> <graph.json> --agent NOMBRE (o declara la identidad de la sesión en HRP_AGENT)");
     return print(await api(`/api/runs/${first}/graph`, { method: "POST", body: JSON.stringify({ ...readJson(second), agent }) }));
   }
   if (group === "graph" && action === "review" && first === "done") {
     // Cierre de la pasada. Se publica igual con hallazgos que sin ellos, porque
     // lo que la ronda registra es la opinión del auditor, no su conformidad con
     // el plan ni un permiso para el humano.
-    const agent = value("--agent", process.env.HRP_AGENT);
-    if (!second || !agent) throw new Error("Uso: hrp graph review done <run-id> --agent NOMBRE [--findings N]");
+    const agent = agentValue();
+    if (!second || !agent) throw new Error("Uso: hrp graph review done <run-id> --agent NOMBRE (o HRP_AGENT) [--findings N]");
     const findings = Number(value("--findings", "0"));
     if (!Number.isInteger(findings) || findings < 0) throw new Error("--findings espera un entero no negativo");
     const result = await api(`/api/runs/${encodeURIComponent(second)}/plan-pass`, { method: "POST", body: JSON.stringify({ agent, findings }) });
@@ -620,7 +694,7 @@ async function main() {
     let pack = "";
     if (sessionAuditors.length) {
       const params = new URLSearchParams();
-      if (value("--agent")) params.set("agent", value("--agent"));
+      if (agentValue()) params.set("agent", agentValue());
       const query = params.toString() ? `?${params}` : "";
       const packResponse = await fetch(`${url}/api/runs/${encodeURIComponent(first)}/plan-pack${query}`)
         .catch((error) => { throw new Error(`HRP no responde en ${url}: ${error.message}`); });
@@ -645,7 +719,11 @@ async function main() {
     return;
   }
   if (group === "node" && action === "discover") {
-    return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(readJson(second)) }));
+    // Quien descubre conserva el nodo: la identidad viaja junto a la spec para
+    // que el servidor no tenga que devolvérselo al modelo base.
+    const agent = agentValue();
+    const body = { ...readJson(second), ...(agent ? { agent } : {}) };
+    return print(await api(`/api/runs/${first}/nodes`, { method: "POST", body: JSON.stringify(body) }));
   }
   if (group === "node" && action === "approve") {
     const nodeIds = args.slice(3).filter((value) => value !== "--force");
@@ -660,7 +738,7 @@ async function main() {
     return print(await api(`/api/runs/${first}/nodes/${second}/assign`, { method: "POST", body: JSON.stringify({ assignee: assignee === "-" ? null : assignee }) }));
   }
   if (group === "node" && (action === "start" || action === "retry")) {
-    const agent = value("--agent");
+    const agent = agentValue();
     return print(await api(`/api/runs/${first}/nodes/${second}/start`, { method: "POST", body: JSON.stringify(agent ? { agent } : {}) }));
   }
   if (group === "node" && action === "complete") {
@@ -741,7 +819,7 @@ async function main() {
   if (group === "activity" && action === "publish") {
     return print(await api(`/api/runs/${first}/activity`, { method: "POST", body: JSON.stringify({
       type: value("--type", "note"), message: value("--summary"), detail: value("--detail"), nodeId: value("--node"),
-      agent: value("--agent") ?? value("--author"),
+      agent: agentValue() ?? value("--author"),
     }) }));
   }
   if (group === "agent" && action === "install") {
@@ -770,10 +848,10 @@ async function main() {
   }
 
   if (group === "agent" && action === "status") {
-    const agent = value("--agent");
+    const agent = agentValue();
     const phase = value("--phase");
     const summary = value("--summary");
-    if (!first || !agent || !phase || !summary) throw new Error("Uso: hrp agent status <run-id> --agent NOMBRE --phase FASE --summary TEXTO");
+    if (!first || !agent || !phase || !summary) throw new Error("Uso: hrp agent status <run-id> --agent NOMBRE (o HRP_AGENT) --phase FASE --summary TEXTO");
     const splitIds = (name) => (value(name) ?? "").split(",").map((item) => item.trim()).filter(Boolean);
     const count = (name) => {
       const parsed = Number(value(name));
@@ -791,6 +869,16 @@ async function main() {
     if (value("--detail")) body.detail = value("--detail");
     if (value("--node")) body.currentNodeId = value("--node");
     return print(await api(`/api/runs/${encodeURIComponent(first)}/agents/${encodeURIComponent(agent)}/status`, { method: "PUT", body: JSON.stringify(body) }));
+  }
+  // Con varias sesiones del mismo modelo en juego, una sesión necesita poder
+  // comprobar con qué identidad la ve HRP antes de publicar evidencia con ella.
+  if (group === "whoami") {
+    const agent = agentValue();
+    const source = value("--agent") ? "bandera --agent" : process.env.HRP_AGENT ? "variable HRP_AGENT" : "sin declarar";
+    if (json) return print({ agent: agent ?? null, source });
+    return print(agent
+      ? `Identidad de esta sesión: ${agent} (${source})`
+      : "Identidad sin declarar: exporta HRP_AGENT (p. ej. HRP_AGENT=claude:opus) o pasa --agent NOMBRE en cada comando.");
   }
   if (group === "version") {
     const local = localVersion();
@@ -814,7 +902,12 @@ async function main() {
   if (group === "hook") {
     // Un hook jamás debe romper la sesión del agente: cualquier problema se
     // reporta por stderr y se deja continuar como si HRP no existiera.
-    const agent = value("--agent", process.env.HRP_AGENT);
+    // Única inversión de precedencia del CLI: el instalador escribe un hook por
+    // modelo con la familia (--agent claude) y ese archivo lo comparten todas
+    // las sesiones de ese modelo, así que la identidad de la sesión concreta
+    // —la que sí distingue "claude:fable" de "claude:opus"— tiene que ganar.
+    const agent = process.env.HRP_AGENT ?? value("--agent");
+    const declarada = Boolean(process.env.HRP_AGENT);
     const event = readHookEvent();
     const workspace = typeof event.cwd === "string" && event.cwd ? event.cwd : process.cwd();
     const sessionId = event.session_id ?? event.sessionId;
@@ -825,22 +918,27 @@ async function main() {
       if (!(await healthy())) return;
       if (action === "session-start") {
         const signal = await attention({ agent, workspace, waitSeconds: 0 });
-        if (!signal.runs?.length) return;
         // El barrido ya viene ordenado por prioridad. Un workspace veterano
         // acumula decenas de ejecuciones vivas: listarlas todas convierte el
         // contexto en ruido, así que sólo entran las que reclaman algo y como
         // mucho tres, diciendo cuántas quedaron fuera.
-        const relevantes = signal.runs.filter((candidate) => candidate.actionable || candidate.waiting);
-        if (!relevantes.length) return;
+        const relevantes = (signal.runs ?? []).filter((candidate) => candidate.actionable || candidate.waiting);
+        // La identidad encabeza el contexto: es lo primero que la sesión debe
+        // saber para no publicar evidencia como si fuera otra sesión del mismo
+        // modelo. Si la declaró HRP_AGENT se anuncia aunque no haya trabajo,
+        // porque ahí el humano sí repartió papeles y espera que se respeten.
+        const identidad = `Tu identidad en HRP durante esta sesión es ${agent}${declarada ? " (declarada en HRP_AGENT)" : " (valor por omisión del hook; declara HRP_AGENT para separar sesiones del mismo modelo)"}: úsala en --agent y en las herramientas MCP, o compruébala con 'hrp whoami'.`;
+        const anunciar = (contexto) => process.stdout.write(JSON.stringify({
+          hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: contexto },
+        }));
+        if (!relevantes.length) {
+          if (declarada) anunciar(identidad);
+          return;
+        }
         const visibles = relevantes.slice(0, 3);
         const detalle = visibles.map((candidate) => `- ${candidate.runId} [${candidate.kind}]: ${candidate.directive}`).join("\n");
         const resto = relevantes.length - visibles.length;
-        process.stdout.write(JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: "SessionStart",
-            additionalContext: `HRP tiene ${relevantes.length} ${relevantes.length === 1 ? "ejecución viva" : "ejecuciones vivas"} en este workspace para ${agent}${resto > 0 ? ` (las ${visibles.length} más urgentes)` : ""}:\n${detalle}${resto > 0 ? `\n(+${resto} más; consúltalas con 'hrp attention --agent ${agent} --json')` : ""}\nRetoma con 'hrp attention --agent ${agent} --wait 600' o con la herramienta MCP hrp_attention; no abras una ejecución nueva para el mismo requerimiento.`,
-          },
-        }));
+        anunciar(`${identidad}\nHRP tiene ${relevantes.length} ${relevantes.length === 1 ? "ejecución viva" : "ejecuciones vivas"} en este workspace para ${agent}${resto > 0 ? ` (las ${visibles.length} más urgentes)` : ""}:\n${detalle}${resto > 0 ? `\n(+${resto} más; consúltalas con 'hrp attention --agent ${agent} --json')` : ""}\nRetoma con 'hrp attention --agent ${agent} --wait 600' o con la herramienta MCP hrp_attention; no abras una ejecución nueva para el mismo requerimiento.`);
         return;
       }
       if (action !== "stop") throw new Error("Uso: hrp hook <stop|session-start> --agent NOMBRE");
@@ -884,7 +982,7 @@ async function main() {
   }
 
   if (group === "attention") {
-    const agent = value("--agent", process.env.HRP_AGENT);
+    const agent = agentValue();
     if (!agent) throw new Error("Falta --agent NOMBRE (o la variable HRP_AGENT): la señal de HRP siempre es para un agente concreto");
     if (action === "release") {
       const state = await releaseAttention({ agent, runId: first });
@@ -910,8 +1008,8 @@ async function main() {
     const deadline = Date.now() + timeoutSeconds * 1000;
     // Sin --agent la espera es la del modelo base: la señal siempre pertenece a
     // un agente concreto y el servidor la resuelve por identidad.
-    const agent = value("--agent") ?? (await api(`/api/runs/${first}`)).run.baseAgent;
-    if (!agent) throw new Error("Esta ejecución todavía no tiene modelo base; indica --agent NOMBRE");
+    const agent = agentValue() ?? (await api(`/api/runs/${first}`)).run.baseAgent;
+    if (!agent) throw new Error("Esta ejecución todavía no tiene modelo base; indica --agent NOMBRE o declara HRP_AGENT");
     // Anuncia presencia desde que comienza la espera: el panel deja de mostrar
     // "sin señal" aunque el agente aún no haya iniciado ningún nodo.
     await api(`/api/runs/${first}/agents`, { method: "POST", body: JSON.stringify({ agent }) }).catch(() => undefined);
@@ -967,6 +1065,73 @@ async function main() {
       })));
     }
   }
+  if (group === "dispatch") {
+    // Paralelismo real: el modelo base deja de bloquearse en una consulta por
+    // nodo. El comando sólo GENERA; revisar, aplicar, verificar y completar
+    // siguen siendo del base, que es lo que impide autocertificar lo delegado.
+    const runId = action;
+    if (!runId) throw new Error("Uso: hrp dispatch <run-id> [--max N] [--out-dir DIR]");
+    const maxLanes = Number(value("--max", "3"));
+    if (!Number.isInteger(maxLanes) || maxLanes < 1) throw new Error("--max debe ser un entero mayor o igual a 1");
+    const settings = await api("/api/settings/ollama");
+    if (!settings.configured) throw new Error("Ollama no está configurado: guarda la API key desde el panel o con 'hrp ollama config --api-key ...'");
+    const detail = await api(`/api/runs/${encodeURIComponent(runId)}`);
+    const planDispatch = await loadDispatchPlanner();
+    const plan = planDispatch(detail, { settings, maxLanes });
+    const outDir = path.resolve(value("--out-dir") ?? mkdtempSync(path.join(os.tmpdir(), "hrp-dispatch-")));
+    mkdirSync(outDir, { recursive: true });
+    const nodesById = new Map(detail.nodes.map((node) => [node.id, node]));
+    const skipped = [...plan.skipped];
+    // Los arranques van en serie a propósito: el servidor es la autoridad sobre
+    // qué puede correr junto, y lanzarlos de a uno deja que rechace con criterio
+    // en vez de aceptar una carrera entre dos peticiones simultáneas.
+    const started = [];
+    for (const item of plan.batch) {
+      try {
+        await api(`/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(item.nodeId)}/start`,
+          { method: "POST", body: JSON.stringify({ agent: item.lane }) });
+        started.push(item);
+      } catch (error) {
+        skipped.push({ nodeId: item.nodeId, reason: `el servidor rechazó el arranque: ${error.message}` });
+      }
+    }
+    const results = await Promise.all(started.map(async (item) => {
+      const node = nodesById.get(item.nodeId);
+      try {
+        const result = await ollamaChat({ prompt: buildDelegatePrompt(node), model: item.model, runId, nodeId: item.nodeId });
+        const answer = String(result.content ?? "").trim();
+        if (answer.startsWith("NECESITO:")) {
+          // El protocolo funcionó: el modelo pidió lo que le faltaba en vez de
+          // inventarlo. Enriquece la spec o los contextFiles y republica.
+          throw new Error(`el modelo pidió más contexto — ${answer.split("\n")[0]}`);
+        }
+        const outFile = path.join(outDir, `${item.nodeId}.out`);
+        writeFileSync(outFile, `${answer}\n`);
+        return { ...item, model: result.model ?? item.model, outFile, promptTokens: result.promptTokens, completionTokens: result.completionTokens };
+      } catch (error) {
+        // Un fallo no cancela a los demás: el nodo queda en curso y el modelo
+        // base decide si lo reintenta o lo implementa él mismo.
+        await api(`/api/runs/${encodeURIComponent(runId)}/activity`, {
+          method: "POST",
+          body: JSON.stringify({ type: "note", message: `Despacho fallido en ${item.lane}: ${error.message}`, nodeId: item.nodeId, agent: item.lane }),
+        }).catch(() => undefined);
+        return { ...item, error: error.message };
+      }
+    }));
+    if (json) return print({ runId, outDir, dispatched: results, skipped });
+    if (!results.length) print("No se despachó ningún nodo.");
+    for (const result of results) {
+      print(result.error
+        ? `✗ ${result.nodeId} · ${result.lane} — ${result.error}`
+        : `✓ ${result.nodeId} · ${result.lane} · prompt ${result.promptTokens ?? "?"} tokens · respuesta ${result.completionTokens ?? "?"} tokens → ${result.outFile}`);
+    }
+    for (const item of skipped) print(`· ${item.nodeId} en espera: ${item.reason}`);
+    if (results.some((result) => !result.error)) {
+      print("Revisa cada salida, aplícala al workspace y cierra el nodo con patch, verify y complete.");
+    }
+    return;
+  }
+
   if (group === "ollama") {
     if (action === "status") return print(await api("/api/settings/ollama"));
     if (action === "config") {
@@ -975,7 +1140,15 @@ async function main() {
       else if (value("--api-key")) body.apiKey = value("--api-key");
       if (value("--model")) body.model = value("--model");
       if (value("--base-url")) body.baseUrl = value("--base-url");
-      if (!Object.keys(body).length) throw new Error("Nada que actualizar: usa --api-key, --model, --base-url o --clear-key");
+      const tiers = {};
+      for (const entry of values("--tier")) {
+        const separator = entry.indexOf("=");
+        if (separator < 1) throw new Error(`Formato de --tier inválido: '${entry}'. Usa --tier NIVEL=MODELO, o NIVEL= para borrarlo`);
+        // Cadena vacía = borrar el nivel para que vuelva a heredar el modelo.
+        tiers[entry.slice(0, separator)] = entry.slice(separator + 1);
+      }
+      if (Object.keys(tiers).length) body.tiers = tiers;
+      if (!Object.keys(body).length) throw new Error("Nada que actualizar: usa --api-key, --model, --base-url, --tier NIVEL=MODELO o --clear-key");
       return print(await api("/api/settings/ollama", { method: "PUT", body: JSON.stringify(body) }));
     }
     if (action === "run") {
@@ -997,38 +1170,18 @@ async function main() {
       const detail = await api(`/api/runs/${first}`);
       const node = detail.nodes.find((candidate) => candidate.id === second);
       if (!node) throw new Error(`Nodo desconocido en la ejecución: ${second}`);
-      const filePath = path.resolve(process.cwd(), node.file);
-      const exists = existsSync(filePath);
-      const content = exists ? readFileSync(filePath, "utf8") : "";
-      // Contexto de referencia aprobado en el nodo: los contratos reales que
-      // el modelo modesto necesita ver para no inventar nada.
-      const references = [];
-      for (const contextFile of node.contextFiles ?? []) {
-        const contextPath = path.resolve(process.cwd(), contextFile);
-        if (!existsSync(contextPath)) throw new Error(`El archivo de contexto del nodo no existe en el workspace: ${contextFile}`);
-        references.push({ file: contextFile, content: readFileSync(contextPath, "utf8") });
-      }
-      if (content.length + references.reduce((sum, ref) => sum + ref.content.length, 0) > 200_000) {
-        throw new Error(`El archivo del nodo más su contexto exceden 200KB; usa 'hrp ollama run --prompt-file' con solo los fragmentos relevantes`);
-      }
-      const prompt = [
-        "Eres un asistente de programación. Aplica la siguiente operación y devuelve ÚNICAMENTE el contenido completo del archivo resultante, sin explicaciones, sin markdown y sin fences de código.",
-        "",
-        `Archivo: ${node.file}`,
-        `Símbolo u objetivo: ${node.symbol}`,
-        `Operación: ${node.title}`,
-        `Especificación: ${node.description}`,
-        `Motivo: ${node.rationale}`,
-        "",
-        "No cambies nada fuera de lo especificado: conserva el resto del archivo exactamente igual.",
-        "Si la especificación no define el contrato de algo que necesitas (una función, un campo, un formato), NO lo supongas ni lo inventes: responde únicamente una línea que empiece con 'NECESITO: ' describiendo qué te falta.",
-        ...references.flatMap((ref) => ["", `REFERENCIA (solo lectura, NO la modifiques): ${ref.file}`, "", ref.content.trimEnd()]),
-        "",
-        exists ? `Contenido actual de ${node.file}:` : `El archivo ${node.file} no existe todavía: genera su contenido completo.`,
-        ...(exists ? ["", content] : []),
-      ].join("\n");
+      const prompt = buildDelegatePrompt(node);
       const body = { prompt, runId: first, nodeId: second };
-      if (value("--model")) body.model = value("--model");
+      // El modelo lo decide el nodo: su carril si lo declara y, si no, su
+      // dificultad. --model queda como anulación explícita del humano.
+      const { laneModel, modelForDifficulty } = await loadSharedProtocol();
+      const settings = await api("/api/settings/ollama");
+      body.model = value("--model")
+        // executedBy antes que assignee: el nodo pudo arrancar en un carril
+        // concreto aunque estuviera asignado a la familia 'ollama'.
+        ?? laneModel(node.executedBy)
+        ?? laneModel(node.assignee)
+        ?? modelForDifficulty({ model: settings.model, tiers: settings.tiers ?? {} }, node.difficulty);
       const result = await ollamaChat(body);
       const answer = String(result.content ?? "").trim();
       if (answer.startsWith("NECESITO:")) {
@@ -1201,7 +1354,7 @@ async function main() {
     // la sesión del modelo revisor (o canalizarlo a un archivo).
     if (!first) throw new Error("Uso: hrp review pack <run-id> [--node ID] [--agent AGENTE]");
     const nodeId = value("--node");
-    const agent = value("--agent") ?? value("--author");
+    const agent = agentValue() ?? value("--author");
     const params = new URLSearchParams();
     if (nodeId) params.set("nodeId", nodeId);
     if (agent) params.set("agent", agent);

@@ -178,10 +178,35 @@ Antes de modificar archivos, inspecciona el código suficiente para identificar 
 Publica el grafo:
 
 ```sh
-hrp graph publish "$run_id" graph.json --agent codex
+hrp graph publish "$run_id" graph.json   # --agent NOMBRE sólo si no declaraste HRP_AGENT
 ```
 
 Declara tu identidad con `--agent` al publicar: el primer publicador queda registrado como **modelo base** de la ejecución. El modelo base es el ejecutor por defecto de todos los nodos sin asignación explícita, y cualquier nodo descubierto durante la ejecución se le asigna automáticamente, para que el proceso no quede colgado esperando a otro agente que no sabe que existe trabajo nuevo.
+
+### Identidad de sesión
+
+Una identidad es `familia` (`claude`, `codex`, `antigravity`) o `familia:sesión` (`claude:opus`, `codex:auditor`). La identidad —no el modelo— es la unidad con la que HRP cuenta todo: sostiene **un nodo en vuelo y un estado de agente por identidad**, y dirige a ella la señal de atención. Por eso dos sesiones del mismo modelo que compartan identidad se pisan el estado, y por eso cada sesión debe declarar la suya.
+
+La identidad se fija con `HRP_AGENT` al lanzar la sesión, y desde ahí el CLI la hereda en todos los comandos que preguntan `--agent` (la bandera explícita sigue ganando). Un reparto de papeles se ve así:
+
+```sh
+HRP_AGENT=claude:fable claude    # publica el grafo y audita
+HRP_AGENT=claude:opus  claude    # implementa
+HRP_AGENT=codex:auditor codex    # sólo audita
+```
+
+- `hrp whoami` imprime la identidad resuelta y de dónde sale (bandera, variable o sin declarar).
+- En los **hooks** nativos `HRP_AGENT` gana sobre `--agent`: el instalador escribe un hook por modelo con la familia y ese archivo lo comparten todas sus sesiones, así que sólo la variable distingue una de otra. El contexto de inicio de sesión anuncia la identidad con la que HRP ve a esa sesión.
+- En el **MCP**, el servidor se lanza dentro de la sesión y hereda su entorno: `HRP_AGENT` corrige el argumento que nombra a quien llama, de modo que una llamada escrita como `claude` se publica igual como `claude:opus`. El argumento que nombra a otro agente (el `assignee` de una asignación) nunca se toca.
+- El humano ve cada identidad en el dock del panel y da de alta una sesión nueva **con un papel**: que audite, o que implemente la operación seleccionada. Una identidad sin papel no participa en la ejecución ni recibe señal.
+
+Tres consecuencias del reparto, que un adaptador debe respetar:
+
+1. **Los nodos sin asignación pertenecen al modelo base.** Si la sesión que planea no es la que implementa, el grafo enruta el trabajo con `suggestedAgent` (`"claude:opus"`) o el humano lo asigna en el panel; no basta con que la otra sesión esté conectada.
+2. **El trabajo descubierto se queda con quien lo descubre** (`hrp node discover` manda la identidad), con el modelo base como respaldo cuando no se declara ninguna. Así el implementador conserva lo que encuentra en vez de devolvérselo al planificador.
+3. **Un carril `ollama:<modelo>` no es una sesión**: comparte la forma `familia:etiqueta` pero no abre sesión propia — lo administra el modelo base y su presencia es la API key configurada, no una conexión.
+
+Advertencia sobre la auditoría: para HRP dos sesiones del mismo modelo son identidades independientes y pueden auditarse entre sí, pero comparten los puntos ciegos del modelo. Una revisión verdaderamente independiente necesita al menos un auditor de otra familia.
 
 Requisitos del grafo:
 
@@ -233,7 +258,7 @@ hrp node approve "$run_id" nodo-a nodo-b # nodos concretos
 Después de publicar el grafo, el adaptador debe esperar la aprobación sin exigir un segundo aviso del humano. La forma estándar en cualquier agente es el comando bloqueante:
 
 ```sh
-hrp wait approval "$run_id" --agent codex --timeout 300
+hrp wait approval "$run_id" --timeout 300
 ```
 
 Sale con éxito en cuanto hay trabajo aprobado disponible para esa identidad (o para cualquiera, si se omite `--agent`); al agotar el timeout devuelve error con la instrucción de reintentar. Además, al comenzar la espera con `--agent` el comando **registra la presencia del agente** en la ejecución, de modo que el panel deja de mostrar "sin señal" desde que el agente se engancha, no hasta su primer `start`. Un adaptador sin CLI puede sondear `GET /api/runs/:runId` hasta ver `approved: true` en sus nodos, y anunciar su presencia con `POST /api/runs/:runId/agents`. Los comandos de aprobación son controles humanos: el adaptador sólo puede ejecutarlos cuando el usuario le ordena explícitamente aprobar nodos, nunca por inferirlo de la autonomía general de la tarea. Volver a publicar el grafo devuelve al gate los nodos no completados.
@@ -244,7 +269,7 @@ El humano puede además repartir el trabajo asignando nodos a agentes concretos:
 hrp node assign "$run_id" nodo-a codex   # '-' retira la asignación
 ```
 
-Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a --agent codex`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base). La asignación se congela mientras el nodo está en curso: el humano solo puede reasignar nodos pendientes o fallidos.
+Un adaptador debe declarar su identidad al iniciar (`hrp node start "$run_id" nodo-a`, con la identidad heredada de `HRP_AGENT` o forzada con `--agent`); si el nodo está asignado a otro agente, el inicio se rechaza. Trabaja únicamente los nodos asignados a tu identidad o sin asignar (los nodos sin asignar pertenecen al modelo base). La asignación se congela mientras el nodo está en curso: el humano solo puede reasignar nodos pendientes o fallidos.
 
 Cada inicio con identidad registra la **presencia** del agente en la ejecución (`seenAgents`). El panel usa esa señal para advertir al humano cuando un nodo está asignado a un modelo que nunca se ha presentado, ofrecerle el comando que debe pegar en ese modelo, y permitirle devolver el nodo al modelo base si el asignado no responde.
 
@@ -252,7 +277,6 @@ La presencia no equivale a actividad. HRP actualiza automáticamente el estado o
 
 ```sh
 hrp agent status "$run_id" \
-  --agent codex \
   --phase reviewing \
   --summary "Auditando contratos entre backend y CLI" \
   --completed 2 --total 5 \
@@ -622,6 +646,20 @@ Flujo de delegación:
 4. `hrp ollama status` muestra la configuración vigente (key enmascarada, modelo y URL base); `hrp ollama run` reporta por stderr el consumo upstream (tokens de prompt y respuesta), útil para `node complete --tokens`.
 
 Cómo audita el humano lo que corre ollama: la vista **Actividad** registra cada consulta con su modelo y tokens (y a qué nodo pertenece); la tarjeta del nodo muestra `En curso (ollama)` mientras se ejecuta y `por ollama` con su costo al terminar; y `hrp state <run-id> --json` expone `executedBy` y `tokens` por nodo. Ollama no ejecuta nada en la máquina local: cada llamada es una petición HTTP del servicio a Ollama Cloud y no existe ningún proceso local que vigilar.
+
+**Dificultad y carriles: quién ataca cada nodo.** Al publicar el grafo, cada nodo declara su `difficulty` — `trivial`, `standard` o `hard` (ausente equivale a `standard`)—. Esa dificultad es semántica aprobada por el humano y es lo que decide **qué modelo** implementa el nodo: el roster de Ollama asocia un modelo a cada nivel (`hrp ollama config --tier trivial=MODELO --tier standard=OTRO`, o los campos «Modelo por dificultad» del panel), y un nivel sin modelo hereda el modelo por defecto. La dificultad `hard` no se delega: esas operaciones se quedan con el modelo base.
+
+Un ejecutor delegado se nombra `ollama` (modelo por defecto) o `ollama:<modelo>` para un modelo concreto. Ese carril **es una identidad ejecutora distinta**, y como HRP sostiene un solo nodo por identidad, el paralelismo real equivale al número de modelos distintos configurados o asignados. Un nodo asignado a la familia `ollama` puede arrancarlo cualquier carril; `executedBy` conserva el modelo que realmente lo implementó.
+
+**Despacho concurrente.** En vez de encadenar un `hrp ollama exec` bloqueante por nodo, el modelo base lanza el lote:
+
+```sh
+hrp dispatch RUN_ID [--max N] [--out-dir DIR]
+```
+
+`dispatch` calcula qué nodos delegados pueden generarse a la vez —aprobados, con dependencias completas, sin conflicto entre sí ni con lo que ya está en curso, y con su carril libre—, los arranca uno a uno contra el servidor (que sigue siendo la autoridad sobre qué puede correr junto) y lanza las consultas **en paralelo**, cada una con el modelo de su carril. Escribe la salida de cada nodo en `<out-dir>/<node-id>.out` e informa carril, modelo, tokens y, para lo que no despachó, la razón exacta. Un fallo de un nodo no cancela el lote: queda una nota en Actividad y ese nodo sigue en curso para que el base lo retome.
+
+El despacho **sólo genera**. Revisar cada salida, aplicar el cambio al workspace, publicar el diff, verificar y completar siguen siendo del modelo base, que es lo que impide que el trabajo delegado se autocertifique. Tampoco relaja ninguna regla: los conflictos por archivo, contexto aprobado y dependencias se aplican igual, y mientras haya nodos en vuelo la verificación de cada uno debe seguir nombrando su archivo, su símbolo o su id — un comando de proyecto entero leería lo que otro carril tiene a medio escribir.
 
 **Exactitud del modelo delegado.** Los modelos modestos alucinan cuando les falta información y el formato los obliga a responder completo. HRP ataca las dos causas:
 

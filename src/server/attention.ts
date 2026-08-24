@@ -1,4 +1,4 @@
-import { auditorIdentity, computeAuditorConsensus, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
+import { auditorIdentity, computeAuditorConsensus, isDelegateAgent, nodeCoverageIsCurrent, type RunDetail } from "../shared/protocol.js";
 
 // Señales que una ejecución puede dar a un agente concreto, declaradas en
 // orden de prioridad: las cinco primeras exigen acción inmediata, las
@@ -60,11 +60,12 @@ const flags: Record<AttentionKind, { actionable: boolean; terminal: boolean; wai
 };
 
 // Los nodos sin asignación pertenecen exclusivamente al modelo base. Los
-// asignados a ollama también los administra el base porque no abren sesión.
+// delegados también los administra el base porque no abren sesión: vale para
+// 'ollama' y para cualquier carril 'ollama:<modelo>' del enrutado por dificultad.
 export function nodesForAgent(detail: RunDetail, agent: string) {
   return detail.nodes.filter((node) => node.assignee === agent
     || (detail.run.baseAgent === agent && !node.assignee)
-    || (node.assignee === "ollama" && detail.run.baseAgent === agent));
+    || (isDelegateAgent(node.assignee) && detail.run.baseAgent === agent));
 }
 
 // Lo que un auditor debe revisar es el trabajo de los demás: el contrato le
@@ -74,7 +75,7 @@ export function auditableNodes(detail: RunDetail, agent: string) {
   return detail.nodes.filter((node) => auditorIdentity(node.executedBy ?? node.assignee) !== auditorIdentity(agent));
 }
 
-function dependsOn(nodesById: Map<string, RunDetail["nodes"][number]>, nodeId: string, dependencyId: string, seen = new Set<string>()): boolean {
+export function dependsOn(nodesById: Map<string, RunDetail["nodes"][number]>, nodeId: string, dependencyId: string, seen = new Set<string>()): boolean {
   if (nodeId === dependencyId) return true;
   if (seen.has(nodeId)) return false;
   seen.add(nodeId);
@@ -83,7 +84,10 @@ function dependsOn(nodesById: Map<string, RunDetail["nodes"][number]>, nodeId: s
   return node.dependencies.some((dependency) => dependsOn(nodesById, dependency, dependencyId, seen));
 }
 
-function concurrentConflict(candidate: RunDetail["nodes"][number], running: RunDetail["nodes"][number], nodesById: Map<string, RunDetail["nodes"][number]>): string | undefined {
+// La comparten el resolutor de atención y el planificador de despacho: si el
+// lote concurrente usara su propia copia, podría proponer un par que el
+// servidor rechaza —o peor, dos ediciones que se pisan sobre el mismo archivo.
+export function concurrentConflict(candidate: RunDetail["nodes"][number], running: RunDetail["nodes"][number], nodesById: Map<string, RunDetail["nodes"][number]>): string | undefined {
   if (candidate.file === running.file) return `ambos modifican ${candidate.file}`;
   if (running.contextFiles?.includes(candidate.file)) return `${running.id} usa ${candidate.file} como contexto aprobado`;
   if (candidate.contextFiles?.includes(running.file)) return `${candidate.id} leería ${running.file} mientras ${running.id} lo cambia`;

@@ -1332,4 +1332,85 @@ describe("HrpStore", () => {
       expect(() => store.recordPlanPass(run.id, "antigravity", 0)).toThrow(/not an auditor/);
     });
   });
+  // Carriles de ejecución delegada: la concurrencia sale de que 'ollama:<modelo>'
+  // sea una identidad ejecutora distinta, no de relajar ninguna exclusión.
+  describe("delegated lanes", () => {
+    const delegated = (id: string) => ({
+      id, file: `${id}.ts`, symbol: id, title: id, description: "Work", rationale: "Required",
+      dependencies: [], suggestedAgent: "ollama", difficulty: "trivial" as const,
+    });
+
+    it("keeps the declared difficulty across republications and requires re-approval when it changes", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: [delegated("a")] }, "claude");
+      expect(store.getNode(run.id, "a")?.difficulty).toBe("trivial");
+      approveGraph(store, run.id);
+
+      store.publishGraph(run.id, { nodes: [delegated("a")] }, "claude");
+      expect(store.getNode(run.id, "a")?.approved).toBe(true);
+
+      store.publishGraph(run.id, { nodes: [{ ...delegated("a"), difficulty: "hard" }] }, "claude");
+      expect(store.getNode(run.id, "a")?.difficulty).toBe("hard");
+      // La dificultad decide a qué modelo se enruta: cambiarla cambia quién implementa.
+      expect(store.getNode(run.id, "a")?.approved).toBe(false);
+    });
+
+    it("runs compatible nodes in different lanes at the same time", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: [delegated("a"), delegated("b")] }, "claude");
+      approveGraph(store, run.id);
+
+      store.startNode(run.id, "a", "ollama:modelo-uno");
+      store.startNode(run.id, "b", "ollama:modelo-dos");
+
+      expect(store.getNode(run.id, "a")?.executedBy).toBe("ollama:modelo-uno");
+      expect(store.getNode(run.id, "b")?.executedBy).toBe("ollama:modelo-dos");
+    });
+
+    it("still refuses two nodes in the same lane and foreign work for a session agent", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: [delegated("a"), delegated("b")] }, "claude");
+      approveGraph(store, run.id);
+      store.startNode(run.id, "a", "ollama:modelo-uno");
+
+      expect(() => store.startNode(run.id, "b", "ollama:modelo-uno")).toThrow(/already running a/);
+      expect(() => store.startNode(run.id, "b", "codex")).toThrow(/assigned to ollama/);
+    });
+
+    it("keeps rejecting lanes that would edit the same file", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: [
+        { ...delegated("a"), file: "shared.ts" },
+        { ...delegated("b"), file: "shared.ts" },
+      ] }, "claude");
+      approveGraph(store, run.id);
+      store.startNode(run.id, "a", "ollama:modelo-uno");
+
+      expect(() => store.startNode(run.id, "b", "ollama:modelo-dos")).toThrow(/both modify shared.ts/);
+    });
+
+    it("counts every delegated lane as work of the base model", () => {
+      const { store, run } = fixture();
+      store.publishGraph(run.id, { nodes: [delegated("a"), delegated("b")] }, "claude");
+      approveGraph(store, run.id);
+      store.startNode(run.id, "a", "ollama:modelo-uno");
+
+      store.helloAgent(run.id, "claude");
+      const base = store.getRunDetail(run.id)?.agentStates.find((state) => state.agent === "claude");
+      expect(base?.total).toBe(2);
+    });
+
+    it("merges and clears delegate tiers without losing the API key", () => {
+      const { store } = fixture();
+      store.setOllamaSettings({ apiKey: "secreto", model: "base-model" });
+      store.setOllamaSettings({ tiers: { trivial: "cheap" } });
+      store.setOllamaSettings({ tiers: { standard: "mid" } });
+      expect(store.getOllamaSettings().tiers).toEqual({ trivial: "cheap", standard: "mid" });
+
+      store.setOllamaSettings({ tiers: { trivial: "" } });
+      expect(store.getOllamaSettings().tiers).toEqual({ standard: "mid" });
+      expect(store.getOllamaSettings().apiKey).toBe("secreto");
+      expect(store.getOllamaSettingsView().tiers).toEqual({ standard: "mid" });
+    });
+  });
 });

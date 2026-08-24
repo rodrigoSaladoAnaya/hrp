@@ -29,6 +29,7 @@ Cada nodo combina:
 - `discovered`: indica que no estaba en el mapa inicial.
 - `approved`: indica que el humano autorizó su ejecución.
 - `assignee`: agente elegido por el humano, cuando existe.
+- `difficulty`: dificultad declarada de la operación — `trivial`, `standard` o `hard`. Es opcional y ausente equivale a `standard`.
 
 Los identificadores pertenecen al adaptador, deben ser estables dentro de una ejecución y no contienen semántica específica de un proveedor.
 
@@ -46,9 +47,11 @@ Todo nodo publicado o descubierto nace sin aprobar. El servidor rechaza `start` 
 
 El humano puede asignar un nodo. El adaptador declara su identidad al iniciar o reintentar y no toma trabajo asignado a otro agente. La identidad es declarativa, no autenticada.
 
+La dificultad es lo que decide **qué modelo** implementa el nodo. La publica el modelo base junto con el resto de la spec, de modo que el humano la aprueba y puede corregirla antes de que exista código; ningún componente la infiere después del diff. Un ejecutor delegado se nombra `ollama` (el modelo por defecto) o `ollama:<modelo>` para un modelo concreto, y ese carril **es una identidad ejecutora distinta**.
+
 Pueden coexistir varios nodos `running` cuando HRP determina que son compatibles. El servidor rechaza `start` si el candidato depende de un nodo en curso, si otro nodo en curso depende de él, si ambos modifican el mismo archivo, o si uno modifica un archivo que el otro usa como contexto aprobado.
 
-Un mismo agente nunca sostiene dos nodos `running`: el estado observable por agente modela un solo `currentNodeId`, y un segundo nodo dejaría al primero sin rastro en el panel y en la señal de atención.
+Un mismo agente nunca sostiene dos nodos `running`: el estado observable por agente modela un solo `currentNodeId`, y un segundo nodo dejaría al primero sin rastro en el panel y en la señal de atención. Por eso los carriles importan: dos carriles con distinto modelo son dos identidades, así que sus nodos corren a la vez **bajo exactamente las mismas reglas de compatibilidad** —la concurrencia sale de repartir el trabajo entre ejecutores, nunca de relajar la exclusión que protege el workspace. Un nodo asignado a la familia `ollama` puede iniciarlo cualquier carril, y `executedBy` conserva el modelo real que lo implementó.
 
 Mientras haya otro nodo en vuelo, la verificación debe nombrar el archivo, el símbolo o el id del nodo. Un comando de proyecto entero también lee lo que el otro nodo tiene a medio editar, así que HRP lo rechaza hasta que el workspace vuelva a estar libre para esa lectura global.
 
@@ -79,6 +82,7 @@ hrp node retry <run-id> <node-id>
       "title": "Declarar el tema predeterminado",
       "description": "Añadir la preferencia al contrato persistente.",
       "rationale": "La UI necesita una fuente de verdad compartida.",
+      "difficulty": "trivial",
       "dependencies": []
     },
     {
@@ -88,6 +92,7 @@ hrp node retry <run-id> <node-id>
       "title": "Resolver la apariencia activa",
       "description": "Combinar preferencia y apariencia del sistema.",
       "rationale": "Las pantallas no deben duplicar esta decisión.",
+      "difficulty": "hard",
       "dependencies": ["theme-contract"]
     }
   ]
