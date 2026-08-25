@@ -9,7 +9,8 @@ La implementación es neutral: el servidor no conoce Codex, Claude, Gemini, skil
 Requiere Node.js 20 o posterior.
 
 ```sh
-cd /Users/rrrssa/Documents/mysrc/hrp
+git clone https://github.com/rodrigoSaladoAnaya/hrp.git
+cd hrp
 npm install
 npm run build
 npm link
