@@ -10,7 +10,7 @@ function option(name: string): string | undefined {
 }
 
 const port = Number(option("--port") ?? process.env.HRP_PORT ?? 4317);
-const dataDirectory = path.resolve(option("--data-dir") ?? process.env.HRP_DATA_DIR ?? path.join(os.homedir(), ".hrp-v2"));
+const dataDirectory = path.resolve(option("--data-dir") ?? process.env.HRP_DATA_DIR ?? path.join(os.homedir(), ".hrp"));
 const workspace = option("--workspace");
 const store = new HrpStore(dataDirectory);
 

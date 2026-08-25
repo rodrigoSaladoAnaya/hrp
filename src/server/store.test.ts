@@ -19,7 +19,7 @@ function approveGraph(store: HrpStore, runId: string, nodeIds?: string[]) {
 }
 
 function fixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), "hrp-v2-"));
+  const root = mkdtempSync(path.join(os.tmpdir(), "hrp-"));
   roots.push(root);
   const workspace = path.join(root, "workspace");
   mkdirSync(workspace);
@@ -884,7 +884,7 @@ describe("HrpStore", () => {
 
       // Simula una base anterior a la columna: al reabrir, la migración debe
       // reconstruir el mismo significado que antes daba la ausencia de node_id.
-      const raw = new Database(path.join(dataDirectory, "hrp-v2.sqlite"));
+      const raw = new Database(path.join(dataDirectory, "hrp.sqlite"));
       raw.exec("ALTER TABLE findings DROP COLUMN scope");
       raw.close();
 

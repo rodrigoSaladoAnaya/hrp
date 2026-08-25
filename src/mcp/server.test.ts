@@ -21,7 +21,7 @@ class MockHrpMcpClient extends HrpMcpClient {
     return {
       status: "running",
       url: "http://127.0.0.1:4317",
-      dataDir: "/tmp/.hrp-v2",
+      dataDir: "/tmp/.hrp",
       projectCount: 1,
     };
   }

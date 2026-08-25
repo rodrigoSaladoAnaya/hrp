@@ -41,7 +41,7 @@ Valores predeterminados:
 
 ```text
 URL:       http://127.0.0.1:4317
-Datos:     ~/.hrp-v2
+Datos:     ~/.hrp
 Protocolo: 3.0
 ```
 

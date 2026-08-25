@@ -39,7 +39,7 @@ function agentValue() {
 
 const url = value("--url", process.env.HRP_URL ?? "http://127.0.0.1:4317");
 const port = Number(value("--port", new URL(url).port || "4317"));
-const dataDir = path.resolve(value("--data-dir", process.env.HRP_DATA_DIR ?? path.join(os.homedir(), ".hrp-v2")));
+const dataDir = path.resolve(value("--data-dir", process.env.HRP_DATA_DIR ?? path.join(os.homedir(), ".hrp")));
 const json = flag("--json");
 
 function positional() {
@@ -564,7 +564,7 @@ Uso:
 
 Opciones globales:
   --url URL        Default: http://127.0.0.1:4317
-  --data-dir PATH  Default: ~/.hrp-v2
+  --data-dir PATH  Default: ~/.hrp
   --port N         Default: 4317
   --json           Salida estructurada
 `);

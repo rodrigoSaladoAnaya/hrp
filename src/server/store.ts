@@ -159,7 +159,7 @@ export class HrpStore {
 
   constructor(readonly dataDirectory: string) {
     mkdirSync(dataDirectory, { recursive: true });
-    this.database = new Database(path.join(dataDirectory, "hrp-v2.sqlite"));
+    this.database = new Database(path.join(dataDirectory, "hrp.sqlite"));
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.database.exec(`

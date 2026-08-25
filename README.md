@@ -17,7 +17,7 @@ npm link
 hrp service start
 ```
 
-El panel queda disponible en <http://127.0.0.1:4317>. Los datos se guardan por defecto en `~/.hrp-v2`; no es necesario configurar variables de entorno.
+El panel queda disponible en <http://127.0.0.1:4317>. Los datos se guardan por defecto en `~/.hrp`; no es necesario configurar variables de entorno.
 
 También puedes iniciar y detener el servicio con:
 

@@ -34,7 +34,7 @@ export type McpToolDefinition = {
 export class HrpMcpClient {
   constructor(
     readonly baseUrl: string = process.env.HRP_URL ?? "http://127.0.0.1:4317",
-    readonly dataDir: string = path.resolve(process.env.HRP_DATA_DIR ?? path.join(os.homedir(), ".hrp-v2")),
+    readonly dataDir: string = path.resolve(process.env.HRP_DATA_DIR ?? path.join(os.homedir(), ".hrp")),
     readonly port: number = Number(process.env.HRP_PORT ?? 4317),
   ) {}
 
