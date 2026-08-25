@@ -44,6 +44,41 @@ En Codex debes ver `hrp@hrp-local` instalado, `hooks.json` materializado en la c
 
 No ejecutes `codex plugin marketplace add` contra la raíz del repositorio. El instalador registra automáticamente el marketplace válido que vive en `integrations/codex`.
 
+## Uso normal: pídeselo al agente
+
+Después de instalar, no necesitas el CLI. Le dices al modelo que use HRP y qué quieres implementar, y él se encarga del resto: arranca el servicio si está caído, registra la carpeta como proyecto, crea la ejecución, publica el grafo y se detiene a esperar tu aprobación.
+
+Según el agente, la frase de entrada cambia:
+
+```text
+Claude Code    Usa HRP para implementar una pantalla de configuración con tema claro y oscuro.
+Codex          Usa $hrp:use-hrp para esta tarea. Quiero una pantalla de configuración con tema claro y oscuro.
+Antigravity    Usa HRP para esta tarea: una pantalla de configuración con tema claro y oscuro.
+```
+
+En Claude Code también sirve `/hrp` seguido del requerimiento.
+
+Lo que pasa a continuación, sin que escribas un comando:
+
+1. El agente lee el código, descompone la tarea en operaciones (`archivo + símbolo + intención`) y publica el grafo. Quien publica primero queda como **modelo base** de la ejecución.
+2. Se queda esperando en el gate de aprobación. **Aquí entras tú**: abre <http://127.0.0.1:4317>, revisa el mapa y aprueba. Ésa es la única acción obligatoria del humano en toda la ejecución.
+3. El agente implementa nodo por nodo, y cada uno termina sólo con su diff y su verificación ejecutada.
+4. Los auditores revisan y abren hallazgos; el agente base los responde y autoriza las correcciones, que entran como nodos nuevos. La ejecución no cierra con hallazgos vivos.
+
+Para elegir quién audita, usa los interruptores de auditor en el panel antes de aprobar; la lista queda congelada mientras la ejecución corre y se puede cambiar si la pausas.
+
+Si el agente termina su turno con trabajo vivo, el despertador nativo lo regresa solo. Si aun así se quedó callado, basta con pedírselo en lenguaje natural:
+
+```text
+Retoma la ejecución de HRP que tienes pendiente.
+```
+
+Y para pedir un cambio de rumbo a media ejecución, díselo y ya: los nodos que descubra se agregan al mismo mapa, sin abrir otra ejecución.
+
+```text
+Ya que estás, el tema tiene que persistir entre sesiones.
+```
+
 ## Compartir HRP con el equipo
 
 Para instalar HRP en otra máquina no hace falta clonar el repositorio. Quien comparte genera el paquete:
@@ -64,7 +99,7 @@ El instalador instala el CLI `hrp` de forma global, arranca el servicio local y 
 
 ## Conectar un proyecto
 
-Desde la carpeta que quieres observar:
+Lo que sigue es la ruta manual: el mismo protocolo desde el CLI, útil para escribir un adaptador nuevo o para operar sin agente. Desde la carpeta que quieres observar:
 
 ```sh
 hrp attach . --start
