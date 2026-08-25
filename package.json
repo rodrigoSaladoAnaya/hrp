@@ -6,11 +6,17 @@
   "bin": {
     "hrp": "bin/hrp.mjs"
   },
+  "files": [
+    "bin",
+    "dist",
+    "integrations"
+  ],
   "scripts": {
     "dev": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch src/server/index.ts --data-dir .hrp-dev --port 4317",
     "dev:web": "vite",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "test": "vitest run --config vitest.config.ts",
     "start": "node dist/server/server/index.js",

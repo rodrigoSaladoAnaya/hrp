@@ -14,6 +14,13 @@ const pluginName = "hrp";
 const pluginSelector = `${pluginName}@${marketplaceName}`;
 const chatgptCodexCli = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
+// Una instalación empaquetada (tarball con files: bin/dist/integrations) no
+// trae src/, tsconfig ni devDependencies: ahí el build ni puede ni debe correr,
+// porque prepack ya dejó dist/ fresco dentro del paquete.
+export function shouldBuildFromSource(root) {
+  return existsSync(path.join(root, "src")) && existsSync(path.join(root, "tsconfig.json"));
+}
+
 function codexHome() {
   return process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
 }
@@ -164,8 +171,14 @@ export async function install(context) {
   const version = run(codexCli, ["--version"]);
   rep.action(`CLI de Codex: ${codexCli}${version.status === 0 ? ` (${version.stdout.trim()})` : ""}`);
 
-  runOk("npm", ["run", "build"], { cwd: root });
-  rep.action("Build de HRP ejecutado antes de instalar el servidor MCP");
+  if (shouldBuildFromSource(root)) {
+    runOk("npm", ["run", "build"], { cwd: root });
+    rep.action("Build de HRP ejecutado antes de instalar el servidor MCP");
+  } else {
+    const serverEntry = path.join(root, "dist", "server", "server", "index.js");
+    if (!existsSync(serverEntry)) throw new Error(`Distribución empaquetada sin build: falta ${serverEntry}. Reinstala el paquete generado por scripts/package.sh`);
+    rep.action("Distribución empaquetada: se omite el build porque dist/ ya viene compilado en el tarball");
+  }
 
   const skillState = context.installSkill("codex");
   rep.action(`Skill use-hrp ${skillState}: ${context.skillState("codex")}`);

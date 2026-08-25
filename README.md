@@ -43,6 +43,24 @@ En Codex debes ver `hrp@hrp-local` instalado, `hooks.json` materializado en la c
 
 No ejecutes `codex plugin marketplace add` contra la raíz del repositorio. El instalador registra automáticamente el marketplace válido que vive en `integrations/codex`.
 
+## Compartir HRP con el equipo
+
+Para instalar HRP en otra máquina no hace falta clonar el repositorio. Quien comparte genera el paquete:
+
+```sh
+./scripts/package.sh
+```
+
+Eso deja en `dist-pack/` el tarball npm (con el build incluido), el instalador `install.sh` y un `README-INSTALL.txt`. Comparte esa carpeta completa (zip, drive, etc.).
+
+Quien recibe solo necesita Node.js 20 o posterior y ejecuta, desde la carpeta recibida:
+
+```sh
+./install.sh
+```
+
+El instalador instala el CLI `hrp` de forma global, arranca el servicio local y ejecuta `hrp agent install all`, que detecta qué agentes hay en esa máquina (Claude Code, Codex, Antigravity) e instala solo las integraciones correspondientes. Al terminar muestra `hrp agent status` y el panel queda en <http://127.0.0.1:4317>.
+
 ## Conectar un proyecto
 
 Desde la carpeta que quieres observar:
