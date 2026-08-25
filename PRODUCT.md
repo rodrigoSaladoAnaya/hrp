@@ -35,7 +35,9 @@ One local service can register multiple workspace folders. An agent adapter publ
 - A completed node requires real diff evidence and a passing verification.
 - Work discovered during execution joins the same graph and is labeled as discovered.
 - A secondary activity view contains investigation, commands and chronological evidence.
-- All execution is automatic in this stage; human review gates and review policies are explicitly out of scope.
+- Review is in scope and automatic: peer model auditors audit during the run and at close, open findings, and no agent audits a node it executed itself.
+- The base agent authorizes the outcome of each finding, accepting it as a discovered correction node or rejecting it with a reason in the thread; a run cannot close while findings remain live.
+- Human involvement is one explicit approval gate on the initial graph plus monitoring; a later human objection is a new run.
 - Internal chain-of-thought is never requested or stored. Visible rationale must be a concise operational explanation.
 - The core protocol cannot depend on Codex, Claude, Gemini, skills or MCP.
 - First release is local and single-user.

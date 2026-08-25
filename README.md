@@ -128,6 +128,8 @@ Consulta [docs/protocol.md](docs/protocol.md) para el contrato y el formato del 
 
 - El grafo inicial requiere aprobación humana antes de comenzar; los nodos descubiertos dentro de una ejecución ya aprobada nacen aprobados automáticamente.
 - No existen los modos heredados `REVISAR`, `OBSERVAR` o `AUTO`; la aprobación es un gate único y explícito.
+- La revisión la hacen modelos pares, no el humano: los auditores revisan durante la ejecución y al cierre con `hrp review pack`, y publican lo que encuentran con `hrp finding add`. Ningún agente audita un nodo que él mismo ejecutó.
+- Quien autoriza es el agente base: acepta el hallazgo —lo que abre su nodo de corrección— o lo rechaza con razón en el hilo. `hrp review gate` impide cerrar una ejecución con hallazgos vivos. El humano aprueba el grafo inicial y monitorea; su objeción tardía se hace como una ejecución nueva.
 - El humano puede asignar nodos a agentes; HRP permite ejecución concurrente sólo cuando no comparte archivo, contexto aprobado ni rama de dependencias con otro nodo en curso. Un agente mantiene un solo nodo activo, y la verificación debe declarar su alcance si otro nodo sigue en vuelo.
 - No se captura cadena de pensamiento; sólo intención y justificación operativa.
 - Un nodo sólo termina cuando tiene diff y verificación aprobada.
