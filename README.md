@@ -46,7 +46,7 @@ No ejecutes `codex plugin marketplace add` contra la raíz del repositorio. El i
 
 ## Uso normal: pídeselo al agente
 
-Después de instalar, no necesitas el CLI. Le dices al modelo que use HRP y qué quieres implementar, y él se encarga del resto: arranca el servicio si está caído, registra la carpeta como proyecto, crea la ejecución, publica el grafo y se detiene a esperar tu aprobación.
+Después de instalar no vuelves a tocar el CLI. El instalador deja registrado el servidor MCP `hrp` en tu agente, con 30 herramientas `hrp_*` que cubren el protocolo completo, y el agente las usa solo. **Tú no haces `attach` ni creas la ejecución**: le dices qué quieres implementar y él registra la carpeta, abre la ejecución y publica el mapa.
 
 Según el agente, la frase de entrada cambia:
 
@@ -58,12 +58,21 @@ Antigravity    Usa HRP para esta tarea: una pantalla de configuración con tema 
 
 En Claude Code también sirve `/hrp` seguido del requerimiento.
 
-Lo que pasa a continuación, sin que escribas un comando:
+Lo que el agente hace por su cuenta con las herramientas MCP, sin que escribas un comando:
 
-1. El agente lee el código, descompone la tarea en operaciones (`archivo + símbolo + intención`) y publica el grafo. Quien publica primero queda como **modelo base** de la ejecución.
-2. Se queda esperando en el gate de aprobación. **Aquí entras tú**: abre <http://127.0.0.1:4317>, revisa el mapa y aprueba. Ésa es la única acción obligatoria del humano en toda la ejecución.
-3. El agente implementa nodo por nodo, y cada uno termina sólo con su diff y su verificación ejecutada.
-4. Los auditores revisan y abren hallazgos; el agente base los responde y autoriza las correcciones, que entran como nodos nuevos. La ejecución no cierra con hallazgos vivos.
+| Lo que ocurre | Herramienta |
+|---|---|
+| Levanta el servicio si está caído | `hrp_service_status`, `hrp_service_start` |
+| Registra la carpeta como proyecto | `hrp_attach` |
+| Abre una ejecución para tu requerimiento | `hrp_create_run` |
+| Descompone la tarea y publica el mapa | `hrp_publish_graph` |
+| Se bloquea a esperar tu aprobación | `hrp_attention` |
+| Implementa cada operación con su evidencia | `hrp_start_node`, `hrp_publish_patch`, `hrp_verify_run`, `hrp_complete_node` |
+| Atiende la auditoría y cierra | `hrp_review_pack`, `hrp_finding_*`, `hrp_review_gate` |
+
+`hrp_attach` es idempotente y `hrp_create_run` va una sola vez por requerimiento, así que repetir la frase de entrada sobre la misma carpeta no duplica nada.
+
+**El único punto donde entras tú** es el gate de aprobación: el agente se queda bloqueado en `hrp_attention` hasta que abras <http://127.0.0.1:4317>, revises el mapa y apruebes. De ahí en adelante implementa, se audita con los modelos pares y no puede cerrar con hallazgos vivos.
 
 Para elegir quién audita, usa los interruptores de auditor en el panel antes de aprobar; la lista queda congelada mientras la ejecución corre y se puede cambiar si la pausas.
 
@@ -73,11 +82,13 @@ Si el agente termina su turno con trabajo vivo, el despertador nativo lo regresa
 Retoma la ejecución de HRP que tienes pendiente.
 ```
 
-Y para pedir un cambio de rumbo a media ejecución, díselo y ya: los nodos que descubra se agregan al mismo mapa, sin abrir otra ejecución.
+Y para pedir un cambio de rumbo a media ejecución, díselo y ya: los nodos que descubra se agregan al mismo mapa con `hrp_discover_node`, sin abrir otra ejecución.
 
 ```text
 Ya que estás, el tema tiene que persistir entre sesiones.
 ```
+
+Si un agente no tiene el MCP disponible, su skill cae al CLI `hrp` por su cuenta y publica exactamente el mismo protocolo. Eso es lo que documentan las secciones siguientes.
 
 ## Compartir HRP con el equipo
 
@@ -99,7 +110,7 @@ El instalador instala el CLI `hrp` de forma global, arranca el servicio local y 
 
 ## Conectar un proyecto
 
-Lo que sigue es la ruta manual: el mismo protocolo desde el CLI, útil para escribir un adaptador nuevo o para operar sin agente. Desde la carpeta que quieres observar:
+Ruta manual, para escribir un adaptador nuevo o para operar sin agente. Desde la carpeta que quieres observar:
 
 ```sh
 hrp attach . --start
