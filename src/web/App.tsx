@@ -18,6 +18,7 @@ import {
 import { DEFAULT_UI_PREFERENCES, agentFamily, agentSessionLabel, agentTree, auditorIdentity, isDelegateAgent, laneModel, runRoster, type Activity, type AgentWorkState, type ChangeNode, type Finding, type NodeStatus, type OllamaSettingsView, type Project, type RunDetail, type RunSummary, type UiPreferences, type ViewShortcutModifier } from "../shared/protocol";
 import { agentAttentionCommand, agentAttentionReleaseCommand } from "./agent-attention";
 import { delegateLanes, delegateSubtitle } from "./agent-lanes";
+import { agentWorkload } from "./agent-workload";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { branchSelection, fileSelection, toggleSelection } from "./node-selection";
 import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
@@ -719,7 +720,7 @@ export function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, sess
         const lane = laneModel(agent);
         const session = agentSessionLabel(agent);
         const present = isBase || run.seenAgents.includes(agent) || (isOllama && Boolean(ollama?.configured));
-        const count = nodes.filter((node) => node.status !== "completed" && (node.assignee === agent || (isBase && !node.assignee))).length;
+        const { pending, implemented } = agentWorkload(nodes, agent, run.baseAgent);
         const state = agentStates.find((candidate) => candidate.agent === agent);
         const selectedAuditor = run.auditors.includes(agent);
         const elapsed = state && (state.phase === "executing" || state.phase === "reviewing") ? elapsedSince(state.startedAt, tick) : undefined;
@@ -755,7 +756,26 @@ export function AgentDock({ run, nodes, agentStates, workspaceRoot, ollama, sess
                 <span className="agent-name-text">{session ? agentFamily(agent) : agent}</span>
                 {session ? <small>{session}</small> : delegateLabel && <small>{delegateLabel}</small>}
               </span>
-              <span className="agent-dock-count" aria-label={`${count} ${count === 1 ? "nodo asignado" : "nodos asignados"}`}>{count}</span>
+              {/* Dos cuentas, no una: la de pendientes cae a cero cuando el
+                  agente termina su reparto, y sin la de implementadas la fila
+                  del que hizo el trabajo se leía igual que la de quien no tocó
+                  nada —sobre todo si su auditoría se quedó sin alcance por no
+                  autocertificarse—. Lo implementado sólo aparece cuando existe:
+                  un cero de más en un dock denso no dice nada. */}
+              <span className="agent-dock-counts">
+                {implemented > 0 && (
+                  <span
+                    className="agent-dock-count agent-dock-count-done"
+                    title={`${agent} implementó ${implemented} ${implemented === 1 ? "operación" : "operaciones"} de esta ejecución`}
+                    aria-label={`${implemented} ${implemented === 1 ? "operación implementada" : "operaciones implementadas"}`}
+                  ><Icon name="check"/>{implemented}</span>
+                )}
+                <span
+                  className="agent-dock-count"
+                  title={`${pending} ${pending === 1 ? "operación pendiente" : "operaciones pendientes"} para ${agent}`}
+                  aria-label={`${pending} ${pending === 1 ? "operación pendiente" : "operaciones pendientes"}`}
+                >{pending}</span>
+              </span>
               <span className="agent-attention-actions">
                 {!isSession && !isOllama && (
                   <button

@@ -470,7 +470,12 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .agent-dock-name { min-width: 0; display: grid; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
 .agent-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-dock-name small { overflow: hidden; color: #596660; font-size: .62rem; text-overflow: ellipsis; }
-.agent-dock-count { flex: none; min-width: 21px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #c9d1ca; font-size: .68rem; font-weight: 800; text-align: center; }
+.agent-dock-counts { display: inline-flex; align-items: center; gap: 4px; }
+.agent-dock-count { flex: none; min-width: 21px; padding: 1px 6px; border-radius: 999px; color: #3f4c47; background: #c9d1ca; font-size: .68rem; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
+/* Lo implementado se pinta con el verde de lo terminado: al lado del chip gris
+   de pendientes, el color distingue las dos cuentas sin necesidad de leerlas. */
+.agent-dock-count-done { display: inline-flex; align-items: center; gap: 3px; color: #24503f; background: #cfe1d7; }
+.agent-dock-count-done .icon { width: 11px; height: 11px; }
 .agent-dock-subrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; padding: 0 10px 7px 21px; }
 .auditor-toggle { min-height: 36px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid transparent; border-radius: 3px; color: #41504b; cursor: pointer; font-size: .68rem; font-weight: 750; }
 .auditor-toggle:hover { border-color: #9ba69f; background: #d2d9d2; }
