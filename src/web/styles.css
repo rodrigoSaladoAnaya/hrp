@@ -826,3 +826,5 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .agent-dock-vote { margin: 0; padding: 0 13px 8px 30px; color: #52605b; font-size: .66rem; line-height: 1.35; }
 .agent-dock-hint { margin: 0; padding: 10px 13px; color: #52605b; font-size: .68rem; line-height: 1.4; }
 .approval-banner .attention-copy { flex: none; }
+.node-file-more { color: #53615c; font-weight: 700; }
+.inspector-head .inspector-file + .inspector-file { margin-left: 8px; }
