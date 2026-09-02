@@ -38,6 +38,7 @@ import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, 
 import { buildEvolutionTree, evolutionHighlights, expandedDirectories, filesAtFrame, frameIndexForNode, highlightLevel, type EvolutionHighlight, type EvolutionTreeNode } from "./evolution-tree";
 import { alignLines, diffRowCounts, type DiffRow } from "./line-diff";
 import { resolveProjectRunListState } from "./project-tree-runs";
+import { highlightLines } from "./syntax";
 import { isViewShortcutEvent, resolveViewShortcut, resolveEvolutionFrameShortcut } from "./view-shortcuts";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
@@ -512,6 +513,9 @@ function EvolutionCodePane({ runId, node, change, path, frameLabel, onShowFrame 
   }, [key, runId, node.id, path]);
   const loaded = state.key === key ? state : { key };
   const rows: DiffRow[] = useMemo(() => loaded.content && !loaded.content.binary ? alignLines(loaded.content.before, loaded.content.after) : [], [loaded.content]);
+  // HTML resaltado por línea de cada versión; el índice es el número de línea - 1.
+  const beforeHtml = useMemo(() => loaded.content && !loaded.content.binary ? highlightLines(loaded.content.before, path) : [], [loaded.content, path]);
+  const afterHtml = useMemo(() => loaded.content && !loaded.content.binary ? highlightLines(loaded.content.after, path) : [], [loaded.content, path]);
   const counts = useMemo(() => diffRowCounts(rows), [rows]);
   const status = change?.status;
   return (
@@ -552,9 +556,9 @@ function EvolutionCodePane({ runId, node, change, path, frameLabel, onShowFrame 
           {rows.map((row, index) => (
             <div className={`evolution-code-row kind-${row.kind}`} role="row" key={index}>
               <span className={`evolution-ln ${row.left ? "" : "is-void"}`} role="cell">{row.left?.number ?? ""}</span>
-              <span className={`evolution-src ${row.left ? "" : "is-void"}`} role="cell">{row.left?.text ?? ""}</span>
+              <span className={`evolution-src ${row.left ? "" : "is-void"}`} role="cell" dangerouslySetInnerHTML={{ __html: row.left ? beforeHtml[row.left.number - 1] ?? "" : "" }}/>
               <span className={`evolution-ln ${row.right ? "" : "is-void"}`} role="cell">{row.right?.number ?? ""}</span>
-              <span className={`evolution-src ${row.right ? "" : "is-void"}`} role="cell">{row.right?.text ?? ""}</span>
+              <span className={`evolution-src ${row.right ? "" : "is-void"}`} role="cell" dangerouslySetInnerHTML={{ __html: row.right ? afterHtml[row.right.number - 1] ?? "" : "" }}/>
             </div>
           ))}
           {!rows.length && <p className="evolution-code-loading">Archivo vacío en las dos versiones.</p>}

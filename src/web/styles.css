@@ -951,3 +951,24 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 @media (max-width: 900px) {
   .evolution-body.mode-code { grid-template-columns: 1fr; grid-template-rows: minmax(0, 40%) minmax(0, 1fr); }
 }
+
+/* Evolución · color por lenguaje (clases de highlight.js) sobre el panel
+   Antes/Después. Tonos oscuros para que sigan legibles sobre las filas
+   verdes, rojas y ámbar. */
+.evolution-src .hljs-comment, .evolution-src .hljs-quote { color: #6b7a73; font-style: italic; }
+.evolution-src .hljs-keyword, .evolution-src .hljs-selector-tag, .evolution-src .hljs-doctag, .evolution-src .hljs-meta .hljs-keyword { color: #6d2f9c; font-weight: 700; }
+.evolution-src .hljs-string, .evolution-src .hljs-regexp, .evolution-src .hljs-addition, .evolution-src .hljs-template-tag { color: #0f5e3f; }
+.evolution-src .hljs-subst { color: inherit; }
+.evolution-src .hljs-number, .evolution-src .hljs-literal, .evolution-src .hljs-symbol, .evolution-src .hljs-bullet { color: #9a4a00; }
+.evolution-src .hljs-title, .evolution-src .hljs-title.function_, .evolution-src .hljs-title.class_, .evolution-src .hljs-section, .evolution-src .hljs-name { color: #1f4e9c; font-weight: 700; }
+.evolution-src .hljs-attr, .evolution-src .hljs-attribute, .evolution-src .hljs-property, .evolution-src .hljs-variable, .evolution-src .hljs-template-variable, .evolution-src .hljs-selector-attr { color: #1f4e9c; }
+.evolution-src .hljs-type, .evolution-src .hljs-built_in, .evolution-src .hljs-class, .evolution-src .hljs-selector-class, .evolution-src .hljs-selector-id, .evolution-src .hljs-selector-pseudo { color: #0a6f7a; }
+.evolution-src .hljs-tag { color: #4a5853; }
+.evolution-src .hljs-tag .hljs-name { color: #1f4e9c; }
+.evolution-src .hljs-meta, .evolution-src .hljs-params { color: #5b6b64; }
+.evolution-src .hljs-deletion { color: #a33a32; }
+.evolution-src .hljs-emphasis { font-style: italic; }
+.evolution-src .hljs-strong { font-weight: 700; }
+.evolution-src .hljs-code { color: #34433e; }
+.evolution-src .hljs-link { color: #1f4e9c; text-decoration: underline; }
+.evolution-src .hljs-punctuation, .evolution-src .hljs-operator { color: #4a5853; }
