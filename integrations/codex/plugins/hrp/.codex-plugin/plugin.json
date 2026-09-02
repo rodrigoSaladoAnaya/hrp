@@ -1,0 +1,21 @@
+{
+  "name": "hrp",
+  "version": "4.0.0",
+  "description": "Human Review Protocol v4 para Codex: skill hrp, servidor MCP y despertador.",
+  "author": { "name": "HRP" },
+  "homepage": "https://github.com/openai/codex",
+  "license": "Proprietary",
+  "keywords": ["hrp", "human review protocol", "review", "workflow"],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "HRP",
+    "shortDescription": "Implementa con evidencia o audita runs de HRP v4",
+    "longDescription": "Añade la skill hrp: /hrp <tarea> implementa como modelo base publicando nodos, diffs y verificaciones; /hrp attention <id> engancha la sesión como auditora de un run en curso.",
+    "developerName": "HRP",
+    "category": "Engineering",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Trabaja esta tarea con $hrp"]
+  }
+}

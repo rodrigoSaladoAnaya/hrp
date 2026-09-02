@@ -1,0 +1,6 @@
+interface:
+  display_name: "HRP"
+  short_description: "Implementa con evidencia o audita un run de Human Review Protocol v4"
+  default_prompt: "Usa $hrp para trabajar esta tarea con HRP: /hrp <tarea> para implementar, /hrp attention <id> para auditar."
+policy:
+  allow_implicit_invocation: true

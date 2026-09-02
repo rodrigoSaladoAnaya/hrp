@@ -1,21 +1,51 @@
-export const nodeStatuses = ["pending", "running", "completed", "failed"] as const;
-export type NodeStatus = (typeof nodeStatuses)[number];
+// Contrato de Human Review Protocol v4. La mecánica está en docs/protocol.md;
+// este archivo es su traducción a tipos y a las reglas puras que comparten el
+// servidor, el MCP, el runner y el panel.
 
-export const activityTypes = ["run", "graph", "inspect", "node", "patch", "verify", "note"] as const;
-export type ActivityType = (typeof activityTypes)[number];
+export const PROTOCOL_VERSION = "4.0";
 
-// Control humano de la ejecución: pausada/detenida bloquean todo inicio de
-// nodo en el servidor, por lo que aplica a cualquier agente por igual.
+// Estado persistido del run. 'hold' no se guarda: se deriva de un hallazgo
+// crítico vivo (ver runIsOnHold) para que no pueda desincronizarse.
+export const runStatuses = ["open", "implemented", "closed"] as const;
+export type RunStatus = (typeof runStatuses)[number];
+
+export const runPhases = ["open", "hold", "implemented", "closed"] as const;
+export type RunPhase = (typeof runPhases)[number];
+
+// Control humano: pausada/detenida bloquean todo inicio de nodo en el servidor.
 export const runControls = ["active", "paused", "stopped"] as const;
 export type RunControl = (typeof runControls)[number];
 
-// Dificultad declarada de una operación. La publica el modelo base junto con el
-// resto de la spec, así que el humano la aprueba y puede corregirla: es la
-// semántica con la que se decide qué modelo ataca el nodo, no una heurística
-// que el despachador infiera del diff. Un nodo sin dificultad declarada vale
-// como "standard"; esa resolución vive donde se consulta, no en el dato.
-export const nodeDifficulties = ["trivial", "standard", "hard"] as const;
-export type NodeDifficulty = (typeof nodeDifficulties)[number];
+// Un nodo existe desde que el base lo abre: no hay 'pending'.
+export const nodeStatuses = ["running", "completed", "failed"] as const;
+export type NodeStatus = (typeof nodeStatuses)[number];
+
+export const activityTypes = ["run", "session", "node", "verify", "finding", "audit", "note"] as const;
+export type ActivityType = (typeof activityTypes)[number];
+
+export const sessionRoles = ["base", "auditor"] as const;
+export type SessionRole = (typeof sessionRoles)[number];
+
+export const sessionStatuses = ["attached", "released"] as const;
+export type SessionStatus = (typeof sessionStatuses)[number];
+
+// Familias con adaptador propio. 'ollama' no abre sesión de chat: es un runner.
+export const agentFamilies = ["claude", "codex", "antigravity", "ollama"] as const;
+export type AgentFamily = (typeof agentFamilies)[number];
+
+export const findingStatuses = ["open", "debating", "accepted", "rejected", "escalated"] as const;
+export type FindingStatus = (typeof findingStatuses)[number];
+
+export const findingSeverities = ["critical", "major", "minor", "question"] as const;
+export type FindingSeverity = (typeof findingSeverities)[number];
+
+// 'requirement' audita el issue contra el requerimiento literal; 'node' un
+// cambio concreto; 'integration' cruza varios nodos al cierre.
+export const findingScopes = ["requirement", "node", "integration"] as const;
+export type FindingScope = (typeof findingScopes)[number];
+
+export const auditVotes = ["ok", "reject"] as const;
+export type AuditVote = (typeof auditVotes)[number];
 
 export type Project = {
   id: string;
@@ -25,54 +55,41 @@ export type Project = {
   lastOpenedAt: string;
 };
 
-// Estado de la ronda de auditoría del plan sobre la versión vigente del grafo.
-// 'open' significa que aún faltan pasadas de auditores antes de que arranque la
-// implementación; ya no retiene la aprobación humana inicial.
-export type PlanGateStatus = {
-  graphVersion: number;
-  auditors: string[];
-  // Auditores con pasada publicada sobre graphVersion.
-  reviewed: string[];
-  // Auditores elegidos que aún no opinan sobre esta versión.
-  pending: string[];
-  open: boolean;
-  // Compatibilidad con runs antiguos que guardaron una aprobación con override.
-  overriddenVersion?: number;
+export type Verification = {
+  command: string;
+  output: string;
+  exitCode: number;
+  passed: boolean;
+  observedAt: string;
 };
 
-export type RunSummary = {
+// Criterio de aceptación del issue. Con 'command' lo ejecuta la máquina al
+// cerrar; sin él sólo se lista para los auditores.
+export type AcceptanceCriterion = {
+  text: string;
+  command?: string;
+  result?: Verification;
+};
+
+// Identidad de una sesión enganchada: 'familia:N', acuñada por el servicio al
+// engancharse. Es la unidad de independencia: nadie audita lo propio y el base
+// nunca es el único voto.
+export type Session = {
   id: string;
-  projectId: string;
-  title: string;
-  requirement: string;
-  status: NodeStatus;
-  control: RunControl;
-  graphVersion: number;
-  baseAgent?: string;
-  // Branch Git creado como salvaguarda cuando la ejecución encuentra cambios pendientes.
-  changeBranch?: string;
-  seenAgents: string[];
-  // Auditores elegidos por el humano antes de autorizar el grafo. La lista se
-  // congela al comenzar para que la política de revisión no cambie a mitad.
-  auditors: string[];
-  // Auditores seleccionados que aún no publican phase completed.
-  pendingAuditorCount: number;
-  // Votos OK que aún faltan para alcanzar la mayoría simple del censo auditor.
-  // Este es el dato que bloquea el cierre; pendingAuditorCount es informativo.
-  pendingAuditorVotes?: number;
-  // Ronda de auditoría del plan sobre el grafo vigente. Es informativa para el
-  // panel y accionable para auditores, pero no bloquea aprobar el grafo.
-  planGate?: PlanGateStatus;
-  nodeCount: number;
-  completedCount: number;
-  // Nodos que aún esperan la aprobación humana: alimenta los avisos del árbol
-  // de proyectos sin obligar al panel a cargar el detalle de cada ejecución.
-  awaitingApproval: number;
-  // Hallazgos vivos (open, debating o escalated): alimentan la insignia del
-  // árbol y bloquean el cierre del run hasta resolverse.
-  openFindings: number;
-  createdAt: string;
-  updatedAt: string;
+  runId: string;
+  family: string;
+  role: SessionRole;
+  status: SessionStatus;
+  // Nodos completados que esta sesión ya auditó (con hallazgos o sin ellos).
+  reviewedNodeIds: string[];
+  requirementReviewed: boolean;
+  integrationReviewed: boolean;
+  vote?: AuditVote;
+  voteDetail?: string;
+  votedAt?: string;
+  attachedAt: string;
+  releasedAt?: string;
+  lastSeenAt: string;
 };
 
 export type ChangeNode = {
@@ -84,58 +101,36 @@ export type ChangeNode = {
   description: string;
   rationale: string;
   status: NodeStatus;
-  discovered: boolean;
-  approved: boolean;
-  assignee?: string;
-  suggestedAgent?: string;
-  // Dificultad declarada de la operación: gobierna a qué modelo se enruta.
-  difficulty?: NodeDifficulty;
-  // Archivos de solo lectura que 'hrp ollama exec' adjunta como referencia al
-  // delegar: el humano aprueba junto con la spec qué material verá el modelo.
-  contextFiles?: string[];
-  executedBy?: string;
+  // Sesión base que lo abrió.
+  author: string;
   dependencies: string[];
+  // Evidencia: el diff lo calcula el servidor con git al completar, el commit
+  // es el que deja en la rama del run.
   diff?: string;
   patchSummary?: string;
   patchRationale?: string;
   verification?: Verification;
+  commit?: string;
+  failure?: string;
   tokens?: number;
+  // Sesiones que auditaron este nodo; sale de las sesiones, no se guarda aquí.
+  auditedBy: string[];
   createdAt: string;
   updatedAt: string;
 };
 
-// Ciclo de revisión multi-modelo (v3): un hallazgo nace open, pasa a debating
-// cuando hay respuestas, y termina accepted (con nodo de corrección), rejected
-// (con razón en el hilo) o escalated (queda en manos del humano en el panel).
-export const findingStatuses = ["open", "debating", "accepted", "rejected", "escalated"] as const;
-export type FindingStatus = (typeof findingStatuses)[number];
-
-export const findingSeverities = ["critical", "major", "minor", "question"] as const;
-export type FindingSeverity = (typeof findingSeverities)[number];
-
-// Alcance de lo que audita el hallazgo. 'node' revisa el cambio de un nodo,
-// 'integration' cruza varios nodos del run, y 'plan' revisa el grafo publicado
-// antes de que exista código: nace de la auditoría previa a la aprobación
-// humana y por eso nunca lleva nodeId aunque cite un nodo por su id.
-export const findingScopes = ["node", "integration", "plan"] as const;
-export type FindingScope = (typeof findingScopes)[number];
-
-// Regla de compatibilidad para los hallazgos que no declaran scope: hasta v3.1
-// la ausencia de nodeId era exactamente "de integración". Un hallazgo de plan
-// debe declarar su scope de forma explícita; esta derivación nunca lo produce.
-export function findingScopeFor(nodeId?: string): FindingScope {
-  return nodeId ? "node" : "integration";
-}
-
-export type FindingAgreement = {
-  agent: string;
+export type FindingMessage = {
+  id: string;
+  findingId: string;
+  // Sesión, o el literal "human".
+  author: string;
+  body: string;
   createdAt: string;
 };
 
 export type Finding = {
   id: string;
   runId: string;
-  // Sin nodeId el hallazgo es de integración o de plan; scope lo distingue.
   nodeId?: string;
   scope: FindingScope;
   reviewer: string;
@@ -143,40 +138,16 @@ export type Finding = {
   title: string;
   body: string;
   status: FindingStatus;
-  // Nodo que corrige el hallazgo aceptado. Si es descubierto, la aceptación lo
-  // autoriza y la unanimidad puede transferirlo al modelo que lo reportó.
+  // Nodo que corrige el hallazgo aceptado.
   resolutionNodeId?: string;
-  agreements: FindingAgreement[];
-  // Modelo base + auditores elegidos. La unanimidad de este conjunto autoriza
-  // al reportero a implementar; no sustituye la mayoría del gate final.
-  requiredAgreementAgents: string[];
-  unanimous: boolean;
   messages: FindingMessage[];
   createdAt: string;
   updatedAt: string;
 };
 
-// Un turno del debate; author es un nombre de agente o el literal "human".
-export type FindingMessage = {
-  id: string;
-  findingId: string;
-  author: string;
-  body: string;
-  createdAt: string;
-};
-
 export type FindingInput = Pick<Finding, "reviewer" | "severity" | "title" | "body"> & {
   nodeId?: string;
-  // Omitido, se deriva con findingScopeFor: sólo la auditoría del plan lo fija.
   scope?: FindingScope;
-};
-
-export type Verification = {
-  command: string;
-  output: string;
-  exitCode: number;
-  passed: boolean;
-  observedAt: string;
 };
 
 export type Activity = {
@@ -190,227 +161,174 @@ export type Activity = {
   createdAt: string;
 };
 
-export const agentWorkPhases = ["idle", "waiting", "executing", "reviewing", "completed", "failed"] as const;
-export type AgentWorkPhase = (typeof agentWorkPhases)[number];
+export type AuditStatus = {
+  // Nodos completados sin auditoría de una sesión ajena a su autor.
+  unauditedNodeIds: string[];
+  okVotes: string[];
+  rejectVotes: string[];
+  // Sesiones auditoras enganchadas que aún no votan (o cuyo voto caducó).
+  pendingVoters: string[];
+  liveFindings: number;
+  distinctFamilies: string[];
+  canClose: boolean;
+  blockers: string[];
+};
 
-// Estado observable, deliberadamente operacional: comunica qué etapa externa
-// ejecuta un agente y qué evidencia está cubierta, nunca su razonamiento privado.
-export type AgentWorkState = {
-  agent: string;
-  phase: AgentWorkPhase;
-  summary: string;
-  detail?: string;
-  currentNodeId?: string;
-  completed: number;
-  total: number;
-  reviewedNodeIds: string[];
-  remainingNodeIds: string[];
-  startedAt?: string;
+export type RunSummary = {
+  id: string;
+  projectId: string;
+  title: string;
+  status: RunStatus;
+  phase: RunPhase;
+  control: RunControl;
+  branch: string;
+  base?: string;
+  issuePath: string;
+  attachments: string[];
+  acceptance: AcceptanceCriterion[];
+  nodeCount: number;
+  completedCount: number;
+  runningCount: number;
+  failedCount: number;
+  openFindings: number;
+  attachedSessions: string[];
+  audit: AuditStatus;
+  createdAt: string;
   updatedAt: string;
+  implementedAt?: string;
+  closedAt?: string;
 };
-
-export type AuditorConsensus = {
-  requiredVotes: number;
-  completedVotes: number;
-  pendingAuditors: string[];
-  pendingAuditorVotes: number;
-};
-
-type AuditableChange = Pick<ChangeNode, "assignee" | "executedBy" | "updatedAt">;
-type ConsensusAgentState =
-  Pick<AgentWorkState, "agent" | "phase">
-  & Partial<Pick<AgentWorkState, "startedAt" | "updatedAt">>;
-
-export function auditMajority(total: number): number {
-  return total > 0 ? Math.floor(total / 2) + 1 : 0;
-}
-
-export function auditorIdentity(agent: string | undefined): string | undefined {
-  return agent?.startsWith("ollama:") ? "ollama" : agent;
-}
-
-export function nodeCoverageIsCurrent(auditor: string, startedAt: string | undefined, node: AuditableChange): boolean {
-  if (!startedAt) return false;
-  return auditorIdentity(node.executedBy ?? node.assignee) === auditorIdentity(auditor) || node.updatedAt <= startedAt;
-}
-
-export function auditorVoteIsCurrent(
-  auditor: string,
-  state: ConsensusAgentState | undefined,
-  nodes: AuditableChange[] = [],
-): boolean {
-  if (state?.phase !== "completed") return false;
-  const startedAt = state.startedAt ?? state.updatedAt;
-  return nodes.every((node) => nodeCoverageIsCurrent(auditor, startedAt, node));
-}
-
-export function computeAuditorConsensus(
-  auditors: string[],
-  agentStates: ConsensusAgentState[],
-  nodes: AuditableChange[] = [],
-): AuditorConsensus {
-  const completed = new Set(agentStates
-    .filter((state) => auditorVoteIsCurrent(state.agent, state, nodes))
-    .map((state) => state.agent));
-  const pendingAuditors = auditors.filter((auditor) => !completed.has(auditor));
-  const completedVotes = auditors.length - pendingAuditors.length;
-  const requiredVotes = auditMajority(auditors.length);
-  return {
-    requiredVotes,
-    completedVotes,
-    pendingAuditors,
-    pendingAuditorVotes: Math.max(requiredVotes - completedVotes, 0),
-  };
-}
 
 export type RunDetail = {
   run: RunSummary;
+  project: Project;
   nodes: ChangeNode[];
-  activity: Activity[];
   findings: Finding[];
-  agentStates: AgentWorkState[];
+  sessions: Session[];
+  activity: Activity[];
+  issue: string;
 };
 
-export type ChangeNodeInput = Pick<ChangeNode, "id" | "file" | "symbol" | "title" | "description" | "rationale" | "dependencies" | "suggestedAgent" | "difficulty" | "contextFiles"> & {
-  discovered?: boolean;
+export type ChangeNodeInput = Pick<ChangeNode, "file" | "symbol" | "title" | "description" | "rationale"> & {
+  id?: string;
+  dependencies?: string[];
 };
 
-export type GraphInput = {
-  nodes: ChangeNodeInput[];
+export type RunInput = {
+  title: string;
+  requirement: string;
+  interpretation: string;
+  scopeIncludes?: string[];
+  scopeExcludes?: string[];
+  acceptance: Array<{ text: string; command?: string }>;
+  risks?: string[];
+  attachments?: Array<{ path: string; note?: string }>;
 };
 
-// Configuración persistida de Ollama Cloud; la key solo vive en el servidor.
-// 'tiers' asigna un modelo delegado a cada dificultad; un nivel ausente hereda
-// 'model', de modo que una instalación con un solo modelo sigue funcionando.
-export type OllamaSettings = {
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-  tiers: DelegateTiers;
-};
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]+$/;
+const FAMILY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
-// Vista para la web: nunca incluye la key completa, solo su terminación.
-export type OllamaSettingsView = {
-  configured: boolean;
-  model: string;
-  baseUrl: string;
-  tiers: DelegateTiers;
-  keyMask?: string;
-};
-
-export type DelegateTiers = Partial<Record<NodeDifficulty, string>>;
-
-// Identidad de un agente. Una identidad es "familia" ("claude") o
-// "familia:sesión" ("claude:opus"), y es la unidad con la que HRP cuenta todo:
-// sostiene un nodo en vuelo y un estado de agente por identidad, y dirige a
-// ella la señal de atención. Por eso dos sesiones del mismo modelo deben usar
-// identidades distintas —"claude:fable" que planea y audita, "claude:opus" que
-// implementa—: compartir identidad es compartir estado y pisárselo. La familia
-// sigue siendo una identidad válida por sí sola, que es lo que usa una sesión
-// única. El carril delegado "ollama:<modelo>" comparte esta forma pero no es
-// una sesión: lo administra el modelo base (isDelegateAgent lo distingue).
-const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*(:[A-Za-z0-9][A-Za-z0-9_.-]*)?$/;
-
-export function agentFamily(agent: string): string {
-  const separator = agent.indexOf(":");
-  return separator === -1 ? agent : agent.slice(0, separator);
+export function isValidFamily(family: string | undefined): boolean {
+  return typeof family === "string" && FAMILY_PATTERN.test(family);
 }
 
-export function agentSessionLabel(agent: string): string | undefined {
-  const separator = agent.indexOf(":");
-  return separator === -1 ? undefined : agent.slice(separator + 1) || undefined;
+export function isValidSessionId(session: string | undefined): boolean {
+  return typeof session === "string" && SESSION_ID_PATTERN.test(session);
 }
 
-export function isValidAgentId(agent: string | undefined): boolean {
-  return typeof agent === "string" && AGENT_ID_PATTERN.test(agent);
+export function sessionFamily(session: string): string {
+  const separator = session.indexOf(":");
+  return separator === -1 ? session : session.slice(0, separator);
 }
 
-// Identidad del ejecutor delegado. HRP permite un solo nodo en vuelo por
-// identidad, así que mientras toda la delegación se llamara "ollama" el trabajo
-// delegado se ejecutaba en serie por construcción. Un carril "ollama:<modelo>"
-// es una identidad ejecutora distinta: dos carriles corren a la vez sin relajar
-// ninguna regla de compatibilidad entre nodos (archivo, contexto, dependencias).
-export const DELEGATE_AGENT = "ollama";
-const LANE_PREFIX = `${DELEGATE_AGENT}:`;
+export const liveFindingStatuses: readonly FindingStatus[] = ["open", "debating", "escalated"];
 
-export function delegateLane(model: string): string {
-  return `${LANE_PREFIX}${model.trim()}`;
+export function isLiveFinding(finding: Pick<Finding, "status">): boolean {
+  return liveFindingStatuses.includes(finding.status);
 }
 
-// Modelo declarado por un carril, o undefined si el agente no es un carril con
-// modelo (incluido el "ollama" pelado, que hereda el modelo por dificultad).
-export function laneModel(agent: string | undefined): string | undefined {
-  if (!agent?.startsWith(LANE_PREFIX)) return undefined;
-  return agent.slice(LANE_PREFIX.length).trim() || undefined;
+// Un hallazgo aceptado sigue reclamando cierre hasta que su nodo de corrección
+// termina: aceptar sin corregir no cierra nada.
+export function isUnresolvedAcceptance(finding: Pick<Finding, "status" | "resolutionNodeId">, nodes: Pick<ChangeNode, "id" | "status">[]): boolean {
+  if (finding.status !== "accepted") return false;
+  if (!finding.resolutionNodeId) return true;
+  return nodes.find((node) => node.id === finding.resolutionNodeId)?.status !== "completed";
 }
 
-// Un agente delegado no abre sesión propia: lo administra el modelo base.
-export function isDelegateAgent(agent: string | undefined): boolean {
-  return agent === DELEGATE_AGENT || Boolean(agent?.startsWith(LANE_PREFIX));
+export function runIsOnHold(findings: Pick<Finding, "status" | "severity">[]): boolean {
+  return findings.some((finding) => finding.severity === "critical" && isLiveFinding(finding));
 }
 
-// Familias con adaptador propio: son las que el panel ofrece siempre, aunque
-// todavía no hayan aparecido en la ejecución.
-export const agentFamilies = ["claude", "codex", "antigravity", DELEGATE_AGENT] as const;
-
-// Censo de identidades de una ejecución: el modelo base primero, después las
-// familias con adaptador, después toda identidad que la ejecución ya nombra
-// (auditores, presencias, asignaciones y sugerencias) y al final los carriles
-// delegados configurados. Se deriva del run en vez de fijarse en una constante
-// porque una sesión —"claude:opus"— sólo existe si alguien la nombró: sin este
-// censo el panel no puede asignarle nodos ni elegirla auditora.
-export function runRoster(
-  run: Pick<RunSummary, "baseAgent" | "auditors" | "seenAgents">,
-  nodes: Pick<ChangeNode, "assignee" | "suggestedAgent">[] = [],
-  delegateLanes: string[] = [],
-  // Sesiones que el humano acuñó en el proyecto. Entran aunque la ejecución
-  // todavía no las nombre: acuñar y copiar su comando ocurre antes de que la
-  // sesión exista, y el árbol tiene que poder mostrarla justo en ese momento.
-  sessions: string[] = [],
-): string[] {
-  const referenced = [
-    ...run.auditors,
-    ...run.seenAgents,
-    ...nodes.flatMap((node) => [node.assignee, node.suggestedAgent]),
-  ];
-  const ordered = [run.baseAgent, ...agentFamilies, ...referenced, ...sessions, ...delegateLanes];
-  return [...new Set(ordered.filter((agent): agent is string => isValidAgentId(agent)))];
+// Un voto vale mientras no se complete ningún nodo después de emitirlo: una
+// corrección posterior exige volver a mirar.
+export function voteIsCurrent(session: Pick<Session, "vote" | "votedAt">, nodes: Pick<ChangeNode, "status" | "updatedAt">[]): boolean {
+  if (!session.vote || !session.votedAt) return false;
+  const votedAt = session.votedAt;
+  return nodes.every((node) => node.status !== "completed" || node.updatedAt <= votedAt);
 }
 
-// Rama del árbol de agentes: la familia con su identidad pelada —si el censo la
-// incluye— y las identidades con etiqueta que cuelgan de ella.
-export type AgentBranch = {
-  family: string;
-  root?: string;
-  sessions: string[];
-};
-
-// El censo plano se lee como un árbol de dos niveles: cada modelo es una rama y
-// sus sesiones cuelgan de él. Las familias salen en el orden en que aparecen en
-// el censo, así que la del modelo base va primera. Los carriles delegados
-// "ollama:<modelo>" cuelgan igual de su familia porque comparten la forma,
-// aunque los administre el modelo base en vez de una sesión propia.
-export function agentTree(roster: string[]): AgentBranch[] {
-  const branches = new Map<string, AgentBranch>();
-  for (const agent of roster) {
-    const family = agentFamily(agent);
-    const branch = branches.get(family) ?? { family, sessions: [] };
-    if (agentSessionLabel(agent)) branch.sessions.push(agent);
-    else branch.root = agent;
-    branches.set(family, branch);
-  }
-  return [...branches.values()];
+export function auditorsOf(sessions: Pick<Session, "id" | "role" | "status">[]): string[] {
+  return sessions.filter((session) => session.role === "auditor" && session.status === "attached").map((session) => session.id);
 }
 
-// Enrutado por dificultad: el nivel decide el modelo y el modelo base decide el
-// nivel al publicar el grafo. Sin nivel declarado el nodo vale como "standard".
-export function modelForDifficulty(
-  settings: Pick<OllamaSettings, "model" | "tiers">,
-  difficulty?: NodeDifficulty,
-): string {
-  return settings.tiers?.[difficulty ?? "standard"]?.trim() || settings.model;
+// Regla del gate, en un solo sitio para que el servidor, la señal de atención
+// y el panel no puedan discrepar sobre si un run puede cerrarse.
+export function computeAuditStatus(
+  run: Pick<RunSummary, "status" | "base">,
+  nodes: Pick<ChangeNode, "id" | "status" | "author" | "auditedBy" | "updatedAt">[],
+  sessions: Pick<Session, "id" | "family" | "role" | "status" | "vote" | "votedAt">[],
+  findings: Pick<Finding, "status" | "severity" | "resolutionNodeId">[],
+): AuditStatus {
+  const completed = nodes.filter((node) => node.status === "completed");
+  const unauditedNodeIds = completed
+    .filter((node) => !node.auditedBy.some((session) => session !== node.author))
+    .map((node) => node.id);
+  const auditors = sessions.filter((session) => session.role === "auditor" && session.id !== run.base);
+  const current = auditors.filter((session) => voteIsCurrent(session, nodes));
+  const okVotes = current.filter((session) => session.vote === "ok").map((session) => session.id);
+  const rejectVotes = current.filter((session) => session.vote === "reject").map((session) => session.id);
+  const pendingVoters = auditors
+    .filter((session) => session.status === "attached" && !current.includes(session))
+    .map((session) => session.id);
+  const liveFindings = findings.filter((finding) => isLiveFinding(finding) || isUnresolvedAcceptance(finding, nodes)).length;
+  const distinctFamilies = [...new Set(sessions.map((session) => session.family))];
+  const blockers: string[] = [];
+  if (run.status !== "implemented") blockers.push(run.status === "closed" ? "el run ya está cerrado" : "el base no ha cerrado la implementación");
+  if (completed.length === 0) blockers.push("no hay nodos completados");
+  if (unauditedNodeIds.length) blockers.push(`nodos sin auditoría ajena: ${unauditedNodeIds.join(", ")}`);
+  if (liveFindings) blockers.push(`${liveFindings} ${liveFindings === 1 ? "hallazgo vivo" : "hallazgos vivos"}`);
+  if (okVotes.length === 0) blockers.push("falta al menos un voto OK de un auditor distinto del base");
+  if (okVotes.length <= rejectVotes.length && okVotes.length > 0) blockers.push(`sin mayoría: ${okVotes.length} OK contra ${rejectVotes.length} rechazos`);
+  return {
+    unauditedNodeIds,
+    okVotes,
+    rejectVotes,
+    pendingVoters,
+    liveFindings,
+    distinctFamilies,
+    canClose: blockers.length === 0,
+    blockers,
+  };
 }
 
+export function runBranchName(runId: string): string {
+  return `hrp/run-${runId}`;
+}
+
+export function attentionCommand(runId: string): string {
+  return `/hrp attention ${runId}`;
+}
+
+export function runnerCommand(runId: string, family = "ollama"): string {
+  return `hrp attend ${runId} --agent ${family}`;
+}
+
+export function panelUrl(baseUrl: string, projectId: string, runId: string): string {
+  return `${baseUrl}/?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(runId)}`;
+}
+
+// Preferencias de interfaz. Viven en el navegador (localStorage): son por
+// persona, no por servicio.
 export type ViewShortcutModifier = "meta" | "ctrl" | "either";
 
 export type UiPreferences = {
@@ -420,13 +338,6 @@ export type UiPreferences = {
   };
 };
 
-export const DEFAULT_OLLAMA_MODEL = "kimi-k2.7-code";
-export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
-  viewShortcuts: {
-    enabled: true,
-    modifier: "meta",
-  },
+  viewShortcuts: { enabled: true, modifier: "meta" },
 };
-
-export const PROTOCOL_VERSION = "3.0";

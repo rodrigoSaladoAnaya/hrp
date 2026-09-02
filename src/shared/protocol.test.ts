@@ -1,135 +1,114 @@
 import { describe, expect, it } from "vitest";
-import { agentFamilies, agentFamily, agentSessionLabel, agentTree, isDelegateAgent, isValidAgentId, runRoster } from "./protocol.js";
+import {
+  attentionCommand,
+  computeAuditStatus,
+  isUnresolvedAcceptance,
+  isValidFamily,
+  isValidSessionId,
+  runIsOnHold,
+  sessionFamily,
+  voteIsCurrent,
+  type ChangeNode,
+  type Session,
+} from "./protocol.js";
 
-describe('agentFamily', () => {
-  it('returns the family for a simple agent', () => {
-    expect(agentFamily('claude')).toBe('claude');
+function node(partial: Partial<ChangeNode> & Pick<ChangeNode, "id">): ChangeNode {
+  return {
+    runId: "r1", file: "a.ts", symbol: "f", title: "t", description: "d", rationale: "r",
+    status: "completed", author: "claude:1", dependencies: [], auditedBy: [],
+    createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
+    ...partial,
+  };
+}
+
+function session(partial: Partial<Session> & Pick<Session, "id" | "role">): Session {
+  return {
+    runId: "r1", family: sessionFamily(partial.id), status: "attached",
+    reviewedNodeIds: [], requirementReviewed: false, integrationReviewed: false,
+    attachedAt: "2026-09-01T00:00:00Z", lastSeenAt: "2026-09-01T00:00:00Z",
+    ...partial,
+  };
+}
+
+describe("identidades", () => {
+  it("valida familias y sesiones acuñadas", () => {
+    expect(isValidFamily("claude")).toBe(true);
+    expect(isValidFamily("claude:2")).toBe(false);
+    expect(isValidSessionId("claude:2")).toBe(true);
+    expect(isValidSessionId("claude")).toBe(false);
+    expect(sessionFamily("codex:3")).toBe("codex");
   });
 
-  it('returns the family for a session agent', () => {
-    expect(agentFamily('claude:opus')).toBe('claude');
-  });
-});
-
-describe('agentSessionLabel', () => {
-  it('returns undefined for a simple agent', () => {
-    expect(agentSessionLabel('claude')).toBeUndefined();
-  });
-
-  it('returns the session label for a session agent', () => {
-    expect(agentSessionLabel('claude:opus')).toBe('opus');
-  });
-});
-
-describe('isValidAgentId', () => {
-  it.each([
-    'claude',
-    'claude:opus',
-    'ollama:glm-5.2',
-  ])('accepts %s', (agent) => {
-    expect(isValidAgentId(agent)).toBe(true);
-  });
-
-  it.each([
-    '',
-    ' ',
-    'claude opus',
-    'claude:',
-    ':opus',
-    'a:b:c',
-  ])('rejects %s', (agent) => {
-    expect(isValidAgentId(agent)).toBe(false);
-  });
-});
-
-describe('isDelegateAgent', () => {
-  it('returns false for a session agent', () => {
-    expect(isDelegateAgent('claude:opus')).toBe(false);
-  });
-
-  it('still recognises a delegate lane', () => {
-    expect(isDelegateAgent('ollama:glm-5.2')).toBe(true);
+  it("el comando de enganche es uno solo por run", () => {
+    expect(attentionCommand("3f9a2c1d")).toBe("/hrp attention 3f9a2c1d");
   });
 });
 
-describe('runRoster', () => {
-  it('returns a unique list of valid identities ordered correctly', () => {
-    const run = {
-      baseAgent: 'claude:fable',
-      auditors: ['codex', ''],
-      seenAgents: ['claude:opus', 'a:b:c'],
-    };
-    const nodes = [
-      { assignee: 'claude:opus' },
-      { suggestedAgent: 'ollama' },
-    ];
-    const delegateLanes = ['ollama:glm-5.2'];
-
-    const roster = runRoster(run, nodes, delegateLanes);
-
-    expect(new Set(roster).size).toBe(roster.length);
-    expect(roster[0]).toBe('claude:fable');
-    expect(roster).toContain('codex');
-    expect(roster).toContain('claude:opus');
-    expect(roster).toContain('ollama:glm-5.2');
-    expect(roster).not.toContain('');
-    expect(roster).not.toContain('a:b:c');
+describe("hallazgos", () => {
+  it("un crítico vivo pone el run en hold", () => {
+    expect(runIsOnHold([{ status: "open", severity: "critical" }])).toBe(true);
+    expect(runIsOnHold([{ status: "rejected", severity: "critical" }, { status: "open", severity: "major" }])).toBe(false);
   });
 
-  it('offers the adapter families when the run still names nobody', () => {
-    expect(runRoster({ baseAgent: undefined, auditors: [], seenAgents: [] })).toEqual([...agentFamilies]);
+  it("aceptar sin corregir sigue vivo", () => {
+    const nodes = [node({ id: "n1", status: "running" })];
+    expect(isUnresolvedAcceptance({ status: "accepted" }, nodes)).toBe(true);
+    expect(isUnresolvedAcceptance({ status: "accepted", resolutionNodeId: "n1" }, nodes)).toBe(true);
+    expect(isUnresolvedAcceptance({ status: "accepted", resolutionNodeId: "n1" }, [node({ id: "n1" })])).toBe(false);
   });
 });
 
-describe('runRoster (sesiones acuñadas)', () => {
-  it('includes minted sessions even if they are not auditors, present, or assignees', () => {
-    const run = { baseAgent: 'claude', auditors: [], seenAgents: [] };
-    const sessions = ['claude:2', 'codex:auditor'];
-    const roster = runRoster(run, [], [], sessions);
-    expect(roster).toContain('claude:2');
-    expect(roster).toContain('codex:auditor');
-  });
-
-  it('does not duplicate sessions when they are also present', () => {
-    const run = { baseAgent: 'claude', auditors: [], seenAgents: ['claude:2'] };
-    const sessions = ['claude:2', 'codex:auditor'];
-    const roster = runRoster(run, [], [], sessions);
-    expect(roster.filter(a => a === 'claude:2').length).toBe(1);
-  });
-
-  it('discards invalid sessions', () => {
-    const run = { baseAgent: 'claude', auditors: [], seenAgents: [] };
-    const sessions = ['claude:2', 'a:b:c', ''];
-    const roster = runRoster(run, [], [], sessions);
-    expect(roster).toContain('claude:2');
-    expect(roster).not.toContain('a:b:c');
-    expect(roster).not.toContain('');
-  });
-
-  it('returns the same as before when called without the sessions parameter', () => {
-    const run = { baseAgent: 'claude', auditors: ['codex'], seenAgents: ['claude:opus'] };
-    const nodes = [{ assignee: 'claude:opus' }];
-    const delegateLanes = ['ollama:glm-5.2'];
-    expect(runRoster(run, nodes, delegateLanes)).toEqual(runRoster(run, nodes, delegateLanes, []));
+describe("votos", () => {
+  it("caducan cuando se completa un nodo después", () => {
+    const voter = { vote: "ok" as const, votedAt: "2026-09-01T01:00:00Z" };
+    expect(voteIsCurrent(voter, [node({ id: "n1", updatedAt: "2026-09-01T00:30:00Z" })])).toBe(true);
+    expect(voteIsCurrent(voter, [node({ id: "n2", updatedAt: "2026-09-01T02:00:00Z" })])).toBe(false);
+    expect(voteIsCurrent({ vote: undefined }, [])).toBe(false);
   });
 });
 
-describe('agentTree', () => {
-  it('groups families and sessions in order', () => {
-    const roster = ['claude:fable', 'claude', 'codex', 'antigravity', 'ollama', 'claude:opus', 'ollama:glm-5.2'];
-    const tree = agentTree(roster);
-    expect(tree[0].family).toBe('claude');
-    expect(tree[0].root).toBe('claude');
-    expect(tree[0].sessions).toEqual(['claude:fable', 'claude:opus']);
-    expect(tree.find(b => b.family === 'ollama')?.root).toBe('ollama');
-    expect(tree.find(b => b.family === 'ollama')?.sessions).toEqual(['ollama:glm-5.2']);
+describe("gate", () => {
+  const base = session({ id: "claude:1", role: "base" });
+
+  it("no cierra sin auditoría ajena ni voto", () => {
+    const status = computeAuditStatus({ status: "implemented", base: "claude:1" }, [node({ id: "n1" })], [base], []);
+    expect(status.canClose).toBe(false);
+    expect(status.unauditedNodeIds).toEqual(["n1"]);
+    expect(status.blockers.join(" ")).toMatch(/voto OK/);
   });
 
-  it('returns root undefined for a family that only appears with a session', () => {
-    const roster = ['codex:auditor'];
-    const tree = agentTree(roster);
-    expect(tree[0].family).toBe('codex');
-    expect(tree[0].root).toBeUndefined();
-    expect(tree[0].sessions).toEqual(['codex:auditor']);
+  it("la auditoría propia no cuenta", () => {
+    const status = computeAuditStatus({ status: "implemented", base: "claude:1" }, [node({ id: "n1", auditedBy: ["claude:1"] })], [base], []);
+    expect(status.unauditedNodeIds).toEqual(["n1"]);
+  });
+
+  it("dos sesiones de la misma familia bastan", () => {
+    const auditor = session({ id: "claude:2", role: "auditor", vote: "ok", votedAt: "2026-09-01T03:00:00Z" });
+    const status = computeAuditStatus(
+      { status: "implemented", base: "claude:1" },
+      [node({ id: "n1", auditedBy: ["claude:2"] })],
+      [base, auditor],
+      [],
+    );
+    expect(status.canClose).toBe(true);
+    expect(status.distinctFamilies).toEqual(["claude"]);
+  });
+
+  it("un hallazgo vivo o una aceptación sin corregir bloquean", () => {
+    const auditor = session({ id: "codex:1", role: "auditor", vote: "ok", votedAt: "2026-09-01T03:00:00Z" });
+    const nodes = [node({ id: "n1", auditedBy: ["codex:1"] })];
+    expect(computeAuditStatus({ status: "implemented", base: "claude:1" }, nodes, [base, auditor], [{ status: "open", severity: "minor" }]).canClose).toBe(false);
+    expect(computeAuditStatus({ status: "implemented", base: "claude:1" }, nodes, [base, auditor], [{ status: "accepted", severity: "minor" }]).canClose).toBe(false);
+  });
+
+  it("los rechazos pesan contra la mayoría y los votos caducados quedan pendientes", () => {
+    const ok = session({ id: "codex:1", role: "auditor", vote: "ok", votedAt: "2026-09-01T03:00:00Z" });
+    const reject = session({ id: "claude:2", role: "auditor", vote: "reject", votedAt: "2026-09-01T03:00:00Z" });
+    const stale = session({ id: "claude:3", role: "auditor", vote: "ok", votedAt: "2026-08-31T00:00:00Z" });
+    const nodes = [node({ id: "n1", auditedBy: ["codex:1"] })];
+    const status = computeAuditStatus({ status: "implemented", base: "claude:1" }, nodes, [base, ok, reject, stale], []);
+    expect(status.canClose).toBe(false);
+    expect(status.pendingVoters).toEqual(["claude:3"]);
+    expect(status.blockers.join(" ")).toMatch(/sin mayoría/);
   });
 });

@@ -4,16 +4,43 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --config vitest.config.ts"
+    "dev": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts --data-dir .hrp-dev --port 4317",
+    "dev:web": "vite",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "test": "vitest run --config vitest.config.ts",
+    "start": "node dist/server/server/index.js"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
     "@types/node": "^22.10.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
+    "vite": "^7.2.2",
     "vitest": "^4.0.8"
   },
   "engines": {
     "node": ">=20"
+  },
+  "bin": {
+    "hrp": "bin/hrp.mjs"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^1.1.5",
+    "@fontsource/saira-condensed": "^5.3.0",
+    "@xyflow/react": "^12.9.2",
+    "better-sqlite3": "^12.4.1",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.12"
   }
 }
