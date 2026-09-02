@@ -1,6 +1,7 @@
 import { getViewportForBounds, type Rect, type Viewport } from "@xyflow/react";
 
-export type GraphView = "map" | "activity" | "findings";
+// Vistas principales del run, en el orden en que las recorren los atajos.
+export type GraphView = "issue" | "map" | "activity" | "findings";
 
 export type StoredGraphViewport = {
   nodeSetKey: string;

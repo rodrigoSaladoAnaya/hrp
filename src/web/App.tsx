@@ -42,7 +42,7 @@ type Catalog = { projects: ProjectWithRuns[] };
 type Health = { buildStale?: boolean };
 type ConnectionState = "connecting" | "connected" | "offline";
 type CatalogLoadOptions = { focus?: CatalogRunFocus; visibleProjectId?: string };
-type View = GraphView | "issue";
+type View = GraphView;
 type GlobalPendingEntry = { project: ProjectWithRuns; run: RunSummary; reasons: string[]; priority: number };
 type AttentionSignal = { runId: string; session: string; kind: string; directive: string; actionable: boolean; waiting: boolean; terminal: boolean };
 type GraphMagnifierState = { active: boolean; x: number; y: number; width: number; height: number };
@@ -781,7 +781,7 @@ function SettingsPanel({ uiPreferences, onUiPreferencesSaved }: { uiPreferences:
               <h3>Atajos de vistas</h3>
               <label className="settings-check">
                 <input type="checkbox" checked={uiPreferences.viewShortcuts.enabled} onChange={(event) => save({ enabled: event.target.checked })}/>
-                <span>Flechas izquierda/derecha cambian Mapa, Actividad y Hallazgos</span>
+                <span>Flechas izquierda/derecha recorren Issue, Mapa, Actividad y Hallazgos</span>
               </label>
               <div className="shortcut-options" role="group" aria-label="Modificador de atajos de vistas">
                 {([["meta", "Command"], ["ctrl", "Ctrl"], ["either", "Ambos"]] as const).map(([modifier, label]) => (
@@ -827,7 +827,7 @@ function HelpPanel() {
             </ul>
             <h3>Tips</h3>
             <ul>
-              <li>Command/Ctrl sobre el mapa abre la lupa; flechas cambian de vista.</li>
+              <li>Command/Ctrl sobre el mapa abre la lupa; con Command/Ctrl, las flechas recorren Issue, Mapa, Actividad y Hallazgos.</li>
               <li>Clic en una sesión del dock filtra Actividad y Hallazgos por esa sesión.</li>
               <li>Un run «implementado sin auditar» se queda así hasta que alguien se enganche; nunca cierra solo.</li>
             </ul>
@@ -1173,14 +1173,13 @@ export function App() {
 
   const graph = useMemo(() => layoutGraph(detail?.nodes ?? [], selectedId, setSelectedId), [detail?.nodes, selectedId]);
   const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
-  const flowMounted = view === "map" && isGraphFlowMounted("map", detail?.nodes.length);
+  const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcutsAvailable = Boolean(runId && detail);
       const isViewShortcut = shortcutsAvailable && isViewShortcutEvent({ event, preferences: uiPreferences });
-      // Desde el issue, la flecha derecha lleva al mapa: el issue va antes.
-      const nextView = isViewShortcut ? resolveViewShortcut({ currentView: view === "issue" ? "findings" : view, event, preferences: uiPreferences }) : null;
+      const nextView = isViewShortcut ? resolveViewShortcut({ currentView: view, event, preferences: uiPreferences }) : null;
       if (nextView) { event.preventDefault(); hideGraphMagnifier(); setView(nextView); return; }
       if (isViewShortcut) { event.preventDefault(); return; }
       if (event.metaKey || event.ctrlKey) showGraphMagnifier(refreshGraphPointer());

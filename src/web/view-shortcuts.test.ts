@@ -5,8 +5,10 @@ describe("resolveViewShortcut", () => {
   it("moves through graph views with the default meta shortcut", () => {
     expect(resolveViewShortcut({ currentView: "map", event: { key: "ArrowRight", metaKey: true } })).toBe("activity");
     expect(resolveViewShortcut({ currentView: "activity", event: { key: "ArrowRight", metaKey: true } })).toBe("findings");
-    expect(resolveViewShortcut({ currentView: "findings", event: { key: "ArrowRight", metaKey: true } })).toBe("map");
-    expect(resolveViewShortcut({ currentView: "map", event: { key: "ArrowLeft", metaKey: true } })).toBe("findings");
+    expect(resolveViewShortcut({ currentView: "findings", event: { key: "ArrowRight", metaKey: true } })).toBe("issue");
+    expect(resolveViewShortcut({ currentView: "issue", event: { key: "ArrowRight", metaKey: true } })).toBe("map");
+    expect(resolveViewShortcut({ currentView: "map", event: { key: "ArrowLeft", metaKey: true } })).toBe("issue");
+    expect(resolveViewShortcut({ currentView: "issue", event: { key: "ArrowLeft", metaKey: true } })).toBe("findings");
   });
 
   it("honors ctrl and either modifier preferences", () => {

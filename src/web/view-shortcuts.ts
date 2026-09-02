@@ -19,7 +19,7 @@ type EditableLikeTarget = {
   closest?: (selector: string) => unknown;
 };
 
-const viewOrder: GraphView[] = ["map", "activity", "findings"];
+const viewOrder: GraphView[] = ["issue", "map", "activity", "findings"];
 const editableTags = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
 function isEditableTarget(target: unknown): boolean {
