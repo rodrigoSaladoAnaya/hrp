@@ -307,14 +307,20 @@ export function createApp(store: HrpStore, options: { webRoot?: string } = {}) {
       return;
     }
 
+    // Cómo se encontró a la sesión: por identidad, por proceso anfitrión o
+    // por familia. El hook lo necesita: una coincidencia por familia es
+    // ambigua (puede ser la sesión de al lado) y no debe retener el turno.
+    let matchedBy: "session" | "host" | "family" | "none" = "none";
     const targets = (): Array<{ runId: string; session: string }> => {
       if (session) {
         if (!runId) throw new Error("Una sesión se consulta con su runId");
+        matchedBy = "session";
         return [{ runId, session }];
       }
       const byHost = store.sessionsForHostPids(hostPids).map((candidate) => ({ runId: candidate.runId, session: candidate.id }));
-      if (byHost.length) return byHost;
+      if (byHost.length) { matchedBy = "host"; return byHost; }
       if (!familyName) return [];
+      matchedBy = "family";
       const projects = workspace
         ? store.listProjects().filter((project) => canonicalPath(project.workspaceRoot) === workspace)
         : store.listProjects();
@@ -337,7 +343,7 @@ export function createApp(store: HrpStore, options: { webRoot?: string } = {}) {
 
     const respond = () => {
       const { best, runs } = evaluate();
-      response.json(best ? { ...best, runs } : { ...idle(session ? `${session} no tiene atención en ${runId}.` : "Sin runs de HRP para esta sesión."), runs });
+      response.json(best ? { ...best, matchedBy, runs } : { ...idle(session ? `${session} no tiene atención en ${runId}.` : "Sin runs de HRP para esta sesión."), matchedBy, runs });
     };
 
     let evaluated: { best?: Attention; runs: Attention[] };

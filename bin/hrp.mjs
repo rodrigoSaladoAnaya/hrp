@@ -219,6 +219,16 @@ async function hook(action) {
     if (action !== "stop") throw new Error("Uso: hrp hook <stop|session-start> --agent FAMILIA");
     let signal = await attention(params, 0);
     if (!signal.runs?.length) return;
+    // Sin coincidencia por proceso anfitrión, la señal es de otra sesión de la
+    // misma familia: se informa, nunca se retiene el turno de quien no es.
+    if (signal.matchedBy !== "host") {
+      const runs = [...new Set((signal.runs ?? []).map((candidate) => candidate.runId))];
+      process.stdout.write(JSON.stringify({
+        continue: true,
+        systemMessage: `HRP: hay ${runs.length === 1 ? "un run vivo" : `${runs.length} runs vivos`} de ${family} en este workspace (${runs.join(", ")}) que no pertenece${runs.length === 1 ? "" : "n"} a esta sesión. Si te toca auditar, engánchate con /hrp attention <id>.`,
+      }));
+      return;
+    }
     if (!signal.actionable && signal.waiting) signal = await attention(params, Math.round(hookWaitMs / 1000));
     const where = signal.session ? ` (tu identidad: ${signal.session})` : "";
     if (signal.actionable) {
