@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { computeAttention } from "./attention.js";
-import { FAILED_OUTPUT_HEAD, FAILED_OUTPUT_TAIL, HrpStore, PASSED_OUTPUT_LIMIT, runVerification, stripAnsi, trimVerificationOutput } from "./store.js";
+import { FAILED_OUTPUT_HEAD, FAILED_OUTPUT_TAIL, HrpStore, PASSED_OUTPUT_LIMIT, reconstructBaseFiles, runVerification, stripAnsi, trimVerificationOutput } from "./store.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -244,3 +244,55 @@ describe("auditoría y gate", () => {
 function mkdirSyncSafe(target: string) {
   execFileSync("mkdir", ["-p", target]);
 }
+
+describe("evolución", () => {
+  it("parte del padre del primer commit y ordena los cuadros por commit", () => {
+    const { run } = startRun();
+    const initial = git(workspace, "rev-parse", "HEAD");
+    mkdirSyncSafe(path.join(workspace, "src"));
+    implementNode(run.id, "claude:1");
+    implementNode(run.id, "claude:1", "README.md", "# demo\n\nmás\n");
+    const evolution = store.getRunEvolution(run.id);
+    expect(evolution.baseCommit).toBe(initial);
+    expect(evolution.baseFiles).toEqual(["README.md"]);
+    expect(evolution.partial).toBe(false);
+    expect(evolution.frames.map((frame) => frame.nodeId)).toEqual(["n1", "n2"]);
+    expect(evolution.frames[0].files).toEqual([{ path: "src/prefs.ts", status: "A" }]);
+    expect(evolution.frames[1].files).toEqual([{ path: "README.md", status: "M" }]);
+    expect(evolution.frames.every((frame) => frame.commit && frame.committedAt)).toBe(true);
+  });
+
+  it("sin nodos completados usa el HEAD de la rama del run", () => {
+    const { run } = startRun();
+    const evolution = store.getRunEvolution(run.id);
+    expect(evolution.frames).toEqual([]);
+    expect(evolution.baseCommit).toBe(git(workspace, "rev-parse", "HEAD"));
+    expect(evolution.baseFiles).toEqual(["README.md"]);
+  });
+
+  it("lee el antes y el después de un archivo en el commit del nodo", () => {
+    const { run } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    const created = implementNode(run.id, "claude:1");
+    const edited = implementNode(run.id, "claude:1", "README.md", "# demo\n\nmás\n");
+    expect(store.getRunEvolutionFile(run.id, created.id, "src/prefs.ts")).toEqual({
+      path: "src/prefs.ts", before: undefined, after: "export const saveTheme = () => {};\n", binary: false, truncated: false,
+    });
+    const readme = store.getRunEvolutionFile(run.id, edited.id, "README.md");
+    expect(readme.before).toBe("# demo\n");
+    expect(readme.after).toBe("# demo\n\nmás\n");
+    // Un archivo que no cambió en ese nodo se lee igual en las dos versiones.
+    expect(store.getRunEvolutionFile(run.id, edited.id, "src/prefs.ts").before).toBe("export const saveTheme = () => {};\n");
+    expect(() => store.getRunEvolutionFile(run.id, created.id, "../fuera.ts")).toThrow(/fuera del workspace/);
+    const pending = store.openNode(run.id, "claude:1", { file: "src/x.ts", symbol: "x", title: "t", description: "d", rationale: "r" });
+    expect(() => store.getRunEvolutionFile(run.id, pending.id, "src/x.ts")).toThrow(/no tiene commit/);
+  });
+
+  it("reconstruye el árbol base con los archivos que no nacieron en el run", () => {
+    expect(reconstructBaseFiles([
+      { nodeId: "n1", files: [{ path: "src/new.ts", status: "A" }, { path: "README.md", status: "M" }] },
+      { nodeId: "n2", files: [{ path: "src/new.ts", status: "M" }, { path: "src/moved.ts", status: "R", from: "src/old.ts" }] },
+      { nodeId: "n3", files: [{ path: "src/moved.ts", status: "D" }, { path: "src/gone.ts", status: "D" }] },
+    ])).toEqual(["README.md", "src/gone.ts", "src/old.ts"]);
+  });
+});

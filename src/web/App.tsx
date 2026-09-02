@@ -32,10 +32,14 @@ import {
   type UiPreferences,
   type ViewShortcutModifier,
 } from "../shared/protocol";
+import type { EvolutionData, EvolutionFileChange, EvolutionFileContent, EvolutionFileStatus } from "../shared/evolution";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
+import { buildEvolutionTree, evolutionHighlights, expandedDirectories, filesAtFrame, frameIndexForNode, highlightLevel, type EvolutionHighlight, type EvolutionTreeNode } from "./evolution-tree";
+import { alignLines, diffRowCounts, type DiffRow } from "./line-diff";
 import { resolveProjectRunListState } from "./project-tree-runs";
-import { isViewShortcutEvent, resolveViewShortcut } from "./view-shortcuts";
+import { highlightLines } from "./syntax";
+import { isViewShortcutEvent, resolveViewShortcut, resolveEvolutionFrameShortcut } from "./view-shortcuts";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -48,6 +52,7 @@ type AttentionSignal = { runId: string; session: string; kind: string; directive
 type GraphMagnifierState = { active: boolean; x: number; y: number; width: number; height: number };
 type GraphPointerState = Omit<GraphMagnifierState, "active"> & { inside: boolean; clientX: number; clientY: number };
 type MapNodeData = { change: ChangeNode; isSelected: boolean; onSelect: (id: string) => void };
+type EvolutionState = { runId: string; data: EvolutionData };
 
 const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
@@ -55,6 +60,11 @@ const graphMagnifierTargetScale = 1.45;
 const graphMagnifierFramePadding = 48;
 const graphMagnifierSize = 2 * Math.ceil((changeNodeWidthFallback * graphMagnifierTargetScale + graphMagnifierFramePadding) / 2);
 const uiPreferencesKey = "hrp.ui-preferences";
+const inspectorCollapsedKey = "hrp.inspector-collapsed";
+
+function readInspectorCollapsed(): boolean {
+  try { return localStorage.getItem(inspectorCollapsedKey) === "true"; } catch { return false; }
+}
 
 function readCssPixels(property: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
@@ -79,6 +89,7 @@ const phaseRank: Record<RunPhase, number> = { hold: 0, open: 1, implemented: 2, 
 const severityCopy: Record<Finding["severity"], string> = { critical: "crítico", major: "mayor", minor: "menor", question: "duda" };
 const findingStatusCopy: Record<Finding["status"], string> = { open: "abierto", debating: "en debate", accepted: "aceptado", rejected: "rechazado", escalated: "esperando tu arbitraje" };
 const scopeCopy: Record<Finding["scope"], string> = { requirement: "requerimiento", node: "nodo", integration: "integración" };
+const fileStatusCopy: Record<EvolutionFileStatus, string> = { A: "creado", M: "modificado", D: "borrado", R: "renombrado" };
 
 function sessionLabel(session: string): string {
   const separator = session.indexOf(":");
@@ -128,8 +139,9 @@ function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   });
 }
 
-function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "doc" }) {
+function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "doc" | "timeline" }) {
   const paths = {
+    timeline: <><path d="M3 12h18"/><circle cx="6" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M12 5v4M12 15v4"/></>,
     sliders: <><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></>,
     route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 3 4"/></>,
     activity: <><path d="M4 17h3l2-10 4 13 3-8 2 5h2"/></>,
@@ -277,10 +289,25 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, findings, onSelectFinding }: { node?: ChangeNode; nodes: ChangeNode[]; findings: Finding[]; onSelectFinding: (id: string) => void }) {
+// Botón de plegar/abrir el inspector; el estado vive en App y se recuerda.
+function InspectorToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? "Abrir el detalle del nodo" : "Plegar el detalle del nodo";
+  return <button type="button" className="inspector-toggle" aria-expanded={!collapsed} aria-label={label} title={label} onClick={onToggle}>{collapsed ? "◂" : "▸"}</button>;
+}
+
+function Inspector({ node, nodes, findings, collapsed, onToggle, onSelectFinding }: { node?: ChangeNode; nodes: ChangeNode[]; findings: Finding[]; collapsed: boolean; onToggle: () => void; onSelectFinding: (id: string) => void }) {
+  if (collapsed) {
+    return (
+      <aside className="inspector inspector-collapsed" aria-label="Detalle del nodo, plegado">
+        <InspectorToggle collapsed onToggle={onToggle}/>
+        <span className="inspector-rail-label" title={node ? `${node.file} · ${node.symbol}` : undefined}>{node ? `${node.id} · ${node.symbol}` : "Sin nodo seleccionado"}</span>
+      </aside>
+    );
+  }
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
+        <div className="inspector-empty-tools"><InspectorToggle collapsed={false} onToggle={onToggle}/></div>
         <div className="empty-symbol"><Icon name="route" /></div>
         <h2>Selecciona una operación</h2>
         <p>Cada nodo es un cambio concreto en un archivo y símbolo. Aquí aparecen su intención, su diff, su verificación y quién lo auditó.</p>
@@ -298,6 +325,7 @@ function Inspector({ node, nodes, findings, onSelectFinding }: { node?: ChangeNo
           <h2>{node.symbol}</h2>
         </div>
         <div className="inspector-signals">
+          <InspectorToggle collapsed={false} onToggle={onToggle}/>
           <StatusSignal status={node.status}/>
           <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.author}</span>
         </div>
@@ -428,6 +456,277 @@ function IssueView({ detail }: { detail: RunDetail }) {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+// Evolución: el árbol de archivos del workspace recorrido cuadro a cuadro, un
+// cuadro por nodo completado. El cuadro actual y la selección del nodo son el
+// mismo estado; el rótulo reproduce lo que el nodo ya guardaba.
+function EvolutionBranch({ nodes, depth, highlights, dirCounts, focusPath, isOpen, onToggle, onSelectFile }: {
+  nodes: EvolutionTreeNode[];
+  depth: number;
+  highlights: Map<string, EvolutionHighlight>;
+  dirCounts: Map<string, { current: number; past: number }>;
+  focusPath?: string;
+  isOpen: (path: string, depth: number) => boolean;
+  onToggle: (path: string) => void;
+  onSelectFile: (path: string) => void;
+}) {
+  return (
+    <ul className="evolution-branch" role={depth === 0 ? "tree" : "group"}>
+      {nodes.map((node) => {
+        if (node.kind === "dir") {
+          const open = isOpen(node.path, depth);
+          const counts = dirCounts.get(node.path);
+          return (
+            <li key={node.path} className="evolution-dir" role="treeitem" aria-expanded={open}>
+              <button type="button" className={`evolution-dir-row ${counts?.current ? "has-current" : counts ? "has-past" : ""}`} style={{ paddingLeft: depth * 16 + 8 }} onClick={() => onToggle(node.path)}>
+                <span className="evolution-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+                <Icon name="folder"/>
+                <span className="evolution-name">{node.name}</span>
+                {counts && <span className="evolution-dir-count" title={`${counts.current + counts.past} ${counts.current + counts.past === 1 ? "archivo tocado" : "archivos tocados"} dentro`}>{counts.current + counts.past}</span>}
+              </button>
+              {open && <EvolutionBranch nodes={node.children} depth={depth + 1} highlights={highlights} dirCounts={dirCounts} focusPath={focusPath} isOpen={isOpen} onToggle={onToggle} onSelectFile={onSelectFile}/>}
+            </li>
+          );
+        }
+        const highlight = highlights.get(node.path);
+        const focused = node.path === focusPath;
+        const className = `evolution-file ${highlight ? `is-${highlight.kind} level-${highlightLevel(highlight.age)} status-${highlight.status}` : ""} ${focused ? "is-focus" : ""}`;
+        return (
+          <li key={node.path} role="treeitem" aria-selected={focused} className={className} data-evolution-current={highlight?.kind === "current" ? "true" : undefined}>
+            <button type="button" className="evolution-file-row" style={{ paddingLeft: depth * 16 + 30 }} title={highlight ? `${node.path} · ${fileStatusCopy[highlight.status]}${highlight.kind === "past" ? ` hace ${highlight.age} ${highlight.age === 1 ? "cuadro" : "cuadros"}` : " en este cuadro"}` : node.path} onClick={() => onSelectFile(node.path)}>
+              <span className="evolution-name">{node.name}</span>
+              {highlight && <span className={`evolution-status status-${highlight.status}`} aria-label={fileStatusCopy[highlight.status]}>{highlight.status}</span>}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// Antes y después del archivo en foco, alineados línea a línea en una sola
+// rejilla: número y texto de cada lado, con la fila coloreada según añadida,
+// borrada o modificada.
+function EvolutionCodePane({ runId, node, change, path, frameLabel, onShowFrame }: {
+  runId: string;
+  node: ChangeNode;
+  change?: EvolutionFileChange;
+  path: string;
+  frameLabel: string;
+  onShowFrame: () => void;
+}) {
+  const [state, setState] = useState<{ key: string; content?: EvolutionFileContent; error?: string }>({ key: "" });
+  const key = `${runId}:${node.id}:${path}`;
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/runs/${runId}/evolution/file?nodeId=${encodeURIComponent(node.id)}&path=${encodeURIComponent(path)}`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({})) as EvolutionFileContent & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "No se pudo leer el archivo");
+        return body;
+      })
+      .then((content) => { if (!cancelled) setState({ key, content }); })
+      .catch((cause) => { if (!cancelled) setState({ key, error: cause instanceof Error ? cause.message : String(cause) }); });
+    return () => { cancelled = true; };
+  }, [key, runId, node.id, path]);
+  const loaded = state.key === key ? state : { key };
+  const rows: DiffRow[] = useMemo(() => loaded.content && !loaded.content.binary ? alignLines(loaded.content.before, loaded.content.after) : [], [loaded.content]);
+  // HTML resaltado por línea de cada versión; el índice es el número de línea - 1.
+  const beforeHtml = useMemo(() => loaded.content && !loaded.content.binary ? highlightLines(loaded.content.before, path) : [], [loaded.content, path]);
+  const afterHtml = useMemo(() => loaded.content && !loaded.content.binary ? highlightLines(loaded.content.after, path) : [], [loaded.content, path]);
+  const counts = useMemo(() => diffRowCounts(rows), [rows]);
+  const status = change?.status;
+  return (
+    <section className="evolution-code-pane" aria-label={`Antes y después de ${path}`}>
+      <header className="evolution-code-head">
+        <div className="evolution-code-node">
+          <strong>{frameLabel}</strong>
+          <span className="evolution-code-title" title={node.title}>{node.title}</span>
+          <button type="button" className="evolution-code-frame-link" onClick={onShowFrame}>Ver cuadro</button>
+        </div>
+        <div className="evolution-code-file">
+          {status ? <span className={`evolution-status status-${status}`}>{status}</span> : <span className="evolution-status status-none" title="Sin cambios en este cuadro">=</span>}
+          <code title={path}>{path}</code>
+          {change?.from && <em>desde {change.from}</em>}
+          {loaded.content && !loaded.content.binary && (
+            <span className="evolution-code-counts" aria-label={`${counts.added} añadidas, ${counts.deleted} borradas, ${counts.modified} modificadas`}>
+              <b className="count-add">+{counts.added}</b><b className="count-del">−{counts.deleted}</b><b className="count-mod">~{counts.modified}</b>
+            </span>
+          )}
+        </div>
+      </header>
+      {loaded.error ? (
+        <div className="evolution-code-fallback">
+          <p role="alert"><Icon name="warning"/>{loaded.error}</p>
+          {node.diff && change ? <><p>Se muestra el diff guardado del nodo.</p><DiffView diff={node.diff}/></> : null}
+        </div>
+      ) : !loaded.content ? (
+        <p className="evolution-code-loading" aria-busy="true">Leyendo las dos versiones…</p>
+      ) : loaded.content.binary ? (
+        <p className="evolution-code-loading">Archivo binario: no se muestra su contenido.</p>
+      ) : (
+        <div className="evolution-code" role="table" aria-label="Líneas antes y después">
+          <div className="evolution-code-columns" role="row">
+            <span role="columnheader" className={loaded.content.before === undefined ? "is-void" : ""}>Antes{loaded.content.before === undefined ? " · no existía" : ""}</span>
+            <span role="columnheader" className={loaded.content.after === undefined ? "is-void" : ""}>Después{loaded.content.after === undefined ? " · borrado" : ""}</span>
+          </div>
+          {loaded.content.truncated && <p className="evolution-code-loading">Archivo truncado a 1 MB.</p>}
+          {rows.map((row, index) => (
+            <div className={`evolution-code-row kind-${row.kind}`} role="row" key={index}>
+              <span className={`evolution-ln ${row.left ? "" : "is-void"}`} role="cell">{row.left?.number ?? ""}</span>
+              <span className={`evolution-src ${row.left ? "" : "is-void"}`} role="cell" dangerouslySetInnerHTML={{ __html: row.left ? beforeHtml[row.left.number - 1] ?? "" : "" }}/>
+              <span className={`evolution-ln ${row.right ? "" : "is-void"}`} role="cell">{row.right?.number ?? ""}</span>
+              <span className={`evolution-src ${row.right ? "" : "is-void"}`} role="cell" dangerouslySetInnerHTML={{ __html: row.right ? afterHtml[row.right.number - 1] ?? "" : "" }}/>
+            </div>
+          ))}
+          {!rows.length && <p className="evolution-code-loading">Archivo vacío en las dos versiones.</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function EvolutionView({ runId, evolution, error, nodes, findings, frameIndex, onFrame, onSelectFinding }: {
+  runId: string;
+  evolution?: EvolutionData;
+  error: string;
+  nodes: ChangeNode[];
+  findings: Finding[];
+  frameIndex: number;
+  onFrame: (index: number) => void;
+  onSelectFinding: (id: string) => void;
+}) {
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  // Por defecto se ve el código del archivo en foco; el rótulo del cuadro es
+  // el otro modo. Seleccionar un archivo vuelve al código.
+  const [mode, setMode] = useState<"code" | "frame">("code");
+  const [focusPath, setFocusPath] = useState<string>();
+  const treeRef = useRef<HTMLDivElement>(null);
+  const frames = useMemo(() => evolution?.frames ?? [], [evolution]);
+  const frame = frames[frameIndex];
+  const node = frame ? nodes.find((candidate) => candidate.id === frame.nodeId) : undefined;
+  const paths = useMemo(() => evolution ? filesAtFrame(evolution.baseFiles, frames, frameIndex) : [], [evolution, frames, frameIndex]);
+  const tree = useMemo(() => buildEvolutionTree(paths), [paths]);
+  const highlights = useMemo(() => evolutionHighlights(frames, frameIndex), [frames, frameIndex]);
+  const autoExpanded = useMemo(() => expandedDirectories([...highlights.keys()]), [highlights]);
+  const dirCounts = useMemo(() => {
+    const counts = new Map<string, { current: number; past: number }>();
+    for (const [path, highlight] of highlights) {
+      // Un borrado sólo está en el árbol durante su cuadro.
+      if (highlight.status === "D" && highlight.kind !== "current") continue;
+      const segments = path.split("/");
+      for (let depth = 1; depth < segments.length; depth += 1) {
+        const directory = segments.slice(0, depth).join("/");
+        const entry = counts.get(directory) ?? { current: 0, past: 0 };
+        entry[highlight.kind] += 1;
+        counts.set(directory, entry);
+      }
+    }
+    return counts;
+  }, [highlights]);
+  // Al cambiar de cuadro el árbol vuelve a abrirse solo hacia lo tocado y
+  // enfoca el primer archivo del cuadro.
+  useEffect(() => { setOverrides({}); }, [frameIndex, evolution]);
+  useEffect(() => { setFocusPath(frame?.files[0]?.path); }, [frame]);
+  const selectFile = useCallback((path: string) => { setFocusPath(path); setMode("code"); }, []);
+  useEffect(() => {
+    treeRef.current?.querySelector<HTMLElement>("[data-evolution-current]")?.scrollIntoView({ block: "center" });
+  }, [frameIndex, evolution]);
+  const isOpen = useCallback((path: string, depth: number) => overrides[path] ?? (depth === 0 || autoExpanded.has(path)), [overrides, autoExpanded]);
+  const toggle = useCallback((path: string) => setOverrides((current) => {
+    const open = current[path] ?? (!path.includes("/") || autoExpanded.has(path));
+    return { ...current, [path]: !open };
+  }), [autoExpanded]);
+  const related = node ? findings.filter((finding) => finding.nodeId === node.id || finding.resolutionNodeId === node.id) : [];
+
+  if (error) return <div className="ledger-empty"><Icon name="warning"/><h2>No se pudo cargar la evolución</h2><p>{error}</p></div>;
+  if (!evolution) return <div className="ledger-empty" aria-busy="true"><Icon name="timeline"/><h2>Cargando la evolución</h2><p>Leyendo el árbol base y los cuadros del run.</p></div>;
+
+  return (
+    <div className="evolution">
+      <div className="evolution-strip" role="group" aria-label="Línea de tiempo del run">
+        <button type="button" disabled={frameIndex <= 0} title="Primer cuadro (Inicio)" aria-label="Primer cuadro" onClick={() => onFrame(0)}>⇤</button>
+        <button type="button" disabled={frameIndex <= 0} title="Cuadro anterior (←)" aria-label="Cuadro anterior" onClick={() => onFrame(frameIndex - 1)}>←</button>
+        <ol className="evolution-dots">
+          {frames.map((candidate, index) => {
+            const title = nodes.find((item) => item.id === candidate.nodeId)?.title ?? candidate.nodeId;
+            return (
+              <li key={candidate.nodeId}>
+                <button type="button" className={index === frameIndex ? "is-current" : index < frameIndex ? "is-past" : ""} aria-current={index === frameIndex ? "step" : undefined} aria-label={`Cuadro ${index + 1}: ${candidate.nodeId}, ${title}`} title={`${candidate.nodeId} · ${title}`} onClick={() => onFrame(index)}/>
+              </li>
+            );
+          })}
+        </ol>
+        <button type="button" disabled={frameIndex >= frames.length - 1} title="Cuadro siguiente (→)" aria-label="Cuadro siguiente" onClick={() => onFrame(frameIndex + 1)}>→</button>
+        <button type="button" disabled={frameIndex >= frames.length - 1} title="Último cuadro (Fin)" aria-label="Último cuadro" onClick={() => onFrame(frames.length - 1)}>⇥</button>
+        <span className="evolution-counter">{frames.length ? `${Math.max(frameIndex, 0) + 1} / ${frames.length}` : "0 cuadros"}</span>
+        <div className="evolution-mode" role="group" aria-label="Qué mostrar junto al árbol">
+          <button type="button" className={mode === "code" ? "active" : ""} aria-pressed={mode === "code"} onClick={() => setMode("code")}>Código</button>
+          <button type="button" className={mode === "frame" ? "active" : ""} aria-pressed={mode === "frame"} onClick={() => setMode("frame")}>Cuadro</button>
+        </div>
+        <span className="evolution-hint">← → cambian de cuadro · Inicio/Fin van a los extremos</span>
+      </div>
+      {evolution.partial && (
+        <p className="evolution-partial" role="status"><Icon name="warning"/>git ya no alcanza el commit base: el árbol se reconstruyó sólo con los archivos que tocan los nodos.</p>
+      )}
+      <div className={`evolution-body mode-${mode}`}>
+        <div className="evolution-tree" ref={treeRef} aria-label="Árbol de archivos en este cuadro">
+          {tree.length
+            ? <EvolutionBranch nodes={tree} depth={0} highlights={highlights} dirCounts={dirCounts} focusPath={focusPath} isOpen={isOpen} onToggle={toggle} onSelectFile={selectFile}/>
+            : <p className="evolution-empty-tree">Sin archivos en el árbol.</p>}
+        </div>
+        {mode === "code" && frame && node && focusPath ? (
+          <EvolutionCodePane runId={runId} node={node} change={frame.files.find((candidate) => candidate.path === focusPath)} path={focusPath} frameLabel={`${node.id} · ${frameIndex + 1}/${frames.length}`} onShowFrame={() => setMode("frame")}/>
+        ) : mode === "code" && frame && node ? (
+          <section className="evolution-caption" aria-label="Archivo en foco"><strong>Sin archivo en foco</strong><p>Elige un archivo del árbol para ver su antes y su después en este cuadro.</p></section>
+        ) : (
+        <section className="evolution-caption" aria-live="polite" aria-label="Cuadro actual">
+          {frame && node ? (
+            <>
+              <div className="evolution-caption-head">
+                <strong>{node.id} · cuadro {frameIndex + 1} de {frames.length}</strong>
+                {frame.commit && <span className="activity-agent" title={frame.commit}>commit {frame.commit.slice(0, 10)}</span>}
+                {frame.committedAt && <time dateTime={frame.committedAt}>{formatTime(frame.committedAt)}</time>}
+                <span className="evolution-author">{node.author}</span>
+              </div>
+              <h2>{node.title}</h2>
+              <ul className="evolution-files">
+                {frame.files.map((change) => (
+                  <li key={change.path}>
+                    <span className={`evolution-status status-${change.status}`}>{change.status}</span>
+                    <code>{change.path}</code>
+                    <em>{fileStatusCopy[change.status]}{change.from ? ` desde ${change.from}` : ""}</em>
+                  </li>
+                ))}
+                {!frame.files.length && <li><em>git no registró archivos en este nodo.</em></li>}
+              </ul>
+              {node.patchSummary && <p className="evolution-summary">{node.patchSummary}</p>}
+              {node.patchRationale && <p className="evolution-rationale"><strong>Por qué</strong>{node.patchRationale}</p>}
+              <div className="evolution-signals">
+                {node.verification && (
+                  <span className={`evolution-verify verify-${node.verification.passed ? "passed" : "failed"}`} title={node.verification.command}>
+                    <Icon name={node.verification.passed ? "check" : "warning"}/>{node.verification.passed ? "Verificación aprobada" : "Verificación fallida"}<code>{node.verification.command}</code>
+                  </span>
+                )}
+                {related.length > 0 && (
+                  <button type="button" className="finding-node-link" onClick={() => onSelectFinding(related[0].id)}>
+                    {related.length === 1 ? "1 hallazgo" : `${related.length} hallazgos`}{related.some(isLiveFinding) ? " · alguno vivo" : ""}
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <strong>{frames.length ? "Cuadro sin nodo" : "Antes del run"}</strong>
+              <p>{frames.length ? "El nodo de este cuadro ya no está en el run." : "Todavía no hay nodos completados: este es el árbol del que parte el run. Los cuadros aparecen conforme el base completa operaciones."}</p>
+            </>
+          )}
+        </section>
+        )}
+      </div>
     </div>
   );
 }
@@ -781,7 +1080,7 @@ function SettingsPanel({ uiPreferences, onUiPreferencesSaved }: { uiPreferences:
               <h3>Atajos de vistas</h3>
               <label className="settings-check">
                 <input type="checkbox" checked={uiPreferences.viewShortcuts.enabled} onChange={(event) => save({ enabled: event.target.checked })}/>
-                <span>Flechas izquierda/derecha recorren Issue, Mapa, Actividad y Hallazgos</span>
+                <span>Flechas izquierda/derecha recorren Issue, Mapa, Actividad, Hallazgos y Evolución</span>
               </label>
               <div className="shortcut-options" role="group" aria-label="Modificador de atajos de vistas">
                 {([["meta", "Command"], ["ctrl", "Ctrl"], ["either", "Ambos"]] as const).map(([modifier, label]) => (
@@ -827,7 +1126,8 @@ function HelpPanel() {
             </ul>
             <h3>Tips</h3>
             <ul>
-              <li>Command/Ctrl sobre el mapa abre la lupa; con Command/Ctrl, las flechas recorren Issue, Mapa, Actividad y Hallazgos.</li>
+              <li>Command/Ctrl sobre el mapa abre la lupa; con Command/Ctrl, las flechas recorren Issue, Mapa, Actividad, Hallazgos y Evolución.</li>
+              <li>En Evolución, las flechas sin modificador recorren los cuadros (uno por nodo completado) sobre el árbol de archivos; Inicio y Fin van al primero y al último. Junto al árbol se ve el antes y el después del archivo en foco; clic en un archivo lo enfoca y «Cuadro» muestra el rótulo del nodo.</li>
               <li>Clic en una sesión del dock filtra Actividad y Hallazgos por esa sesión.</li>
               <li>Un run «implementado sin auditar» se queda así hasta que alguien se enganche; nunca cierra solo.</li>
             </ul>
@@ -971,9 +1271,18 @@ export function App() {
   const [view, setView] = useState<View>("map");
   const [sessionFilter, setSessionFilter] = useState("");
   const [focusFindingId, setFocusFindingId] = useState<string>();
+  const [evolution, setEvolution] = useState<EvolutionState>();
+  const [evolutionError, setEvolutionError] = useState("");
+  const [frameIndex, setFrameIndex] = useState(-1);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [buildStale, setBuildStale] = useState(false);
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(readUiPreferences);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(readInspectorCollapsed);
+  const toggleInspector = useCallback(() => setInspectorCollapsed((current) => {
+    const next = !current;
+    try { localStorage.setItem(inspectorCollapsedKey, String(next)); } catch { /* preferencia efímera */ }
+    return next;
+  }), []);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
@@ -1175,9 +1484,53 @@ export function App() {
   const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
   const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
 
+  // --- Evolución: se recarga cuando cambia el conjunto de nodos completados ---
+  const evolutionRunId = detail?.run.id ?? "";
+  const completedKey = useMemo(() => (detail?.nodes ?? []).filter((node) => node.status === "completed").map((node) => `${node.id}@${node.commit ?? ""}`).join("|"), [detail?.nodes]);
+  useEffect(() => {
+    if (!evolutionRunId) { setEvolution(undefined); setEvolutionError(""); return; }
+    let cancelled = false;
+    fetch(`/api/runs/${evolutionRunId}/evolution`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "No se pudo cargar la evolución");
+        return await response.json() as EvolutionData;
+      })
+      .then((data) => { if (!cancelled) { setEvolution({ runId: evolutionRunId, data }); setEvolutionError(""); } })
+      .catch((cause) => { if (!cancelled) setEvolutionError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => { cancelled = true; };
+  }, [evolutionRunId, completedKey]);
+  const evolutionData = evolution?.runId === evolutionRunId ? evolution.data : undefined;
+  const evolutionFrames = evolutionData?.frames ?? [];
+  useEffect(() => {
+    setFrameIndex((current) => current >= 0 && current < evolutionFrames.length ? current : evolutionFrames.length - 1);
+  }, [evolutionFrames.length, evolutionRunId]);
+  useEffect(() => {
+    const index = frameIndexForNode(evolutionFrames, selectedId);
+    if (index !== -1) setFrameIndex(index);
+  }, [selectedId, evolutionFrames]);
+  // Entrar a Evolución con un nodo que no es cuadro (en curso, fallido o
+  // ninguno) alinea la selección con el cuadro mostrado.
+  useEffect(() => {
+    if (view !== "evolution") return;
+    const frame = evolutionFrames[frameIndex];
+    if (frame && frameIndexForNode(evolutionFrames, selectedId) === -1) setSelectedId(frame.nodeId);
+    // selectedId se omite a propósito: sólo importa al entrar o al cambiar de cuadro.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, evolutionFrames, frameIndex]);
+  const goToFrame = useCallback((index: number) => {
+    const frame = evolutionFrames[index];
+    if (!frame) return;
+    setFrameIndex(index);
+    setSelectedId(frame.nodeId);
+  }, [evolutionFrames]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcutsAvailable = Boolean(runId && detail);
+      // Sin modificador, en Evolución, las flechas mueven el cuadro; con
+      // modificador recorren las vistas. No compiten.
+      const nextFrame = shortcutsAvailable ? resolveEvolutionFrameShortcut({ event, index: frameIndex, length: evolutionFrames.length, view }) : null;
+      if (nextFrame !== null) { event.preventDefault(); goToFrame(nextFrame); return; }
       const isViewShortcut = shortcutsAvailable && isViewShortcutEvent({ event, preferences: uiPreferences });
       const nextView = isViewShortcut ? resolveViewShortcut({ currentView: view, event, preferences: uiPreferences }) : null;
       if (nextView) { event.preventDefault(); hideGraphMagnifier(); setView(nextView); return; }
@@ -1193,7 +1546,7 @@ export function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", hideGraphMagnifier);
     };
-  }, [detail, hideGraphMagnifier, refreshGraphPointer, runId, showGraphMagnifier, uiPreferences, view]);
+  }, [detail, hideGraphMagnifier, refreshGraphPointer, runId, showGraphMagnifier, uiPreferences, view, evolutionFrames.length, frameIndex, goToFrame]);
 
   const applyGraphViewport = useCallback((duration = 320) => {
     const instance = flowInstance.current;
@@ -1313,11 +1666,12 @@ export function App() {
               <button aria-pressed={view === "map"} className={view === "map" ? "active" : ""} onClick={() => setView("map")}><Icon name="route"/>Mapa</button>
               <button aria-pressed={view === "activity"} className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}><Icon name="activity"/>Actividad</button>
               <button aria-pressed={view === "findings"} className={view === "findings" ? "active" : ""} onClick={() => setView("findings")}><Icon name="warning"/>Hallazgos{liveFindingsCount > 0 && <span className="nav-findings-count">{liveFindingsCount}</span>}</button>
+              <button aria-pressed={view === "evolution"} className={view === "evolution" ? "active" : ""} onClick={() => setView("evolution")}><Icon name="timeline"/>Evolución</button>
             </nav>
           </div>
           {loadingRun ? <LoadingState label="Cargando run"/> : !runId || !detail ? <EmptyState kind="runs"/> : (
-            <main className="workspace">
-              <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : view === "issue" ? "Issue del run" : view === "activity" ? "Actividad del run" : "Hallazgos del run"}>
+            <main className={`workspace ${inspectorCollapsed ? "inspector-collapsed" : ""}`}>
+              <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : view === "issue" ? "Issue del run" : view === "activity" ? "Actividad del run" : view === "evolution" ? "Evolución del run" : "Hallazgos del run"}>
                 <header className="stage-head">
                   <div>
                     <h1>{detail.run.title}</h1>
@@ -1360,6 +1714,8 @@ export function App() {
                 {(view === "activity" || view === "findings") && <SessionFilterBar sessions={sessionNames} value={sessionFilter} onChange={setSessionFilter}/>}
                 {view === "issue" ? (
                   <IssueView detail={detail}/>
+                ) : view === "evolution" ? (
+                  <EvolutionView runId={detail.run.id} evolution={evolutionData} error={evolutionError} nodes={detail.nodes} findings={detail.findings} frameIndex={frameIndex} onFrame={goToFrame} onSelectFinding={openFinding}/>
                 ) : view === "findings" ? (
                   <FindingsPanel findings={detail.findings} nodes={detail.nodes} sessionFilter={sessionFilter} focusId={focusFindingId} onChanged={refresh} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
                 ) : view === "map" ? (
@@ -1376,7 +1732,7 @@ export function App() {
                     : <div className="map-empty"><Icon name="route"/><h2>Todavía no hay nodos</h2><p>El mapa se dibuja conforme el base abre y completa operaciones.</p><button type="button" className="map-empty-cta" onClick={() => setView("issue")}><Icon name="doc"/>Ver el issue</button></div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} sessionFilter={sessionFilter} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>}
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} findings={detail.findings} onSelectFinding={openFinding}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} findings={detail.findings} collapsed={inspectorCollapsed} onToggle={toggleInspector} onSelectFinding={openFinding}/>
             </main>
           )}
         </div>

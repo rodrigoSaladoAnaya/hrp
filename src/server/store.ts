@@ -36,6 +36,7 @@ import {
   type SessionStatus,
   type Verification,
 } from "../shared/protocol.js";
+import { evolutionFileContentLimit, fileChangesFromDiff, type EvolutionData, type EvolutionFileContent, type EvolutionFrame } from "../shared/evolution.js";
 
 type Row = Record<string, unknown>;
 
@@ -53,6 +54,22 @@ export type RunStart = {
   run: RunSummary;
   session: Session;
 };
+
+// Árbol de partida cuando git ya no alcanza el commit base: los archivos que
+// los cuadros tocaron y que no nacieron en el run.
+export function reconstructBaseFiles(frames: EvolutionFrame[]): string[] {
+  const born = new Set<string>();
+  const before = new Set<string>();
+  for (const frame of frames) {
+    for (const change of frame.files) {
+      if (change.status === "A") { born.add(change.path); continue; }
+      const previous = change.status === "R" ? change.from ?? change.path : change.path;
+      if (!born.has(previous)) before.add(previous);
+      if (change.status === "R") born.add(change.path);
+    }
+  }
+  return [...before].sort();
+}
 
 // Tiempo máximo de un comando de verificación o de un criterio de aceptación.
 export const VERIFY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -378,6 +395,14 @@ export class HrpStore {
     }
   }
 
+  private gitBytes(project: Project, args: string[]): Buffer | undefined {
+    try {
+      return execFileSync("git", args, { cwd: project.workspaceRoot, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return undefined;
+    }
+  }
+
   private requireGit(project: Project, args: string[], why: string): string {
     try {
       return execFileSync("git", args, { cwd: project.workspaceRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -519,6 +544,53 @@ export class HrpStore {
       activity,
       issue: this.readIssue(id),
     };
+  }
+
+  // Evolución: un cuadro por nodo completado, en el orden de sus commits (la
+  // fecha de updatedAt cambia con las auditorías). El árbol de partida es el
+  // padre del primer commit: run.base es una sesión, no un commit.
+  getRunEvolution(runId: string): EvolutionData {
+    const run = this.requireRun(runId);
+    const project = this.getProject(run.projectId)!;
+    const completed = this.listNodes(runId).filter((node) => node.status === "completed" && node.commit);
+    const dates = new Map<string, string>();
+    if (completed.length) {
+      const raw = this.git(project, ["show", "-s", "--format=%H %cI", ...completed.map((node) => node.commit!)]) ?? "";
+      for (const line of raw.split("\n")) {
+        const [sha, date] = line.trim().split(" ");
+        if (sha && date) dates.set(sha, date);
+      }
+    }
+    const frames = completed
+      .map((node) => ({
+        frame: { nodeId: node.id, commit: node.commit, committedAt: dates.get(node.commit!), files: fileChangesFromDiff(node.diff ?? "") } satisfies EvolutionFrame,
+        order: Date.parse(dates.get(node.commit!) ?? "") || Date.parse(node.createdAt),
+      }))
+      .sort((left, right) => left.order - right.order)
+      .map((entry) => entry.frame);
+    const baseRef = frames[0]?.commit ? `${frames[0].commit}^` : `refs/heads/${run.branch}`;
+    const baseCommit = this.git(project, ["rev-parse", "--verify", `${baseRef}^{commit}`])?.trim() || undefined;
+    const listed = baseCommit ? this.git(project, ["ls-tree", "-r", "--name-only", "-z", baseCommit]) : undefined;
+    if (listed === undefined) return { baseCommit, baseFiles: reconstructBaseFiles(frames), frames, partial: true };
+    return { baseCommit, baseFiles: listed.split("\0").filter(Boolean), frames, partial: false };
+  }
+
+  // El archivo completo en las dos versiones que separa el nodo, leído de git.
+  getRunEvolutionFile(runId: string, nodeId: string, file: string): EvolutionFileContent {
+    const run = this.requireRun(runId);
+    const node = this.requireNode(runId, nodeId);
+    const project = this.getProject(run.projectId)!;
+    if (node.status !== "completed" || !node.commit) throw new Error(`${nodeId} no tiene commit: sólo un nodo completado tiene antes y después`);
+    const relative = this.relativeInWorkspace(project, file).split(path.sep).join("/");
+    if (this.git(project, ["cat-file", "-e", `${node.commit}^{commit}`]) === undefined) {
+      throw new Error(`git ya no alcanza el commit ${node.commit.slice(0, 10)} del nodo ${nodeId}`);
+    }
+    const read = (ref: string) => this.gitBytes(project, ["show", `${ref}:${relative}`]);
+    const versions = [read(`${node.commit}^`), read(node.commit)];
+    const binary = versions.some((bytes) => bytes?.subarray(0, 8000).includes(0));
+    const truncated = versions.some((bytes) => (bytes?.length ?? 0) > evolutionFileContentLimit);
+    const text = (bytes: Buffer | undefined) => (bytes === undefined || binary ? undefined : bytes.subarray(0, evolutionFileContentLimit).toString("utf8"));
+    return { path: relative, before: text(versions[0]), after: text(versions[1]), binary, truncated };
   }
 
   setRunControl(runId: string, control: RunControl, actor = "human"): RunSummary {

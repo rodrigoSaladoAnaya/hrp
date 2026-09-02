@@ -19,7 +19,7 @@ type EditableLikeTarget = {
   closest?: (selector: string) => unknown;
 };
 
-const viewOrder: GraphView[] = ["issue", "map", "activity", "findings"];
+const viewOrder: GraphView[] = ["issue", "map", "activity", "findings", "evolution"];
 const editableTags = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
 function isEditableTarget(target: unknown): boolean {
@@ -72,4 +72,30 @@ export function resolveViewShortcut({
   if (event.key === "ArrowRight") return viewOrder[(currentIndex + 1) % viewOrder.length];
   if (event.key === "ArrowLeft") return viewOrder[(currentIndex - 1 + viewOrder.length) % viewOrder.length];
   return null;
+}
+
+// Flechas sin modificador en la vista Evolución: mueven el cuadro de la línea
+// de tiempo. Devuelve el índice nuevo, o null cuando no aplica o no cambia.
+export function resolveEvolutionFrameShortcut({
+  event,
+  index,
+  length,
+  view,
+}: {
+  event: ViewShortcutEvent;
+  index: number;
+  length: number;
+  view: GraphView;
+}): number | null {
+  if (view !== "evolution" || length <= 0) return null;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
+  if (isEditableTarget(event.target)) return null;
+  const last = length - 1;
+  const current = Math.min(Math.max(index, 0), last);
+  const next = event.key === "ArrowRight" ? Math.min(current + 1, last)
+    : event.key === "ArrowLeft" ? Math.max(current - 1, 0)
+      : event.key === "Home" ? 0
+        : event.key === "End" ? last
+          : null;
+  return next === null || next === index ? null : next;
 }
