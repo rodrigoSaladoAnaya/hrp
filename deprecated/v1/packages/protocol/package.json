@@ -1,7 +1,0 @@
-{
-  "name": "@human-review/protocol",
-  "version": "0.4.0",
-  "private": true,
-  "type": "module",
-  "exports": "./src/index.ts"
-}

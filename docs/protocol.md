@@ -256,7 +256,8 @@ puede haber runs abiertos en varios proyectos a la vez.
 
 ## Panel
 
-Se conserva el sistema visual de v3 (`deprecated/v3/DESIGN.md`) menos lo que
+Se conserva el sistema visual de v3 (tablero de enclavamiento: verde mineral,
+marfil, grafito, ámbar de movimiento y verde de señal) menos lo que
 desaparece.
 
 Se conserva: mapa con inspector, actividad, hallazgos con debate, carriles y

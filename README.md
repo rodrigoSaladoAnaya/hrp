@@ -60,7 +60,6 @@ Si vienes de v3, primero `./scripts/uninstall-v3.sh --apply`.
 | `bin/hrp.mjs` | CLI: `mcp`, `service`, `hook`, `attend`, `agent install`. |
 | `integrations/` | Skill `hrp` para Claude, plugin para Codex, skill y reglas para Antigravity. |
 | `scripts/` | `install.sh`, `update.sh`, `start.sh`, `stop.sh`, `uninstall-v3.sh`. |
-| `deprecated/` | v1, v2 y v3 congeladas. Referencia histórica. |
 
 ## Desarrollo
 

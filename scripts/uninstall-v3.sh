@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Retira de la máquina lo que HRP v3 instalaba fuera del repositorio: CLI
 # global, enlaces, skills, servidores MCP, hooks, plugin de Codex y datos
-# locales. v3 vive congelada en deprecated/v3, así que estas instalaciones
+# locales. v3 ya no está en el repositorio, así que estas instalaciones
 # apuntan a rutas que ya no existen en la raíz.
 #
 # Por defecto sólo informa. Borra con --apply. Los datos de ejecución (~/.hrp)

@@ -1,9 +1,0 @@
-{
-  "name": "@guided/server",
-  "version": "0.4.0",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@human-review/protocol": "0.4.0"
-  }
-}

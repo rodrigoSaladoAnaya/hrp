@@ -1,9 +1,0 @@
-node_modules/
-dist/
-.human-review/
-.guided/
-.env
-.env.*
-.DS_Store
-.codegraph/
-dist-pack/
