@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   attentionCommand,
   computeAuditStatus,
+  nodeFilesOf,
   isUnresolvedAcceptance,
   isValidFamily,
   isValidSessionId,
@@ -14,7 +15,7 @@ import {
 
 function node(partial: Partial<ChangeNode> & Pick<ChangeNode, "id">): ChangeNode {
   return {
-    runId: "r1", file: "a.ts", symbol: "f", title: "t", description: "d", rationale: "r",
+    runId: "r1", files: ["a.ts"], file: "a.ts", symbol: "f", title: "t", description: "d", rationale: "r",
     status: "completed", author: "claude:1", dependencies: [], auditedBy: [],
     createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
     ...partial,
@@ -37,6 +38,12 @@ describe("identidades", () => {
     expect(isValidSessionId("claude:2")).toBe(true);
     expect(isValidSessionId("claude")).toBe(false);
     expect(sessionFamily("codex:3")).toBe("codex");
+  });
+
+  it("un nodo puede declarar varios archivos y se deduplican", () => {
+    expect(nodeFilesOf({ files: ["src/a.ts", "src/a.test.ts", " src/a.ts "] })).toEqual(["src/a.ts", "src/a.test.ts"]);
+    expect(nodeFilesOf({ file: "src/a.ts" })).toEqual(["src/a.ts"]);
+    expect(nodeFilesOf({})).toEqual([]);
   });
 
   it("el comando de enganche es uno solo por run", () => {

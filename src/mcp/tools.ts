@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   attentionCommand, panelUrl, runnerCommand,
-  type Finding, type RunDetail, type RunSummary, type Session,
+  type ChangeNode, type Finding, type RunDetail, type RunSummary, type Session,
 } from "../shared/protocol.js";
 
 function findHrpRoot(start: string): string {
@@ -135,7 +135,7 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
       interpretation: str("Qué entendiste que hay que hacer."),
       scopeIncludes: strList("Qué entra en el alcance (archivos, áreas)."),
       scopeExcludes: strList("Qué queda fuera."),
-      acceptance: { type: "array", description: "Criterios de aceptación. Con command los ejecuta la máquina al cerrar.", items: { type: "object", required: ["text"], properties: { text: str("Criterio."), command: str("Comando que lo verifica (exit 0 = cumplido).") } } },
+      acceptance: { type: "array", description: "Criterios de aceptación. Con command los ejecuta la máquina al cerrar. Al menos uno debe llevar exercise: true (abrir y usar el artefacto: panel, juego, CLI); ese lo ejercita el base antes de cerrar y reporta lo que vio.", items: { type: "object", required: ["text"], properties: { text: str("Criterio."), command: str("Comando que lo verifica (exit 0 = cumplido)."), exercise: bool("El criterio exige usar el artefacto de verdad; el base lo reporta al cerrar.") } } },
       risks: strList("Riesgos conocidos."),
       attachments: { type: "array", description: "Imágenes o archivos que envió el humano; se COPIAN al run.", items: { type: "object", required: ["path"], properties: { path: str("Ruta local del archivo."), note: str("Para qué sirve.") } } },
     } } },
@@ -151,19 +151,20 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
     inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp } } },
   { name: "hrp_run_issue", description: "El issue del run (requerimiento literal, interpretación, alcance, criterios, riesgos, adjuntos) con las rutas de los adjuntos.",
     inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp } } },
-  { name: "hrp_run_close", description: "Cierre del base: la máquina ejecuta los criterios de aceptación; si pasan, el run queda implementado y se avisa a los auditores para la pasada final.",
-    inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp, session: sessionProp } } },
-  { name: "hrp_node_open", description: "Abre un nodo (archivo + símbolo + intención) ANTES de editar. Sólo el base. Con resolves enlaza el nodo como corrección de un hallazgo aceptado.",
-    inputSchema: { type: "object", required: ["runId", "file", "symbol", "title", "description", "rationale"], properties: {
+  { name: "hrp_run_close", description: "Cierre del base. Antes, ejercita el artefacto (ábrelo, úsalo, mira lo que hace) y reporta lo observado por cada criterio con exercise; sin ese reporte el cierre se rechaza. Después la máquina ejecuta los criterios con command; si pasan, el run queda implementado y se avisa a los auditores.",
+    inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp, session: sessionProp,
+      exercised: { type: "array", description: "Lo que viste al ejercitar cada criterio de ejercicio.", items: { type: "object", required: ["text", "observed"], properties: { text: str("Texto exacto del criterio."), observed: str("Qué hiciste y qué observaste (pantalla, salida, comportamiento).") } } } } } },
+  { name: "hrp_node_open", description: "Abre un nodo (una operación semántica: uno o varios archivos que cambian juntos, p. ej. módulo y su test) ANTES de editar. Sólo el base. Con resolves enlaza el nodo como corrección de un hallazgo aceptado.",
+    inputSchema: { type: "object", required: ["runId", "files", "symbol", "title", "description", "rationale"], properties: {
       runId: runIdProp, session: sessionProp, id: str("Id opcional (por defecto n1, n2, …)."),
-      file: str("Ruta relativa al workspace."), symbol: str("Símbolo o sección lógica."), title: str("Qué hace, corto."),
+      files: strList("Rutas relativas al workspace que cubre la operación; van juntas en un solo commit."), symbol: str("Símbolo o sección lógica."), title: str("Qué hace, corto."),
       description: str("Qué hará exactamente."), rationale: str("Por qué es necesario."),
       dependencies: strList("Ids de nodos prerrequisito reales."), resolves: str("Id del hallazgo aceptado que corrige."),
     } } },
   { name: "hrp_node_verify", description: "La máquina ejecuta el comando de verificación en el workspace y guarda salida y exit code como evidencia del nodo.",
     inputSchema: { type: "object", required: ["runId", "nodeId", "command"], properties: { runId: runIdProp, session: sessionProp, nodeId: str("Id del nodo."), command: str("Comando de shell (exit 0 = aprobado).") } } },
-  { name: "hrp_node_complete", description: "Completa el nodo: exige verificación aprobada, mide el diff del archivo con git y deja un commit en la rama del run.",
-    inputSchema: { type: "object", required: ["runId", "nodeId", "summary"], properties: { runId: runIdProp, session: sessionProp, nodeId: str("Id del nodo."), summary: str("Qué hizo el parche."), rationale: str("Por qué se hizo así."), tokens: { type: "number", description: "Tokens aproximados gastados en el nodo." } } } },
+  { name: "hrp_node_complete", description: "Completa el nodo: exige verificación aprobada, mide el diff de sus archivos con git y deja un commit en la rama del run. Devuelve un acuse corto, no el diff.",
+    inputSchema: { type: "object", required: ["runId", "nodeId", "summary"], properties: { runId: runIdProp, session: sessionProp, nodeId: str("Id del nodo."), summary: str("Qué hizo el parche."), rationale: str("Por qué se hizo así.") } } },
   { name: "hrp_node_fail", description: "Marca un nodo en curso como fallido con su razón; abre otro que lo reemplace si hace falta.",
     inputSchema: { type: "object", required: ["runId", "nodeId", "reason"], properties: { runId: runIdProp, session: sessionProp, nodeId: str("Id del nodo."), reason: str("Qué falló.") } } },
   { name: "hrp_review_pack", description: "Paquete de auditoría: diffs, verificaciones y hallazgos previos. Con nodeIds se limita a esos nodos; sin ellos es la pasada de integración.",
@@ -213,13 +214,28 @@ function summarizeRun(detail: RunDetail): Record<string, unknown> {
   return {
     id: run.id, title: run.title, phase: run.phase, control: run.control, branch: run.branch, base: run.base,
     workspaceRoot: detail.project.workspaceRoot, issuePath: run.issuePath, attachments: run.attachments,
-    nodes: detail.nodes.map((node) => ({ id: node.id, status: node.status, file: node.file, symbol: node.symbol, title: node.title, author: node.author, dependencies: node.dependencies, auditedBy: node.auditedBy, commit: node.commit?.slice(0, 10), failure: node.failure })),
+    nodes: detail.nodes.map((node) => ({ id: node.id, status: node.status, files: node.files, symbol: node.symbol, title: node.title, author: node.author, dependencies: node.dependencies, auditedBy: node.auditedBy, commit: node.commit?.slice(0, 10), failure: node.failure })),
     sessions: detail.sessions.map((session) => ({ id: session.id, role: session.role, status: session.status, reviewed: session.reviewedNodeIds, requirementReviewed: session.requirementReviewed, vote: session.vote })),
     findings: detail.findings.map((finding) => ({ id: finding.id, status: finding.status, severity: finding.severity, scope: finding.scope, nodeId: finding.nodeId, title: finding.title, reviewer: finding.reviewer, resolutionNodeId: finding.resolutionNodeId })),
     acceptance: run.acceptance,
     audit: run.audit,
     attentionCommand: attentionCommand(run.id),
   };
+}
+
+// Acuse corto de una operación de nodo: lo que el base necesita para seguir,
+// sin devolverle el diff que acaba de escribir ni la verificación que ya vio.
+export function nodeAck(node: ChangeNode): string {
+  const lines = node.diff ? node.diff.split("\n") : [];
+  const added = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+  const removed = lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  const parts = [`${node.id} ${node.status} · ${node.files.join(", ")} · ${node.symbol}`];
+  if (node.verification) parts.push(`verificación ${node.verification.passed ? "aprobada" : `fallida (exit ${node.verification.exitCode})`}: ${node.verification.command}`);
+  if (node.diff) parts.push(`+${added} −${removed} líneas`);
+  if (node.commit) parts.push(`commit ${node.commit.slice(0, 10)}`);
+  if (node.failure) parts.push(`fallo: ${node.failure}`);
+  if (node.verification && !node.verification.passed && node.verification.output.trim()) parts.push(`salida:\n${node.verification.output.trim().slice(-3000)}`);
+  return parts.join("\n");
 }
 
 export async function executeHrpTool(client: HrpMcpClient, toolName: string, args: Record<string, unknown> = {}): Promise<unknown> {
@@ -314,8 +330,9 @@ export async function executeHrpTool(client: HrpMcpClient, toolName: string, arg
 
     case "hrp_run_close": {
       const id = runId();
-      const result = await post<{ run: RunSummary; acceptance: RunSummary["acceptance"]; passed: boolean }>(`/api/runs/${encoded(id)}/close`, { actor: client.sessionFor(args, id) });
-      const lines = result.acceptance.map((criterion) => `- ${criterion.text}${criterion.result ? ` → ${criterion.result.passed ? "pasó" : `FALLÓ (exit ${criterion.result.exitCode})\n${criterion.result.output.slice(-1500)}`}` : ""}`);
+      const exercised = Array.isArray(args.exercised) ? args.exercised : [];
+      const result = await post<{ run: RunSummary; acceptance: RunSummary["acceptance"]; passed: boolean }>(`/api/runs/${encoded(id)}/close`, { actor: client.sessionFor(args, id), exercised });
+      const lines = result.acceptance.map((criterion) => `- ${criterion.text}${criterion.observed ? ` → ejercitado: ${criterion.observed}` : ""}${criterion.result ? ` → ${criterion.result.passed ? "pasó" : `FALLÓ (exit ${criterion.result.exitCode})\n${criterion.result.output.slice(-1500)}`}` : ""}`);
       return result.passed
         ? `Implementación cerrada; el run está ${result.run.phase}. Los auditores harán la pasada final. ${result.run.audit.blockers.length ? `Bloquea el cierre: ${result.run.audit.blockers.join("; ")}.` : ""}\n${lines.join("\n")}\nQuédate atento con hrp_attention (waitMs 600000): los hallazgos de integración llegan por ahí.`
         : `El cierre no procede: hay criterios fallidos. Corrige en nodos nuevos y vuelve a cerrar.\n${lines.join("\n")}`;
@@ -323,28 +340,30 @@ export async function executeHrpTool(client: HrpMcpClient, toolName: string, arg
 
     case "hrp_node_open": {
       const id = runId();
-      return post(`/api/runs/${encoded(id)}/nodes`, {
+      const files = optionalList(args, "files") ?? [];
+      const single = text(args, "file", false);
+      if (single) files.push(single);
+      return nodeAck(await post<ChangeNode>(`/api/runs/${encoded(id)}/nodes`, {
         actor: client.sessionFor(args, id),
         id: text(args, "id", false) || undefined,
-        file: text(args, "file"), symbol: text(args, "symbol"), title: text(args, "title"),
+        files, symbol: text(args, "symbol"), title: text(args, "title"),
         description: text(args, "description"), rationale: text(args, "rationale"),
         dependencies: optionalList(args, "dependencies"), resolves: text(args, "resolves", false) || undefined,
-      });
+      }));
     }
     case "hrp_node_verify": {
       const id = runId();
-      return post(`/api/runs/${encoded(id)}/nodes/${encoded(text(args, "nodeId"))}/verify`, { actor: client.sessionFor(args, id), command: text(args, "command") });
+      return nodeAck(await post<ChangeNode>(`/api/runs/${encoded(id)}/nodes/${encoded(text(args, "nodeId"))}/verify`, { actor: client.sessionFor(args, id), command: text(args, "command") }));
     }
     case "hrp_node_complete": {
       const id = runId();
-      return post(`/api/runs/${encoded(id)}/nodes/${encoded(text(args, "nodeId"))}/complete`, {
+      return nodeAck(await post<ChangeNode>(`/api/runs/${encoded(id)}/nodes/${encoded(text(args, "nodeId"))}/complete`, {
         actor: client.sessionFor(args, id), summary: text(args, "summary"), rationale: text(args, "rationale", false) || undefined,
-        tokens: typeof args.tokens === "number" ? args.tokens : undefined,
-      });
+      }));
     }
     case "hrp_node_fail": {
       const id = runId();
-      return post(`/api/runs/${encoded(id)}/nodes/${encoded(text(args, "nodeId"))}/fail`, { actor: client.sessionFor(args, id), reason: text(args, "reason") });
+      return nodeAck(await post<ChangeNode>(`/api/runs/${encoded(id)}/nodes/${encoded(text(args, "nodeId"))}/fail`, { actor: client.sessionFor(args, id), reason: text(args, "reason") }));
     }
 
     case "hrp_review_pack": {

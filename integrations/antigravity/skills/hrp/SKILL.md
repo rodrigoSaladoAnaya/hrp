@@ -23,7 +23,7 @@ Lee el código que necesites para entender la tarea. Luego llama `hrp_run_start`
 - `requirement`: el texto del humano **literal**, sin resumir ni corregir. Es lo que los auditores comparan contra tu interpretación.
 - `interpretation`: qué entendiste que hay que hacer.
 - `scopeIncludes` / `scopeExcludes`: archivos o áreas.
-- `acceptance`: criterios con `command` ejecutable siempre que se pueda (`npm test`, `./gradlew build`, un `grep`…). La máquina los corre al cerrar.
+- `acceptance`: criterios con `command` ejecutable siempre que se pueda (`npm test`, `./gradlew build`, un `grep`…); la máquina los corre al cerrar. **Al menos uno lleva `exercise: true`**: abrir y usar el artefacto de verdad (el panel en el navegador, el juego, el CLI con datos reales) y decir qué debe verse. Sin ese criterio el servicio rechaza el run.
 - `risks`.
 - `attachments`: rutas de las imágenes o archivos que pegó el humano. Se **copian** al run para que los auditores los vean.
 
@@ -31,16 +31,16 @@ Responde al humano **una sola vez** con lo que devuelve la herramienta: `/hrp at
 
 ### 2. Nodos
 
-Un nodo es exactamente `archivo + símbolo o sección lógica + intención`. Dos cambios independientes en el mismo archivo son dos nodos; un cambio transversal de un símbolo es un nodo aunque toque muchas líneas. Nada de "implementar el backend" ni nodos por fase.
+Un nodo es una **operación semántica**: `archivos + símbolo o sección lógica + intención`. Cubre uno o varios archivos que cambian juntos: un módulo y su prueba, una interfaz y su implementación, un componente y su CSS. Dos cambios independientes en el mismo archivo son dos nodos; un cambio transversal de un símbolo es un nodo aunque toque muchas líneas. Nada de "implementar el backend" ni nodos por fase, y nada de partir una operación en nodos por archivo.
 
 Por cada nodo:
 
-1. `hrp_node_open` **antes** de editar (con `dependencies` reales).
-2. Edita el archivo.
-3. `hrp_node_verify` con un comando que pruebe ese cambio (la máquina lo ejecuta y guarda la salida).
-4. `hrp_node_complete`: el servidor mide el diff del archivo con git y deja un **commit en la rama del run**. Exige verificación aprobada y diff real.
+1. `hrp_node_open` **antes** de editar, con `files` (todos los archivos de la operación) y `dependencies` reales.
+2. Edita los archivos.
+3. `hrp_node_verify` con un comando cuyo **exit code** pruebe ese cambio (la máquina lo ejecuta sin color y guarda la salida). No lo termines en `| tail` ni `| grep`: la tubería esconde el exit code y una prueba roja pasa como verde.
+4. `hrp_node_complete`: el servidor mide el diff de todos los archivos del nodo con git y deja **un solo commit en la rama del run**. Exige verificación aprobada y diff real.
 
-Si dos archivos sólo compilan juntos, abre los dos nodos, edita ambos y complétalos en orden con la misma verificación. Si un nodo no sale, `hrp_node_fail` con la razón y abre otro. Nada de trabajo oculto: todo cambio pasa por un nodo.
+Las herramientas de nodo devuelven un acuse corto (estado, archivos, líneas cambiadas, commit); no esperes el diff de vuelta ni lo pidas. Si un nodo no sale, `hrp_node_fail` con la razón y abre otro. Nada de trabajo oculto: todo cambio pasa por un nodo.
 
 ### 3. Entre nodos: la cola de hallazgos
 
@@ -53,7 +53,9 @@ Tú autorizas el resultado del debate; no escales al humano por defecto.
 
 ### 4. Cierre
 
-Cuando la tarea esté completa: `hrp_run_close`. La máquina ejecuta los criterios de aceptación; si alguno falla, corrige con nodos nuevos y vuelve a cerrar. Si pasan, el run queda `implemented` y los auditores hacen la pasada final.
+Cuando la tarea esté completa, **ejercita el artefacto antes de cerrar**: abre el panel, la página o el CLI, úsalo como lo usaría el humano y mira qué hace (tamaño de la ventana, lo que se dibuja, lo que responde). Los defectos que más duelen son los que un exit 0 no ve. Luego `hrp_run_close` con `exercised`: por cada criterio de ejercicio, su texto exacto y lo que observaste. Sin ese reporte el cierre se rechaza.
+
+La máquina ejecuta después los criterios con comando; si alguno falla, corrige con nodos nuevos y vuelve a cerrar. Si pasan, el run queda `implemented` y los auditores hacen la pasada final.
 
 Después, **no termines el turno**: llama `hrp_attention` con `waitMs: 600000` y atiende los hallazgos de integración que lleguen. Cuando responda `released`, el run cerró. Si no hay auditores enganchados el run se queda en `implemented, sin auditar`; díselo al humano y termina.
 
@@ -72,6 +74,7 @@ Directivas:
 
 - `requirement`: `hrp_run_issue`. Lee los adjuntos (rutas locales). Compara la interpretación del base con el requerimiento literal y los criterios. Reporta con `hrp_finding_add` `scope: "requirement"`. Con hallazgos o sin ellos, `hrp_audit_done` con `requirement: true`.
 - `node`: `hrp_review_pack` con esos `nodeIds`. Lee el código real en el workspace indicado (rama del run) si el diff no basta. Reporta con `hrp_finding_add` `nodeId`. Declara cada nodo revisado con `hrp_audit_done` `nodeIds` **aunque no encuentres nada**: sin esa declaración el run no puede cerrar.
+- `close`, además de la integración: comprueba que el base reportó lo observado en cada criterio de ejercicio y que lo observado corresponde al requerimiento; si puedes, ejercita el artefacto tú también.
 - `finding`: el base respondió en tu hilo. `hrp_finding_show` y `hrp_finding_reply`: acepta explícitamente su respuesta o rebate con evidencia. Si tienes evidencia nueva sobre un hallazgo cerrado, `hrp_finding_reopen`.
 - `close`: el base cerró la implementación. `hrp_review_pack` sin `nodeIds` (integración), reporta con `scope: "integration"`, y vota con `hrp_audit_vote` (`ok` o `reject` con detalle). Con mayoría OK y sin hallazgos vivos el run cierra solo.
 - `wait`: nada que hacer ahora; sigue en `hrp_attention`.

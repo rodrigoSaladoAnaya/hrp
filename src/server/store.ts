@@ -9,6 +9,7 @@ import {
   findingScopes,
   isLiveFinding,
   isValidFamily,
+  nodeFilesOf,
   runBranchName,
   runIsOnHold,
   type AcceptanceCriterion,
@@ -43,6 +44,10 @@ export type CloseResult = {
   acceptance: AcceptanceCriterion[];
   passed: boolean;
 };
+
+// Lo que el base observó al ejercitar un criterio de aceptación; se casa con
+// el criterio por su texto.
+export type ExerciseReport = { text: string; observed: string };
 
 export type RunStart = {
   run: RunSummary;
@@ -93,26 +98,43 @@ function parseVerification(raw: unknown): Verification | undefined {
   return raw ? JSON.parse(String(raw)) as Verification : undefined;
 }
 
-// Ejecuta un comando en el workspace y devuelve la evidencia tal cual: salida
-// recortada, código de salida y hora. La máquina es quien verifica.
+// Escapes ANSI (colores, cursor, títulos de terminal) y retornos de carro de
+// barras de progreso: en un run real eran el 74% de lo almacenado.
+const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]|\r(?!\n)/g;
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_PATTERN, "");
+}
+
+// Si pasó, basta la cola para leer el resumen; si falló hace falta ver dónde
+// empezó a romperse y cómo terminó.
+export const PASSED_OUTPUT_LIMIT = 4_000;
+export const FAILED_OUTPUT_HEAD = 6_000;
+export const FAILED_OUTPUT_TAIL = 10_000;
+
+export function trimVerificationOutput(output: string, passed: boolean): string {
+  if (passed) return output.length > PASSED_OUTPUT_LIMIT ? `…\n${output.slice(-PASSED_OUTPUT_LIMIT)}` : output;
+  return output.length > FAILED_OUTPUT_HEAD + FAILED_OUTPUT_TAIL
+    ? `${output.slice(0, FAILED_OUTPUT_HEAD)}\n…\n${output.slice(-FAILED_OUTPUT_TAIL)}`
+    : output;
+}
+
+// Ejecuta un comando en el workspace y devuelve la evidencia: salida sin
+// color y recortada según el resultado, código de salida y hora. La máquina
+// es quien verifica.
 export function runVerification(workspaceRoot: string, command: string): Verification {
   const result = spawnSync("/bin/sh", ["-lc", command], {
     cwd: workspaceRoot,
     encoding: "utf8",
     timeout: VERIFY_TIMEOUT_MS,
     maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, HRP_VERIFYING: "1" },
+    env: { ...process.env, HRP_VERIFYING: "1", NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb" },
   });
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  const output = stripAnsi(`${result.stdout ?? ""}${result.stderr ?? ""}`);
   const timedOut = result.error && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
   const exitCode = timedOut ? 124 : result.status ?? 1;
-  return {
-    command,
-    output: output.length > 20_000 ? `${output.slice(0, 10_000)}\n…\n${output.slice(-10_000)}` : output,
-    exitCode,
-    passed: exitCode === 0,
-    observedAt: now(),
-  };
+  const passed = exitCode === 0;
+  return { command, output: trimVerificationOutput(output, passed), exitCode, passed, observedAt: now() };
 }
 
 function frontMatter(fields: Record<string, string>): string {
@@ -149,7 +171,7 @@ export function renderIssue(fields: {
     `- Excluye: ${input.scopeExcludes?.length ? input.scopeExcludes.join("; ") : "(sin declarar)"}`,
     "",
     "## Criterios de aceptación",
-    input.acceptance.map((criterion) => criterion.command ? `- \`${criterion.command}\` — ${criterion.text}` : `- ${criterion.text}`).join("\n"),
+    input.acceptance.map((criterion) => `- ${criterion.exercise ? "[ejercicio] " : ""}${criterion.command ? `\`${criterion.command}\` — ` : ""}${criterion.text}`).join("\n"),
     "",
     "## Riesgos",
     bulletList(input.risks, "ninguno declarado"),
@@ -222,6 +244,7 @@ export class HrpStore {
         rationale TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
         author TEXT NOT NULL,
+        files_json TEXT NOT NULL DEFAULT '[]',
         dependencies_json TEXT NOT NULL DEFAULT '[]',
         diff TEXT,
         patch_summary TEXT,
@@ -229,7 +252,6 @@ export class HrpStore {
         verification_json TEXT,
         commit_sha TEXT,
         failure TEXT,
-        tokens INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (run_id, id)
@@ -282,6 +304,12 @@ export class HrpStore {
       CREATE INDEX IF NOT EXISTS findings_run ON findings(run_id, created_at);
       CREATE INDEX IF NOT EXISTS finding_messages_finding ON finding_messages(finding_id, created_at);
     `);
+    // Bases anteriores a los nodos multiarchivo: el único archivo pasa a la lista.
+    const nodeColumns = this.database.pragma("table_info(nodes)") as Row[];
+    if (!nodeColumns.some((column) => String(column.name) === "files_json")) {
+      this.database.exec("ALTER TABLE nodes ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
+      this.database.exec("UPDATE nodes SET files_json = json_array(file)");
+    }
   }
 
   close(): void {
@@ -373,6 +401,9 @@ export class HrpStore {
     if (!input.requirement?.trim()) throw new Error("El requerimiento literal del humano es obligatorio");
     if (!input.interpretation?.trim()) throw new Error("La interpretación del base es obligatoria");
     if (!input.acceptance?.length) throw new Error("Declara al menos un criterio de aceptación");
+    if (!input.acceptance.some((criterion) => criterion.exercise)) {
+      throw new Error("Declara al menos un criterio con exercise: true, que exija abrir y usar el artefacto (panel, juego, CLI…); un exit 0 no demuestra que funciona");
+    }
     const live = this.listRuns(projectId).find((run) => run.status === "open" && run.control !== "stopped");
     if (live) throw new Error(`El proyecto ya tiene un run abierto (${live.id}: ${live.title}); ciérralo o deténlo antes de abrir otro`);
     if (this.git(project, ["rev-parse", "--is-inside-work-tree"])?.trim() !== "true") {
@@ -409,7 +440,7 @@ export class HrpStore {
     writeFileSync(issuePath, renderIssue({
       id, project: project.name, workspaceRoot: project.workspaceRoot, branch, base: baseId, createdAt,
     }, input, copied));
-    const acceptance: AcceptanceCriterion[] = input.acceptance.map((criterion) => ({ text: criterion.text, command: criterion.command || undefined }));
+    const acceptance: AcceptanceCriterion[] = input.acceptance.map((criterion) => ({ text: criterion.text, command: criterion.command || undefined, exercise: criterion.exercise || undefined }));
     writeFileSync(path.join(runDirectory, "run.json"), `${JSON.stringify({
       id, project: project.name, projectId, workspaceRoot: project.workspaceRoot, branch, base: baseId, createdAt,
       title: input.title, attachments: copied.map((attachment) => `attachments/${attachment.file}`), acceptance,
@@ -510,7 +541,7 @@ export class HrpStore {
   }
 
   // Cierre del base: la máquina corre los criterios de aceptación ejecutables.
-  closeRun(runId: string, actor: string): CloseResult {
+  closeRun(runId: string, actor: string, exercised: ExerciseReport[] = []): CloseResult {
     const run = this.requireRun(runId);
     const project = this.getProject(run.projectId)!;
     if (run.status === "closed") throw new Error("El run ya está cerrado");
@@ -526,13 +557,23 @@ export class HrpStore {
       && (!finding.resolutionNodeId || nodes.find((node) => node.id === finding.resolutionNodeId)?.status !== "completed"));
     if (unresolved.length) throw new Error(`Hallazgos aceptados sin corrección terminada: ${unresolved.map((finding) => finding.id).join(", ")}`);
 
-    const acceptance = run.acceptance.map((criterion) => criterion.command
-      ? { ...criterion, result: runVerification(project.workspaceRoot, criterion.command) }
-      : { ...criterion, result: undefined });
+    // Los criterios de ejercicio no los corre la máquina: el base tiene que
+    // haber usado el artefacto y decir qué vio. Sin ese reporte no hay cierre.
+    const reports = new Map(exercised.map((report) => [report.text.trim(), report.observed.trim()]));
+    const missing = run.acceptance.filter((criterion) => criterion.exercise && !reports.get(criterion.text.trim()));
+    if (missing.length) {
+      throw new Error(`Ejercita el artefacto antes de cerrar y reporta lo observado (exercised) para: ${missing.map((criterion) => `"${criterion.text}"`).join("; ")}`);
+    }
+    const acceptance = run.acceptance.map((criterion) => ({
+      ...criterion,
+      observed: criterion.exercise ? reports.get(criterion.text.trim()) : undefined,
+      result: criterion.command ? runVerification(project.workspaceRoot, criterion.command) : undefined,
+    }));
     const passed = acceptance.every((criterion) => !criterion.command || criterion.result?.passed);
     this.database.prepare("UPDATE runs SET acceptance_json = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(acceptance), now(), runId);
     for (const criterion of acceptance) {
+      if (criterion.observed) this.addActivity(runId, "verify", `Ejercitado: ${criterion.text}`, criterion.observed, undefined, actor);
       if (!criterion.result) continue;
       this.addActivity(runId, "verify", `${criterion.result.passed ? "Criterio cumplido" : "Criterio fallido"}: ${criterion.text}`,
         `${criterion.result.command}\nexit ${criterion.result.exitCode}\n${criterion.result.output.slice(-2000)}`, undefined, actor);
@@ -701,9 +742,11 @@ export class HrpStore {
     const id = String(row.id);
     const runId = String(row.run_id);
     const auditRows = audits ?? this.database.prepare("SELECT node_id, session FROM node_audits WHERE run_id = ? AND node_id = ?").all(runId, id) as Row[];
+    const files = JSON.parse(String(row.files_json ?? "[]")) as string[];
     return {
       id, runId,
-      file: String(row.file),
+      files: files.length ? files : [String(row.file)],
+      file: files[0] ?? String(row.file),
       symbol: String(row.symbol),
       title: String(row.title),
       description: String(row.description),
@@ -717,7 +760,6 @@ export class HrpStore {
       verification: parseVerification(row.verification_json),
       commit: row.commit_sha ? String(row.commit_sha) : undefined,
       failure: row.failure ? String(row.failure) : undefined,
-      tokens: row.tokens == null ? undefined : Number(row.tokens),
       auditedBy: auditRows.filter((audit) => String(audit.node_id) === id).map((audit) => String(audit.session)),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
@@ -753,9 +795,13 @@ export class HrpStore {
       const critical = findings.filter((finding) => finding.severity === "critical" && isLiveFinding(finding)).map((finding) => finding.id);
       throw new Error(`Run en hold por hallazgo crítico (${critical.join(", ")}): acéptalo o recházalo antes de abrir otro nodo`);
     }
-    for (const field of ["file", "symbol", "title", "description", "rationale"] as const) {
+    for (const field of ["symbol", "title", "description", "rationale"] as const) {
       if (!input[field]?.trim()) throw new Error(`El nodo necesita ${field}`);
     }
+    const files = nodeFilesOf(input);
+    if (!files.length) throw new Error("El nodo necesita al menos un archivo (files)");
+    const project = this.getProject(run.projectId)!;
+    for (const file of files) this.relativeInWorkspace(project, file);
     const id = input.id?.trim() || this.nextNodeId(runId);
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id)) throw new Error(`Id de nodo inválido: ${id}`);
     if (this.getNode(runId, id)) throw new Error(`El nodo ${id} ya existe`);
@@ -772,9 +818,9 @@ export class HrpStore {
     const timestamp = now();
     this.database.transaction(() => {
       this.database.prepare(`
-        INSERT INTO nodes (id, run_id, file, symbol, title, description, rationale, status, author, dependencies_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
-      `).run(id, runId, input.file.trim(), input.symbol.trim(), input.title.trim(), input.description.trim(), input.rationale.trim(),
+        INSERT INTO nodes (id, run_id, file, files_json, symbol, title, description, rationale, status, author, dependencies_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+      `).run(id, runId, files[0], JSON.stringify(files), input.symbol.trim(), input.title.trim(), input.description.trim(), input.rationale.trim(),
         actor, JSON.stringify(dependencies), timestamp, timestamp);
       if (resolvedFinding) {
         this.database.prepare("UPDATE findings SET resolution_node_id = ?, updated_at = ? WHERE id = ?").run(id, timestamp, resolvedFinding.id);
@@ -782,7 +828,7 @@ export class HrpStore {
       // Volver a implementar reabre: la auditoría se repetirá sobre lo nuevo.
       if (run.status === "implemented") this.setRunStatus(runId, "open");
     })();
-    this.addActivity(runId, "node", `En curso (${actor}): ${input.file.trim()} · ${input.symbol.trim()}`,
+    this.addActivity(runId, "node", `En curso (${actor}): ${files.join(", ")} · ${input.symbol.trim()}`,
       resolvedFinding ? `Corrige el hallazgo ${resolvedFinding.id}: ${resolvedFinding.title}` : input.description.trim(), id, actor);
     if (run.status === "implemented") this.addActivity(runId, "run", "Run reabierto: el base implementa una corrección", undefined, id, actor);
     return this.requireNode(runId, id);
@@ -806,7 +852,14 @@ export class HrpStore {
 
   // Completar es commitear: el diff lo mide git sobre el archivo del nodo, no
   // lo declara el modelo, y el commit queda en la rama del run.
-  completeNode(runId: string, nodeId: string, actor: string, patch: { summary: string; rationale?: string; tokens?: number }): ChangeNode {
+  // Ruta relativa segura de un archivo del nodo: dentro del workspace o nada.
+  private relativeInWorkspace(project: Project, file: string): string {
+    const relative = path.relative(project.workspaceRoot, path.resolve(project.workspaceRoot, file));
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`${file} queda fuera del workspace`);
+    return relative;
+  }
+
+  completeNode(runId: string, nodeId: string, actor: string, patch: { summary: string; rationale?: string }): ChangeNode {
     const run = this.requireRun(runId);
     const node = this.requireNode(runId, nodeId);
     const project = this.getProject(run.projectId)!;
@@ -814,25 +867,23 @@ export class HrpStore {
     if (node.author !== actor) throw new Error(`${nodeId} lo abrió ${node.author}`);
     if (!node.verification?.passed) throw new Error("Falta una verificación aprobada (hrp_node_verify) antes de completar");
     if (!patch.summary?.trim()) throw new Error("Resume qué hizo el parche");
-    if (patch.tokens != null && (!Number.isInteger(patch.tokens) || patch.tokens <= 0)) throw new Error("tokens debe ser un entero positivo");
     const branch = this.currentBranch(project);
     if (branch !== run.branch) throw new Error(`El workspace está en ${branch ?? "HEAD suelto"} y el run vive en ${run.branch}; vuelve a la rama del run`);
-    const relative = path.relative(project.workspaceRoot, path.resolve(project.workspaceRoot, node.file));
-    if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`${node.file} queda fuera del workspace`);
-    this.requireGit(project, ["add", "--", relative], "No se pudo preparar el archivo del nodo");
-    const diff = this.requireGit(project, ["diff", "--cached", "--", relative], "No se pudo medir el diff del nodo");
-    if (!diff.trim()) throw new Error(`git no ve cambios en ${node.file}; un nodo completado necesita diff real`);
+    // Todos los archivos del nodo van en un solo commit: son una operación.
+    const relatives = node.files.map((file) => this.relativeInWorkspace(project, file));
+    this.requireGit(project, ["add", "--", ...relatives], "No se pudieron preparar los archivos del nodo");
+    const diff = this.requireGit(project, ["diff", "--cached", "--", ...relatives], "No se pudo medir el diff del nodo");
+    if (!diff.trim()) throw new Error(`git no ve cambios en ${node.files.join(", ")}; un nodo completado necesita diff real`);
     const message = `hrp(${run.id}) ${node.id}: ${node.title}\n\n${patch.summary.trim()}${patch.rationale ? `\n\n${patch.rationale.trim()}` : ""}\n\nHRP-Run: ${run.id}\nHRP-Node: ${node.id}\nHRP-Author: ${actor}`;
-    this.requireGit(project, ["commit", "--only", "-q", "-m", message, "--", relative], "No se pudo commitear el nodo");
+    this.requireGit(project, ["commit", "--only", "-q", "-m", message, "--", ...relatives], "No se pudo commitear el nodo");
     const commit = this.requireGit(project, ["rev-parse", "HEAD"], "No se pudo leer el commit").trim();
     const timestamp = now();
     this.database.prepare(`
-      UPDATE nodes SET status = 'completed', diff = ?, patch_summary = ?, patch_rationale = ?, commit_sha = ?, tokens = ?, updated_at = ?
+      UPDATE nodes SET status = 'completed', diff = ?, patch_summary = ?, patch_rationale = ?, commit_sha = ?, updated_at = ?
       WHERE run_id = ? AND id = ?
-    `).run(diff, patch.summary.trim(), patch.rationale?.trim() || null, commit, patch.tokens ?? null, timestamp, runId, nodeId);
+    `).run(diff, patch.summary.trim(), patch.rationale?.trim() || null, commit, timestamp, runId, nodeId);
     this.touchRun(runId, timestamp);
-    const tokensNote = patch.tokens != null ? ` · ~${patch.tokens >= 1000 ? `${Math.round(patch.tokens / 1000)}k` : patch.tokens} tokens` : "";
-    this.addActivity(runId, "node", `Terminado: ${node.file} · ${node.symbol}${tokensNote}`, `${patch.summary.trim()}\ncommit ${commit.slice(0, 10)}`, nodeId, actor);
+    this.addActivity(runId, "node", `Terminado: ${node.files.join(", ")} · ${node.symbol}`, `${patch.summary.trim()}\ncommit ${commit.slice(0, 10)}`, nodeId, actor);
     return this.requireNode(runId, nodeId);
   }
 
@@ -844,7 +895,7 @@ export class HrpStore {
     this.database.prepare("UPDATE nodes SET status = 'failed', failure = ?, updated_at = ? WHERE run_id = ? AND id = ?")
       .run(reason.trim(), timestamp, runId, nodeId);
     this.touchRun(runId, timestamp);
-    this.addActivity(runId, "node", `Falló: ${node.file} · ${node.symbol}`, reason.trim(), nodeId, actor);
+    this.addActivity(runId, "node", `Falló: ${node.files.join(", ")} · ${node.symbol}`, reason.trim(), nodeId, actor);
     return this.requireNode(runId, nodeId);
   }
 

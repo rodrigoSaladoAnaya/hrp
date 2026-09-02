@@ -64,10 +64,14 @@ export type Verification = {
 };
 
 // Criterio de aceptación del issue. Con 'command' lo ejecuta la máquina al
-// cerrar; sin él sólo se lista para los auditores.
+// cerrar. Con 'exercise' el criterio exige abrir y usar el artefacto (panel,
+// juego, CLI…) y el base debe reportar en 'observed' lo que vio: un exit 0
+// demuestra que compila, no que funciona. Todo issue lleva al menos uno.
 export type AcceptanceCriterion = {
   text: string;
   command?: string;
+  exercise?: boolean;
+  observed?: string;
   result?: Verification;
 };
 
@@ -95,6 +99,9 @@ export type Session = {
 export type ChangeNode = {
   id: string;
   runId: string;
+  // Archivos que cubre la operación: una sola unidad semántica puede tocar
+  // varios (módulo y su test). 'file' es el primero, para el mapa.
+  files: string[];
   file: string;
   symbol: string;
   title: string;
@@ -112,7 +119,6 @@ export type ChangeNode = {
   verification?: Verification;
   commit?: string;
   failure?: string;
-  tokens?: number;
   // Sesiones que auditaron este nodo; sale de las sesiones, no se guarda aquí.
   auditedBy: string[];
   createdAt: string;
@@ -209,10 +215,20 @@ export type RunDetail = {
   issue: string;
 };
 
-export type ChangeNodeInput = Pick<ChangeNode, "file" | "symbol" | "title" | "description" | "rationale"> & {
+export type ChangeNodeInput = Pick<ChangeNode, "symbol" | "title" | "description" | "rationale"> & {
   id?: string;
+  // 'files' o, por compatibilidad, un solo 'file'.
+  files?: string[];
+  file?: string;
   dependencies?: string[];
 };
+
+export function nodeFilesOf(input: Pick<ChangeNodeInput, "files" | "file">): string[] {
+  const files = [...(input.files ?? []), ...(input.file ? [input.file] : [])]
+    .map((file) => file.trim())
+    .filter(Boolean);
+  return [...new Set(files)];
+}
 
 export type RunInput = {
   title: string;
@@ -220,7 +236,7 @@ export type RunInput = {
   interpretation: string;
   scopeIncludes?: string[];
   scopeExcludes?: string[];
-  acceptance: Array<{ text: string; command?: string }>;
+  acceptance: Array<{ text: string; command?: string; exercise?: boolean }>;
   risks?: string[];
   attachments?: Array<{ path: string; note?: string }>;
 };

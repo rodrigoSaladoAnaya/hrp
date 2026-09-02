@@ -22,7 +22,7 @@ const runInput = z.object({
   interpretation: z.string().trim().min(1),
   scopeIncludes: z.array(z.string().trim().min(1)).optional(),
   scopeExcludes: z.array(z.string().trim().min(1)).optional(),
-  acceptance: z.array(z.object({ text: z.string().trim().min(1), command: z.string().trim().min(1).optional() })).min(1),
+  acceptance: z.array(z.object({ text: z.string().trim().min(1), command: z.string().trim().min(1).optional(), exercise: z.boolean().optional() })).min(1),
   risks: z.array(z.string().trim().min(1)).optional(),
   attachments: z.array(z.object({ path: z.string().trim().min(1), note: z.string().trim().optional() })).optional(),
 }).strict();
@@ -30,7 +30,9 @@ const runInput = z.object({
 const nodeInput = z.object({
   actor: sessionId,
   id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/).optional(),
-  file: z.string().trim().min(1),
+  // Una operación puede cubrir varios archivos; 'file' se acepta por compatibilidad.
+  files: z.array(z.string().trim().min(1)).max(32).optional(),
+  file: z.string().trim().min(1).optional(),
   symbol: z.string().trim().min(1),
   title: z.string().trim().min(1),
   description: z.string().trim().min(1),
@@ -175,8 +177,11 @@ export function createApp(store: HrpStore, options: { webRoot?: string } = {}) {
     response.json(run);
   }));
   app.post("/api/runs/:runId/close", handle((request, response) => {
-    const body = parse(z.object({ actor }), request.body);
-    const result = store.closeRun(request.params.runId, body.actor);
+    const body = parse(z.object({
+      actor,
+      exercised: z.array(z.object({ text: z.string().trim().min(1), observed: z.string().trim().min(1) })).optional(),
+    }), request.body);
+    const result = store.closeRun(request.params.runId, body.actor, body.exercised ?? []);
     broadcast(request.params.runId, "run-close");
     response.json(result);
   }));
@@ -234,7 +239,7 @@ export function createApp(store: HrpStore, options: { webRoot?: string } = {}) {
     response.json(node);
   }));
   app.post("/api/runs/:runId/nodes/:nodeId/complete", handle((request, response) => {
-    const body = parse(z.object({ actor: sessionId, summary: z.string().trim().min(1), rationale: z.string().optional(), tokens: z.number().int().positive().optional() }), request.body);
+    const body = parse(z.object({ actor: sessionId, summary: z.string().trim().min(1), rationale: z.string().optional() }), request.body);
     const node = store.completeNode(request.params.runId, request.params.nodeId, body.actor, body);
     broadcast(request.params.runId, "node");
     response.json(node);

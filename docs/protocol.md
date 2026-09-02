@@ -112,7 +112,9 @@ createdAt: 2026-09-01T21:00:00-06:00
 ## Criterios de aceptación
 - `npm test` termina en 0
 - `./gradlew build` termina en 0
-- <cada criterio es un comando o una observación verificable>
+- [ejercicio] abrir el panel con un run y comprobar que el nodo muestra su diff
+- <cada criterio es un comando ejecutable o, con [ejercicio], una acción
+  sobre el artefacto real; al menos uno debe ser de ejercicio>
 
 ## Riesgos
 - ...
@@ -124,6 +126,12 @@ createdAt: 2026-09-01T21:00:00-06:00
 El requerimiento literal es obligatorio y se conserva sin tocar: la auditoría
 de requerimiento compara la interpretación del base contra el original, no
 contra sí misma.
+
+**Todo issue lleva al menos un criterio de ejercicio** (`exercise: true`):
+abrir y usar el artefacto de verdad —el panel, el juego, el CLI— y mirar qué
+hace. Un exit 0 demuestra que compila y que pasan las pruebas que escribió el
+mismo que implementa; no demuestra que funciona. En el run del Tetris los tres
+defectos más visibles tenían su nodo en verde con verificación aprobada.
 
 ## Ciclo de un run
 
@@ -163,14 +171,24 @@ actual y sugiere `/hrp attention <id>`; el enganche sigue siendo explícito.
 
 ### 3. Implementación
 
-El base trabaja nodo por nodo. Un nodo sigue siendo `archivo + símbolo +
-intención`:
+El base trabaja nodo por nodo. Un nodo es una **operación semántica**:
+`archivos + símbolo o sección lógica + intención`. Cubre un solo archivo o
+varios que cambian juntos —un módulo y su prueba, una interfaz y su
+implementación— siempre que compartan intención y verificación. Dos cambios
+independientes en el mismo archivo siguen siendo dos nodos. Con la regla de un
+archivo por nodo, el Tetris necesitó 31 nodos para unas ocho operaciones reales
+y el grafo se leía como escrituras de archivo, no como cambios.
 
-1. `hrp_node_open` antes de editar: el nodo aparece `running` en el mapa con
-   su intención y sus dependencias declaradas.
-2. Edita, verifica.
-3. `hrp_node_complete` con diff y verificación aprobada. La finalización hace
-   **commit en la rama del run**; el diff por nodo es el diff de ese commit.
+1. `hrp_node_open` antes de editar, con `files`: el nodo aparece `running` en
+   el mapa con su intención y sus dependencias declaradas.
+2. Edita, verifica con `hrp_node_verify` (la máquina corre el comando sin
+   color y guarda la salida recortada según el resultado).
+3. `hrp_node_complete` con verificación aprobada. La finalización mide el diff
+   de todos los archivos del nodo y hace **un solo commit en la rama del run**.
+
+Las herramientas de nodo devuelven un acuse corto (estado, archivos, líneas
+cambiadas, commit), nunca el diff que el base acaba de escribir: en un run
+real ese eco costaba más del 10% de la sesión.
 
 Todos los nodos son iguales: desaparece la etiqueta `discovered`. Un nodo que
 no se pudo terminar queda `failed` con su intento visible; el base puede abrir
@@ -190,11 +208,16 @@ resuelve antes de abrir otro nodo.
 
 ### 5. Cierre del base
 
-Cuando el base considera terminada la tarea llama `hrp_run_close`. El servicio
-ejecuta los **criterios de aceptación** del issue que sean comandos; si alguno
-falla, el run no cierra y el base recibe la salida. Si pasan, el run queda
-`implemented` y se despierta a los auditores para la pasada de integración y el
-voto.
+Cuando el base considera terminada la tarea, **ejercita el artefacto**: lo
+abre, lo usa y mira lo que hace, criterio por criterio de ejercicio. Después
+llama `hrp_run_close` con `exercised`, lo que observó en cada uno; sin ese
+reporte el servicio rechaza el cierre. Lo observado queda como evidencia junto
+al criterio, visible para los auditores y en el panel.
+
+El servicio ejecuta entonces los **criterios de aceptación** que sean
+comandos; si alguno falla, el run no cierra y el base recibe la salida. Si
+pasan, el run queda `implemented` y se despierta a los auditores para la
+pasada de integración y el voto.
 
 El base no relee sus propios diffs ni se autoaudita.
 
@@ -281,6 +304,10 @@ De `src/shared/protocol.ts` desaparecen: `PlanGateStatus`, `graphVersion`,
 Se conservan: `Verification`, `Finding` y su ciclo, `FindingMessage`,
 `Activity`, `RunControl`, y la idea de `AgentWorkState` como estado operacional
 observable sin razonamiento privado.
+
+Desaparece también `tokens` por nodo: era una estimación del modelo mostrada
+con el mismo peso visual que un diff medido o un exit code. La evidencia la
+mide la máquina; lo que no puede medir no se muestra.
 
 ## Pendiente
 
