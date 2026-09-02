@@ -73,20 +73,6 @@ function readUiPreferences(): UiPreferences {
   }
 }
 
-function formatTokens(tokens: number): string {
-  return `~${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens} tokens`;
-}
-
-function TokenCostBadge({ tokens, className = "" }: { tokens?: number; className?: string }) {
-  const hasReport = tokens != null;
-  const label = hasReport ? formatTokens(tokens) : "? tokens";
-  return (
-    <span className={["token-cost-badge", !hasReport && "token-cost-badge-muted", className].filter(Boolean).join(" ")}
-      title={hasReport ? `Tokens reportados por el agente: ${tokens}` : "El agente completó este nodo sin reportar tokens."}
-      aria-label={hasReport ? `Tokens reportados: ${label}` : "Tokens no reportados"}>{label}</span>
-  );
-}
-
 const statusCopy: Record<NodeStatus, string> = { running: "En curso", completed: "Terminado", failed: "Falló" };
 const phaseCopy: Record<RunPhase, string> = { open: "Implementando", hold: "En hold", implemented: "Implementado · por auditar", closed: "Cerrado" };
 const phaseRank: Record<RunPhase, number> = { hold: 0, open: 1, implemented: 2, closed: 3 };
@@ -205,7 +191,7 @@ export function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
     >
       <Handle type="target" position={Position.Left} className="route-handle" />
       <div className="node-route-head">
-        <span className="node-file" title={change.file}>{change.file}</span>
+        <span className="node-file" title={change.files.join("\n")}>{change.file}{change.files.length > 1 && <small className="node-file-more"> +{change.files.length - 1}</small>}</span>
         {change.status === "completed" && (
           <span className={audited.length ? "suggested-label" : "approval-label"} title={audited.length ? `Auditado por ${audited.join(", ")}` : "Sin auditoría ajena todavía"}>
             {audited.length ? `auditado ×${audited.length}` : "sin auditar"}
@@ -217,7 +203,6 @@ export function ChangeNodeCard({ data }: NodeProps<Node<MapNodeData>>) {
       <p>{change.title}</p>
       <div className="node-status-row">
         <span className="node-assignee" title={`${change.status === "completed" ? "Implementado" : "En ejecución"} por ${change.author}`}>{change.author}</span>
-        {change.status === "completed" && <TokenCostBadge tokens={change.tokens} className="node-tokens" />}
         <StatusSignal status={change.status}/>
       </div>
       {change.verification && <code className={`node-verify node-verify-${change.verification.passed ? "passed" : "failed"}`} title={change.verification.command}>{change.verification.command}</code>}
@@ -309,13 +294,12 @@ function Inspector({ node, nodes, findings, onSelectFinding }: { node?: ChangeNo
     <aside className="inspector" aria-live="polite">
       <header className="inspector-head">
         <div>
-          <span className="inspector-file">{node.file}</span>
+          {node.files.map((file) => <span className="inspector-file" key={file}>{file}</span>)}
           <h2>{node.symbol}</h2>
         </div>
         <div className="inspector-signals">
           <StatusSignal status={node.status}/>
           <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.author}</span>
-          {node.status === "completed" && <TokenCostBadge tokens={node.tokens} className="inspector-token-cost" />}
         </div>
       </header>
 
@@ -420,14 +404,17 @@ function IssueView({ detail }: { detail: RunDetail }) {
           </section>
         );
       })}
-      {detail.run.acceptance.some((criterion) => criterion.result) && (
+      {detail.run.acceptance.some((criterion) => criterion.result || criterion.observed) && (
         <section className="issue-section">
           <h3>Resultado de los criterios</h3>
           <ul className="dependency-list">
             {detail.run.acceptance.map((criterion) => (
               <li key={criterion.text}>
-                <span className={`dependency-dot ${criterion.result ? (criterion.result.passed ? "status-completed" : "status-failed") : "status-running"}`}/>
-                <span><strong>{criterion.text}</strong>{criterion.command ? `${criterion.command}${criterion.result ? ` → exit ${criterion.result.exitCode}` : ""}` : "sin comando: lo juzgan los auditores"}</span>
+                <span className={`dependency-dot ${criterion.result ? (criterion.result.passed ? "status-completed" : "status-failed") : criterion.observed ? "status-completed" : "status-running"}`}/>
+                <span>
+                  <strong>{criterion.exercise ? "[ejercicio] " : ""}{criterion.text}</strong>
+                  {criterion.command ? `${criterion.command}${criterion.result ? ` → exit ${criterion.result.exitCode}` : ""}` : criterion.exercise ? (criterion.observed ? `observado: ${criterion.observed}` : "pendiente de ejercitar") : "sin comando: lo juzgan los auditores"}
+                </span>
               </li>
             ))}
           </ul>
