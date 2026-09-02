@@ -32,10 +32,12 @@ import {
   type UiPreferences,
   type ViewShortcutModifier,
 } from "../shared/protocol";
+import type { EvolutionData, EvolutionFileStatus } from "../shared/evolution";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
+import { buildEvolutionTree, evolutionHighlights, expandedDirectories, filesAtFrame, frameIndexForNode, highlightLevel, type EvolutionHighlight, type EvolutionTreeNode } from "./evolution-tree";
 import { resolveProjectRunListState } from "./project-tree-runs";
-import { isViewShortcutEvent, resolveViewShortcut } from "./view-shortcuts";
+import { isViewShortcutEvent, resolveViewShortcut, resolveEvolutionFrameShortcut } from "./view-shortcuts";
 
 type ProjectWithRuns = Project & { runs: RunSummary[] };
 type Catalog = { projects: ProjectWithRuns[] };
@@ -48,6 +50,7 @@ type AttentionSignal = { runId: string; session: string; kind: string; directive
 type GraphMagnifierState = { active: boolean; x: number; y: number; width: number; height: number };
 type GraphPointerState = Omit<GraphMagnifierState, "active"> & { inside: boolean; clientX: number; clientY: number };
 type MapNodeData = { change: ChangeNode; isSelected: boolean; onSelect: (id: string) => void };
+type EvolutionState = { runId: string; data: EvolutionData };
 
 const changeNodeWidthFallback = 272;
 const changeNodeLayoutHeightFallback = 196;
@@ -79,6 +82,7 @@ const phaseRank: Record<RunPhase, number> = { hold: 0, open: 1, implemented: 2, 
 const severityCopy: Record<Finding["severity"], string> = { critical: "crítico", major: "mayor", minor: "menor", question: "duda" };
 const findingStatusCopy: Record<Finding["status"], string> = { open: "abierto", debating: "en debate", accepted: "aceptado", rejected: "rechazado", escalated: "esperando tu arbitraje" };
 const scopeCopy: Record<Finding["scope"], string> = { requirement: "requerimiento", node: "nodo", integration: "integración" };
+const fileStatusCopy: Record<EvolutionFileStatus, string> = { A: "creado", M: "modificado", D: "borrado", R: "renombrado" };
 
 function sessionLabel(session: string): string {
   const separator = session.indexOf(":");
@@ -128,8 +132,9 @@ function sortProjects(projects: ProjectWithRuns[]): ProjectWithRuns[] {
   });
 }
 
-function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "doc" }) {
+function Icon({ name }: { name: "route" | "activity" | "folder" | "check" | "clock" | "warning" | "code" | "sliders" | "copy" | "bell" | "doc" | "timeline" }) {
   const paths = {
+    timeline: <><path d="M3 12h18"/><circle cx="6" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M12 5v4M12 15v4"/></>,
     sliders: <><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></>,
     route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 3 4"/></>,
     activity: <><path d="M4 17h3l2-10 4 13 3-8 2 5h2"/></>,
@@ -428,6 +433,172 @@ function IssueView({ detail }: { detail: RunDetail }) {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+// Evolución: el árbol de archivos del workspace recorrido cuadro a cuadro, un
+// cuadro por nodo completado. El cuadro actual y la selección del nodo son el
+// mismo estado; el rótulo reproduce lo que el nodo ya guardaba.
+function EvolutionBranch({ nodes, depth, highlights, dirCounts, isOpen, onToggle }: {
+  nodes: EvolutionTreeNode[];
+  depth: number;
+  highlights: Map<string, EvolutionHighlight>;
+  dirCounts: Map<string, { current: number; past: number }>;
+  isOpen: (path: string, depth: number) => boolean;
+  onToggle: (path: string) => void;
+}) {
+  return (
+    <ul className="evolution-branch" role={depth === 0 ? "tree" : "group"}>
+      {nodes.map((node) => {
+        if (node.kind === "dir") {
+          const open = isOpen(node.path, depth);
+          const counts = dirCounts.get(node.path);
+          return (
+            <li key={node.path} className="evolution-dir" role="treeitem" aria-expanded={open}>
+              <button type="button" className={`evolution-dir-row ${counts?.current ? "has-current" : counts ? "has-past" : ""}`} style={{ paddingLeft: depth * 16 + 8 }} onClick={() => onToggle(node.path)}>
+                <span className="evolution-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+                <Icon name="folder"/>
+                <span className="evolution-name">{node.name}</span>
+                {counts && <span className="evolution-dir-count" title={`${counts.current + counts.past} ${counts.current + counts.past === 1 ? "archivo tocado" : "archivos tocados"} dentro`}>{counts.current + counts.past}</span>}
+              </button>
+              {open && <EvolutionBranch nodes={node.children} depth={depth + 1} highlights={highlights} dirCounts={dirCounts} isOpen={isOpen} onToggle={onToggle}/>}
+            </li>
+          );
+        }
+        const highlight = highlights.get(node.path);
+        const className = highlight ? `evolution-file is-${highlight.kind} level-${highlightLevel(highlight.age)} status-${highlight.status}` : "evolution-file";
+        return (
+          <li key={node.path} role="treeitem" className={className} style={{ paddingLeft: depth * 16 + 30 }} title={highlight ? `${node.path} · ${fileStatusCopy[highlight.status]}${highlight.kind === "past" ? ` hace ${highlight.age} ${highlight.age === 1 ? "cuadro" : "cuadros"}` : " en este cuadro"}` : node.path} data-evolution-current={highlight?.kind === "current" ? "true" : undefined}>
+            <span className="evolution-name">{node.name}</span>
+            {highlight && <span className={`evolution-status status-${highlight.status}`} aria-label={fileStatusCopy[highlight.status]}>{highlight.status}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function EvolutionView({ evolution, error, nodes, findings, frameIndex, onFrame, onSelectFinding }: {
+  evolution?: EvolutionData;
+  error: string;
+  nodes: ChangeNode[];
+  findings: Finding[];
+  frameIndex: number;
+  onFrame: (index: number) => void;
+  onSelectFinding: (id: string) => void;
+}) {
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const treeRef = useRef<HTMLDivElement>(null);
+  const frames = useMemo(() => evolution?.frames ?? [], [evolution]);
+  const frame = frames[frameIndex];
+  const node = frame ? nodes.find((candidate) => candidate.id === frame.nodeId) : undefined;
+  const paths = useMemo(() => evolution ? filesAtFrame(evolution.baseFiles, frames, frameIndex) : [], [evolution, frames, frameIndex]);
+  const tree = useMemo(() => buildEvolutionTree(paths), [paths]);
+  const highlights = useMemo(() => evolutionHighlights(frames, frameIndex), [frames, frameIndex]);
+  const autoExpanded = useMemo(() => expandedDirectories([...highlights.keys()]), [highlights]);
+  const dirCounts = useMemo(() => {
+    const counts = new Map<string, { current: number; past: number }>();
+    for (const [path, highlight] of highlights) {
+      if (highlight.status === "D") continue;
+      const segments = path.split("/");
+      for (let depth = 1; depth < segments.length; depth += 1) {
+        const directory = segments.slice(0, depth).join("/");
+        const entry = counts.get(directory) ?? { current: 0, past: 0 };
+        entry[highlight.kind] += 1;
+        counts.set(directory, entry);
+      }
+    }
+    return counts;
+  }, [highlights]);
+  // Al cambiar de cuadro el árbol vuelve a abrirse solo hacia lo tocado y
+  // enfoca el primer archivo del cuadro.
+  useEffect(() => { setOverrides({}); }, [frameIndex, evolution]);
+  useEffect(() => {
+    treeRef.current?.querySelector<HTMLElement>("[data-evolution-current]")?.scrollIntoView({ block: "center" });
+  }, [frameIndex, evolution]);
+  const isOpen = useCallback((path: string, depth: number) => overrides[path] ?? (depth === 0 || autoExpanded.has(path)), [overrides, autoExpanded]);
+  const toggle = useCallback((path: string) => setOverrides((current) => {
+    const open = current[path] ?? (!path.includes("/") || autoExpanded.has(path));
+    return { ...current, [path]: !open };
+  }), [autoExpanded]);
+  const related = node ? findings.filter((finding) => finding.nodeId === node.id || finding.resolutionNodeId === node.id) : [];
+
+  if (error) return <div className="ledger-empty"><Icon name="warning"/><h2>No se pudo cargar la evolución</h2><p>{error}</p></div>;
+  if (!evolution) return <div className="ledger-empty" aria-busy="true"><Icon name="timeline"/><h2>Cargando la evolución</h2><p>Leyendo el árbol base y los cuadros del run.</p></div>;
+
+  return (
+    <div className="evolution">
+      <div className="evolution-strip" role="group" aria-label="Línea de tiempo del run">
+        <button type="button" disabled={frameIndex <= 0} title="Primer cuadro (Inicio)" aria-label="Primer cuadro" onClick={() => onFrame(0)}>⇤</button>
+        <button type="button" disabled={frameIndex <= 0} title="Cuadro anterior (←)" aria-label="Cuadro anterior" onClick={() => onFrame(frameIndex - 1)}>←</button>
+        <ol className="evolution-dots">
+          {frames.map((candidate, index) => {
+            const title = nodes.find((item) => item.id === candidate.nodeId)?.title ?? candidate.nodeId;
+            return (
+              <li key={candidate.nodeId}>
+                <button type="button" className={index === frameIndex ? "is-current" : index < frameIndex ? "is-past" : ""} aria-current={index === frameIndex ? "step" : undefined} aria-label={`Cuadro ${index + 1}: ${candidate.nodeId}, ${title}`} title={`${candidate.nodeId} · ${title}`} onClick={() => onFrame(index)}/>
+              </li>
+            );
+          })}
+        </ol>
+        <button type="button" disabled={frameIndex >= frames.length - 1} title="Cuadro siguiente (→)" aria-label="Cuadro siguiente" onClick={() => onFrame(frameIndex + 1)}>→</button>
+        <button type="button" disabled={frameIndex >= frames.length - 1} title="Último cuadro (Fin)" aria-label="Último cuadro" onClick={() => onFrame(frames.length - 1)}>⇥</button>
+        <span className="evolution-counter">{frames.length ? `${Math.max(frameIndex, 0) + 1} / ${frames.length}` : "0 cuadros"}</span>
+        <span className="evolution-hint">← → cambian de cuadro · Inicio/Fin van a los extremos</span>
+      </div>
+      {evolution.partial && (
+        <p className="evolution-partial" role="status"><Icon name="warning"/>git ya no alcanza el commit base: el árbol se reconstruyó sólo con los archivos que tocan los nodos.</p>
+      )}
+      <div className="evolution-body">
+        <div className="evolution-tree" ref={treeRef} aria-label="Árbol de archivos en este cuadro">
+          {tree.length
+            ? <EvolutionBranch nodes={tree} depth={0} highlights={highlights} dirCounts={dirCounts} isOpen={isOpen} onToggle={toggle}/>
+            : <p className="evolution-empty-tree">Sin archivos en el árbol.</p>}
+        </div>
+        <section className="evolution-caption" aria-live="polite" aria-label="Cuadro actual">
+          {frame && node ? (
+            <>
+              <div className="evolution-caption-head">
+                <strong>{node.id} · cuadro {frameIndex + 1} de {frames.length}</strong>
+                {frame.commit && <span className="activity-agent" title={frame.commit}>commit {frame.commit.slice(0, 10)}</span>}
+                {frame.committedAt && <time dateTime={frame.committedAt}>{formatTime(frame.committedAt)}</time>}
+                <span className="evolution-author">{node.author}</span>
+              </div>
+              <h2>{node.title}</h2>
+              <ul className="evolution-files">
+                {frame.files.map((change) => (
+                  <li key={change.path}>
+                    <span className={`evolution-status status-${change.status}`}>{change.status}</span>
+                    <code>{change.path}</code>
+                    <em>{fileStatusCopy[change.status]}{change.from ? ` desde ${change.from}` : ""}</em>
+                  </li>
+                ))}
+                {!frame.files.length && <li><em>git no registró archivos en este nodo.</em></li>}
+              </ul>
+              {node.patchSummary && <p className="evolution-summary">{node.patchSummary}</p>}
+              {node.patchRationale && <p className="evolution-rationale"><strong>Por qué</strong>{node.patchRationale}</p>}
+              <div className="evolution-signals">
+                {node.verification && (
+                  <span className={`evolution-verify verify-${node.verification.passed ? "passed" : "failed"}`} title={node.verification.command}>
+                    <Icon name={node.verification.passed ? "check" : "warning"}/>{node.verification.passed ? "Verificación aprobada" : "Verificación fallida"}<code>{node.verification.command}</code>
+                  </span>
+                )}
+                {related.length > 0 && (
+                  <button type="button" className="finding-node-link" onClick={() => onSelectFinding(related[0].id)}>
+                    {related.length === 1 ? "1 hallazgo" : `${related.length} hallazgos`}{related.some(isLiveFinding) ? " · alguno vivo" : ""}
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <strong>{frames.length ? "Cuadro sin nodo" : "Antes del run"}</strong>
+              <p>{frames.length ? "El nodo de este cuadro ya no está en el run." : "Todavía no hay nodos completados: este es el árbol del que parte el run. Los cuadros aparecen conforme el base completa operaciones."}</p>
+            </>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
@@ -781,7 +952,7 @@ function SettingsPanel({ uiPreferences, onUiPreferencesSaved }: { uiPreferences:
               <h3>Atajos de vistas</h3>
               <label className="settings-check">
                 <input type="checkbox" checked={uiPreferences.viewShortcuts.enabled} onChange={(event) => save({ enabled: event.target.checked })}/>
-                <span>Flechas izquierda/derecha recorren Issue, Mapa, Actividad y Hallazgos</span>
+                <span>Flechas izquierda/derecha recorren Issue, Mapa, Actividad, Hallazgos y Evolución</span>
               </label>
               <div className="shortcut-options" role="group" aria-label="Modificador de atajos de vistas">
                 {([["meta", "Command"], ["ctrl", "Ctrl"], ["either", "Ambos"]] as const).map(([modifier, label]) => (
@@ -827,7 +998,8 @@ function HelpPanel() {
             </ul>
             <h3>Tips</h3>
             <ul>
-              <li>Command/Ctrl sobre el mapa abre la lupa; con Command/Ctrl, las flechas recorren Issue, Mapa, Actividad y Hallazgos.</li>
+              <li>Command/Ctrl sobre el mapa abre la lupa; con Command/Ctrl, las flechas recorren Issue, Mapa, Actividad, Hallazgos y Evolución.</li>
+              <li>En Evolución, las flechas sin modificador recorren los cuadros (uno por nodo completado) sobre el árbol de archivos; Inicio y Fin van al primero y al último.</li>
               <li>Clic en una sesión del dock filtra Actividad y Hallazgos por esa sesión.</li>
               <li>Un run «implementado sin auditar» se queda así hasta que alguien se enganche; nunca cierra solo.</li>
             </ul>
@@ -971,6 +1143,9 @@ export function App() {
   const [view, setView] = useState<View>("map");
   const [sessionFilter, setSessionFilter] = useState("");
   const [focusFindingId, setFocusFindingId] = useState<string>();
+  const [evolution, setEvolution] = useState<EvolutionState>();
+  const [evolutionError, setEvolutionError] = useState("");
+  const [frameIndex, setFrameIndex] = useState(-1);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [buildStale, setBuildStale] = useState(false);
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(readUiPreferences);
@@ -1175,9 +1350,53 @@ export function App() {
   const nodeSetKey = useMemo(() => (detail?.nodes ?? []).map((node) => node.id).sort().join("|"), [detail?.nodes]);
   const flowMounted = isGraphFlowMounted(view, detail?.nodes.length);
 
+  // --- Evolución: se recarga cuando cambia el conjunto de nodos completados ---
+  const evolutionRunId = detail?.run.id ?? "";
+  const completedKey = useMemo(() => (detail?.nodes ?? []).filter((node) => node.status === "completed").map((node) => `${node.id}@${node.commit ?? ""}`).join("|"), [detail?.nodes]);
+  useEffect(() => {
+    if (!evolutionRunId) { setEvolution(undefined); setEvolutionError(""); return; }
+    let cancelled = false;
+    fetch(`/api/runs/${evolutionRunId}/evolution`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(((await response.json().catch(() => ({}))) as { error?: string }).error ?? "No se pudo cargar la evolución");
+        return await response.json() as EvolutionData;
+      })
+      .then((data) => { if (!cancelled) { setEvolution({ runId: evolutionRunId, data }); setEvolutionError(""); } })
+      .catch((cause) => { if (!cancelled) setEvolutionError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => { cancelled = true; };
+  }, [evolutionRunId, completedKey]);
+  const evolutionData = evolution?.runId === evolutionRunId ? evolution.data : undefined;
+  const evolutionFrames = evolutionData?.frames ?? [];
+  useEffect(() => {
+    setFrameIndex((current) => current >= 0 && current < evolutionFrames.length ? current : evolutionFrames.length - 1);
+  }, [evolutionFrames.length, evolutionRunId]);
+  useEffect(() => {
+    const index = frameIndexForNode(evolutionFrames, selectedId);
+    if (index !== -1) setFrameIndex(index);
+  }, [selectedId, evolutionFrames]);
+  // Entrar a Evolución con un nodo que no es cuadro (en curso, fallido o
+  // ninguno) alinea la selección con el cuadro mostrado.
+  useEffect(() => {
+    if (view !== "evolution") return;
+    const frame = evolutionFrames[frameIndex];
+    if (frame && frameIndexForNode(evolutionFrames, selectedId) === -1) setSelectedId(frame.nodeId);
+    // selectedId se omite a propósito: sólo importa al entrar o al cambiar de cuadro.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, evolutionFrames, frameIndex]);
+  const goToFrame = useCallback((index: number) => {
+    const frame = evolutionFrames[index];
+    if (!frame) return;
+    setFrameIndex(index);
+    setSelectedId(frame.nodeId);
+  }, [evolutionFrames]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcutsAvailable = Boolean(runId && detail);
+      // Sin modificador, en Evolución, las flechas mueven el cuadro; con
+      // modificador recorren las vistas. No compiten.
+      const nextFrame = shortcutsAvailable ? resolveEvolutionFrameShortcut({ event, index: frameIndex, length: evolutionFrames.length, view }) : null;
+      if (nextFrame !== null) { event.preventDefault(); goToFrame(nextFrame); return; }
       const isViewShortcut = shortcutsAvailable && isViewShortcutEvent({ event, preferences: uiPreferences });
       const nextView = isViewShortcut ? resolveViewShortcut({ currentView: view, event, preferences: uiPreferences }) : null;
       if (nextView) { event.preventDefault(); hideGraphMagnifier(); setView(nextView); return; }
@@ -1193,7 +1412,7 @@ export function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", hideGraphMagnifier);
     };
-  }, [detail, hideGraphMagnifier, refreshGraphPointer, runId, showGraphMagnifier, uiPreferences, view]);
+  }, [detail, hideGraphMagnifier, refreshGraphPointer, runId, showGraphMagnifier, uiPreferences, view, evolutionFrames.length, frameIndex, goToFrame]);
 
   const applyGraphViewport = useCallback((duration = 320) => {
     const instance = flowInstance.current;
@@ -1313,11 +1532,12 @@ export function App() {
               <button aria-pressed={view === "map"} className={view === "map" ? "active" : ""} onClick={() => setView("map")}><Icon name="route"/>Mapa</button>
               <button aria-pressed={view === "activity"} className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}><Icon name="activity"/>Actividad</button>
               <button aria-pressed={view === "findings"} className={view === "findings" ? "active" : ""} onClick={() => setView("findings")}><Icon name="warning"/>Hallazgos{liveFindingsCount > 0 && <span className="nav-findings-count">{liveFindingsCount}</span>}</button>
+              <button aria-pressed={view === "evolution"} className={view === "evolution" ? "active" : ""} onClick={() => setView("evolution")}><Icon name="timeline"/>Evolución</button>
             </nav>
           </div>
           {loadingRun ? <LoadingState label="Cargando run"/> : !runId || !detail ? <EmptyState kind="runs"/> : (
             <main className="workspace">
-              <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : view === "issue" ? "Issue del run" : view === "activity" ? "Actividad del run" : "Hallazgos del run"}>
+              <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : view === "issue" ? "Issue del run" : view === "activity" ? "Actividad del run" : view === "evolution" ? "Evolución del run" : "Hallazgos del run"}>
                 <header className="stage-head">
                   <div>
                     <h1>{detail.run.title}</h1>
@@ -1360,6 +1580,8 @@ export function App() {
                 {(view === "activity" || view === "findings") && <SessionFilterBar sessions={sessionNames} value={sessionFilter} onChange={setSessionFilter}/>}
                 {view === "issue" ? (
                   <IssueView detail={detail}/>
+                ) : view === "evolution" ? (
+                  <EvolutionView evolution={evolutionData} error={evolutionError} nodes={detail.nodes} findings={detail.findings} frameIndex={frameIndex} onFrame={goToFrame} onSelectFinding={openFinding}/>
                 ) : view === "findings" ? (
                   <FindingsPanel findings={detail.findings} nodes={detail.nodes} sessionFilter={sessionFilter} focusId={focusFindingId} onChanged={refresh} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
                 ) : view === "map" ? (
