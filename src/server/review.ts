@@ -39,13 +39,14 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeIds?: string
     "",
     integration ? "## Nodos del run" : "## Nodos en tu alcance (hay más en el run)",
     "",
-    ...scope.map((node) => `- ${node.id} [${node.status}] ${node.file} · ${node.symbol} — ${node.title}${node.dependencies.length ? ` ← depende de ${node.dependencies.join(", ")}` : ""}${node.auditedBy.length ? ` · auditado por ${node.auditedBy.join(", ")}` : ""}`),
+    ...scope.map((node) => `- ${node.id} [${node.status}] ${node.files.join(", ")} · ${node.symbol} — ${node.title}${node.dependencies.length ? ` ← depende de ${node.dependencies.join(", ")}` : ""}${node.auditedBy.length ? ` · auditado por ${node.auditedBy.join(", ")}` : ""}`),
   ];
   if (integration && detail.run.acceptance.length) {
     lines.push("", "## Criterios de aceptación", "");
     for (const criterion of detail.run.acceptance) {
       const result = criterion.result ? ` → ${criterion.result.passed ? "pasó" : `falló (exit ${criterion.result.exitCode})`}` : criterion.command ? " → sin ejecutar" : "";
-      lines.push(`- ${criterion.text}${criterion.command ? ` (\`${criterion.command}\`)` : ""}${result}`);
+      const exercised = criterion.exercise ? (criterion.observed ? ` → ejercitado por el base: ${criterion.observed}` : " → pendiente de ejercitar") : "";
+      lines.push(`- ${criterion.exercise ? "[ejercicio] " : ""}${criterion.text}${criterion.command ? ` (\`${criterion.command}\`)` : ""}${result}${exercised}`);
     }
   }
   if (detail.findings.length) {
@@ -61,7 +62,7 @@ export function buildReviewPack(store: HrpStore, runId: string, nodeIds?: string
       "",
       `## Nodo ${node.id}: ${node.title}`,
       "",
-      `- Archivo: ${node.file} · ${node.symbol}`,
+      `- ${node.files.length === 1 ? "Archivo" : "Archivos"}: ${node.files.join(", ")} · ${node.symbol}`,
       `- Intención: ${node.description}`,
       `- Por qué: ${node.rationale}`,
       `- Resumen del parche: ${node.patchSummary ?? "(sin resumen)"}`,
