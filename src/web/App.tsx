@@ -32,10 +32,11 @@ import {
   type UiPreferences,
   type ViewShortcutModifier,
 } from "../shared/protocol";
-import type { EvolutionData, EvolutionFileStatus } from "../shared/evolution";
+import type { EvolutionData, EvolutionFileChange, EvolutionFileContent, EvolutionFileStatus } from "../shared/evolution";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 import { buildEvolutionTree, evolutionHighlights, expandedDirectories, filesAtFrame, frameIndexForNode, highlightLevel, type EvolutionHighlight, type EvolutionTreeNode } from "./evolution-tree";
+import { alignLines, diffRowCounts, type DiffRow } from "./line-diff";
 import { resolveProjectRunListState } from "./project-tree-runs";
 import { isViewShortcutEvent, resolveViewShortcut, resolveEvolutionFrameShortcut } from "./view-shortcuts";
 
@@ -440,13 +441,15 @@ function IssueView({ detail }: { detail: RunDetail }) {
 // Evolución: el árbol de archivos del workspace recorrido cuadro a cuadro, un
 // cuadro por nodo completado. El cuadro actual y la selección del nodo son el
 // mismo estado; el rótulo reproduce lo que el nodo ya guardaba.
-function EvolutionBranch({ nodes, depth, highlights, dirCounts, isOpen, onToggle }: {
+function EvolutionBranch({ nodes, depth, highlights, dirCounts, focusPath, isOpen, onToggle, onSelectFile }: {
   nodes: EvolutionTreeNode[];
   depth: number;
   highlights: Map<string, EvolutionHighlight>;
   dirCounts: Map<string, { current: number; past: number }>;
+  focusPath?: string;
   isOpen: (path: string, depth: number) => boolean;
   onToggle: (path: string) => void;
+  onSelectFile: (path: string) => void;
 }) {
   return (
     <ul className="evolution-branch" role={depth === 0 ? "tree" : "group"}>
@@ -462,16 +465,19 @@ function EvolutionBranch({ nodes, depth, highlights, dirCounts, isOpen, onToggle
                 <span className="evolution-name">{node.name}</span>
                 {counts && <span className="evolution-dir-count" title={`${counts.current + counts.past} ${counts.current + counts.past === 1 ? "archivo tocado" : "archivos tocados"} dentro`}>{counts.current + counts.past}</span>}
               </button>
-              {open && <EvolutionBranch nodes={node.children} depth={depth + 1} highlights={highlights} dirCounts={dirCounts} isOpen={isOpen} onToggle={onToggle}/>}
+              {open && <EvolutionBranch nodes={node.children} depth={depth + 1} highlights={highlights} dirCounts={dirCounts} focusPath={focusPath} isOpen={isOpen} onToggle={onToggle} onSelectFile={onSelectFile}/>}
             </li>
           );
         }
         const highlight = highlights.get(node.path);
-        const className = highlight ? `evolution-file is-${highlight.kind} level-${highlightLevel(highlight.age)} status-${highlight.status}` : "evolution-file";
+        const focused = node.path === focusPath;
+        const className = `evolution-file ${highlight ? `is-${highlight.kind} level-${highlightLevel(highlight.age)} status-${highlight.status}` : ""} ${focused ? "is-focus" : ""}`;
         return (
-          <li key={node.path} role="treeitem" className={className} style={{ paddingLeft: depth * 16 + 30 }} title={highlight ? `${node.path} · ${fileStatusCopy[highlight.status]}${highlight.kind === "past" ? ` hace ${highlight.age} ${highlight.age === 1 ? "cuadro" : "cuadros"}` : " en este cuadro"}` : node.path} data-evolution-current={highlight?.kind === "current" ? "true" : undefined}>
-            <span className="evolution-name">{node.name}</span>
-            {highlight && <span className={`evolution-status status-${highlight.status}`} aria-label={fileStatusCopy[highlight.status]}>{highlight.status}</span>}
+          <li key={node.path} role="treeitem" aria-selected={focused} className={className} data-evolution-current={highlight?.kind === "current" ? "true" : undefined}>
+            <button type="button" className="evolution-file-row" style={{ paddingLeft: depth * 16 + 30 }} title={highlight ? `${node.path} · ${fileStatusCopy[highlight.status]}${highlight.kind === "past" ? ` hace ${highlight.age} ${highlight.age === 1 ? "cuadro" : "cuadros"}` : " en este cuadro"}` : node.path} onClick={() => onSelectFile(node.path)}>
+              <span className="evolution-name">{node.name}</span>
+              {highlight && <span className={`evolution-status status-${highlight.status}`} aria-label={fileStatusCopy[highlight.status]}>{highlight.status}</span>}
+            </button>
           </li>
         );
       })}
@@ -479,7 +485,87 @@ function EvolutionBranch({ nodes, depth, highlights, dirCounts, isOpen, onToggle
   );
 }
 
-function EvolutionView({ evolution, error, nodes, findings, frameIndex, onFrame, onSelectFinding }: {
+// Antes y después del archivo en foco, alineados línea a línea en una sola
+// rejilla: número y texto de cada lado, con la fila coloreada según añadida,
+// borrada o modificada.
+function EvolutionCodePane({ runId, node, change, path, frameLabel, onShowFrame }: {
+  runId: string;
+  node: ChangeNode;
+  change?: EvolutionFileChange;
+  path: string;
+  frameLabel: string;
+  onShowFrame: () => void;
+}) {
+  const [state, setState] = useState<{ key: string; content?: EvolutionFileContent; error?: string }>({ key: "" });
+  const key = `${runId}:${node.id}:${path}`;
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/runs/${runId}/evolution/file?nodeId=${encodeURIComponent(node.id)}&path=${encodeURIComponent(path)}`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({})) as EvolutionFileContent & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "No se pudo leer el archivo");
+        return body;
+      })
+      .then((content) => { if (!cancelled) setState({ key, content }); })
+      .catch((cause) => { if (!cancelled) setState({ key, error: cause instanceof Error ? cause.message : String(cause) }); });
+    return () => { cancelled = true; };
+  }, [key, runId, node.id, path]);
+  const loaded = state.key === key ? state : { key };
+  const rows: DiffRow[] = useMemo(() => loaded.content && !loaded.content.binary ? alignLines(loaded.content.before, loaded.content.after) : [], [loaded.content]);
+  const counts = useMemo(() => diffRowCounts(rows), [rows]);
+  const status = change?.status;
+  return (
+    <section className="evolution-code-pane" aria-label={`Antes y después de ${path}`}>
+      <header className="evolution-code-head">
+        <div className="evolution-code-node">
+          <strong>{frameLabel}</strong>
+          <span className="evolution-code-title" title={node.title}>{node.title}</span>
+          <button type="button" className="evolution-code-frame-link" onClick={onShowFrame}>Ver cuadro</button>
+        </div>
+        <div className="evolution-code-file">
+          {status ? <span className={`evolution-status status-${status}`}>{status}</span> : <span className="evolution-status status-none" title="Sin cambios en este cuadro">=</span>}
+          <code title={path}>{path}</code>
+          {change?.from && <em>desde {change.from}</em>}
+          {loaded.content && !loaded.content.binary && (
+            <span className="evolution-code-counts" aria-label={`${counts.added} añadidas, ${counts.deleted} borradas, ${counts.modified} modificadas`}>
+              <b className="count-add">+{counts.added}</b><b className="count-del">−{counts.deleted}</b><b className="count-mod">~{counts.modified}</b>
+            </span>
+          )}
+        </div>
+      </header>
+      {loaded.error ? (
+        <div className="evolution-code-fallback">
+          <p role="alert"><Icon name="warning"/>{loaded.error}</p>
+          {node.diff && change ? <><p>Se muestra el diff guardado del nodo.</p><DiffView diff={node.diff}/></> : null}
+        </div>
+      ) : !loaded.content ? (
+        <p className="evolution-code-loading" aria-busy="true">Leyendo las dos versiones…</p>
+      ) : loaded.content.binary ? (
+        <p className="evolution-code-loading">Archivo binario: no se muestra su contenido.</p>
+      ) : (
+        <div className="evolution-code" role="table" aria-label="Líneas antes y después">
+          <div className="evolution-code-columns" role="row">
+            <span role="columnheader" className={loaded.content.before === undefined ? "is-void" : ""}>Antes{loaded.content.before === undefined ? " · no existía" : ""}</span>
+            <span role="columnheader" className={loaded.content.after === undefined ? "is-void" : ""}>Después{loaded.content.after === undefined ? " · borrado" : ""}</span>
+          </div>
+          {loaded.content.truncated && <p className="evolution-code-loading">Archivo truncado a 1 MB.</p>}
+          {rows.map((row, index) => (
+            <div className={`evolution-code-row kind-${row.kind}`} role="row" key={index}>
+              <span className={`evolution-ln ${row.left ? "" : "is-void"}`} role="cell">{row.left?.number ?? ""}</span>
+              <span className={`evolution-src ${row.left ? "" : "is-void"}`} role="cell">{row.left?.text ?? ""}</span>
+              <span className={`evolution-ln ${row.right ? "" : "is-void"}`} role="cell">{row.right?.number ?? ""}</span>
+              <span className={`evolution-src ${row.right ? "" : "is-void"}`} role="cell">{row.right?.text ?? ""}</span>
+            </div>
+          ))}
+          {!rows.length && <p className="evolution-code-loading">Archivo vacío en las dos versiones.</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function EvolutionView({ runId, evolution, error, nodes, findings, frameIndex, onFrame, onSelectFinding }: {
+  runId: string;
   evolution?: EvolutionData;
   error: string;
   nodes: ChangeNode[];
@@ -489,6 +575,10 @@ function EvolutionView({ evolution, error, nodes, findings, frameIndex, onFrame,
   onSelectFinding: (id: string) => void;
 }) {
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  // Por defecto se ve el código del archivo en foco; el rótulo del cuadro es
+  // el otro modo. Seleccionar un archivo vuelve al código.
+  const [mode, setMode] = useState<"code" | "frame">("code");
+  const [focusPath, setFocusPath] = useState<string>();
   const treeRef = useRef<HTMLDivElement>(null);
   const frames = useMemo(() => evolution?.frames ?? [], [evolution]);
   const frame = frames[frameIndex];
@@ -514,6 +604,8 @@ function EvolutionView({ evolution, error, nodes, findings, frameIndex, onFrame,
   // Al cambiar de cuadro el árbol vuelve a abrirse solo hacia lo tocado y
   // enfoca el primer archivo del cuadro.
   useEffect(() => { setOverrides({}); }, [frameIndex, evolution]);
+  useEffect(() => { setFocusPath(frame?.files[0]?.path); }, [frame]);
+  const selectFile = useCallback((path: string) => { setFocusPath(path); setMode("code"); }, []);
   useEffect(() => {
     treeRef.current?.querySelector<HTMLElement>("[data-evolution-current]")?.scrollIntoView({ block: "center" });
   }, [frameIndex, evolution]);
@@ -545,17 +637,26 @@ function EvolutionView({ evolution, error, nodes, findings, frameIndex, onFrame,
         <button type="button" disabled={frameIndex >= frames.length - 1} title="Cuadro siguiente (→)" aria-label="Cuadro siguiente" onClick={() => onFrame(frameIndex + 1)}>→</button>
         <button type="button" disabled={frameIndex >= frames.length - 1} title="Último cuadro (Fin)" aria-label="Último cuadro" onClick={() => onFrame(frames.length - 1)}>⇥</button>
         <span className="evolution-counter">{frames.length ? `${Math.max(frameIndex, 0) + 1} / ${frames.length}` : "0 cuadros"}</span>
+        <div className="evolution-mode" role="group" aria-label="Qué mostrar junto al árbol">
+          <button type="button" className={mode === "code" ? "active" : ""} aria-pressed={mode === "code"} onClick={() => setMode("code")}>Código</button>
+          <button type="button" className={mode === "frame" ? "active" : ""} aria-pressed={mode === "frame"} onClick={() => setMode("frame")}>Cuadro</button>
+        </div>
         <span className="evolution-hint">← → cambian de cuadro · Inicio/Fin van a los extremos</span>
       </div>
       {evolution.partial && (
         <p className="evolution-partial" role="status"><Icon name="warning"/>git ya no alcanza el commit base: el árbol se reconstruyó sólo con los archivos que tocan los nodos.</p>
       )}
-      <div className="evolution-body">
+      <div className={`evolution-body mode-${mode}`}>
         <div className="evolution-tree" ref={treeRef} aria-label="Árbol de archivos en este cuadro">
           {tree.length
-            ? <EvolutionBranch nodes={tree} depth={0} highlights={highlights} dirCounts={dirCounts} isOpen={isOpen} onToggle={toggle}/>
+            ? <EvolutionBranch nodes={tree} depth={0} highlights={highlights} dirCounts={dirCounts} focusPath={focusPath} isOpen={isOpen} onToggle={toggle} onSelectFile={selectFile}/>
             : <p className="evolution-empty-tree">Sin archivos en el árbol.</p>}
         </div>
+        {mode === "code" && frame && node && focusPath ? (
+          <EvolutionCodePane runId={runId} node={node} change={frame.files.find((candidate) => candidate.path === focusPath)} path={focusPath} frameLabel={`${node.id} · ${frameIndex + 1}/${frames.length}`} onShowFrame={() => setMode("frame")}/>
+        ) : mode === "code" && frame && node ? (
+          <section className="evolution-caption" aria-label="Archivo en foco"><strong>Sin archivo en foco</strong><p>Elige un archivo del árbol para ver su antes y su después en este cuadro.</p></section>
+        ) : (
         <section className="evolution-caption" aria-live="polite" aria-label="Cuadro actual">
           {frame && node ? (
             <>
@@ -598,6 +699,7 @@ function EvolutionView({ evolution, error, nodes, findings, frameIndex, onFrame,
             </>
           )}
         </section>
+        )}
       </div>
     </div>
   );
@@ -999,7 +1101,7 @@ function HelpPanel() {
             <h3>Tips</h3>
             <ul>
               <li>Command/Ctrl sobre el mapa abre la lupa; con Command/Ctrl, las flechas recorren Issue, Mapa, Actividad, Hallazgos y Evolución.</li>
-              <li>En Evolución, las flechas sin modificador recorren los cuadros (uno por nodo completado) sobre el árbol de archivos; Inicio y Fin van al primero y al último.</li>
+              <li>En Evolución, las flechas sin modificador recorren los cuadros (uno por nodo completado) sobre el árbol de archivos; Inicio y Fin van al primero y al último. Junto al árbol se ve el antes y el después del archivo en foco; clic en un archivo lo enfoca y «Cuadro» muestra el rótulo del nodo.</li>
               <li>Clic en una sesión del dock filtra Actividad y Hallazgos por esa sesión.</li>
               <li>Un run «implementado sin auditar» se queda así hasta que alguien se enganche; nunca cierra solo.</li>
             </ul>
@@ -1581,7 +1683,7 @@ export function App() {
                 {view === "issue" ? (
                   <IssueView detail={detail}/>
                 ) : view === "evolution" ? (
-                  <EvolutionView evolution={evolutionData} error={evolutionError} nodes={detail.nodes} findings={detail.findings} frameIndex={frameIndex} onFrame={goToFrame} onSelectFinding={openFinding}/>
+                  <EvolutionView runId={detail.run.id} evolution={evolutionData} error={evolutionError} nodes={detail.nodes} findings={detail.findings} frameIndex={frameIndex} onFrame={goToFrame} onSelectFinding={openFinding}/>
                 ) : view === "findings" ? (
                   <FindingsPanel findings={detail.findings} nodes={detail.nodes} sessionFilter={sessionFilter} focusId={focusFindingId} onChanged={refresh} onSelectNode={(id) => { setSelectedId(id); setView("map"); }}/>
                 ) : view === "map" ? (
