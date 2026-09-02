@@ -270,6 +270,24 @@ describe("evolución", () => {
     expect(evolution.baseFiles).toEqual(["README.md"]);
   });
 
+  it("lee el antes y el después de un archivo en el commit del nodo", () => {
+    const { run } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    const created = implementNode(run.id, "claude:1");
+    const edited = implementNode(run.id, "claude:1", "README.md", "# demo\n\nmás\n");
+    expect(store.getRunEvolutionFile(run.id, created.id, "src/prefs.ts")).toEqual({
+      path: "src/prefs.ts", before: undefined, after: "export const saveTheme = () => {};\n", binary: false, truncated: false,
+    });
+    const readme = store.getRunEvolutionFile(run.id, edited.id, "README.md");
+    expect(readme.before).toBe("# demo\n");
+    expect(readme.after).toBe("# demo\n\nmás\n");
+    // Un archivo que no cambió en ese nodo se lee igual en las dos versiones.
+    expect(store.getRunEvolutionFile(run.id, edited.id, "src/prefs.ts").before).toBe("export const saveTheme = () => {};\n");
+    expect(() => store.getRunEvolutionFile(run.id, created.id, "../fuera.ts")).toThrow(/fuera del workspace/);
+    const pending = store.openNode(run.id, "claude:1", { file: "src/x.ts", symbol: "x", title: "t", description: "d", rationale: "r" });
+    expect(() => store.getRunEvolutionFile(run.id, pending.id, "src/x.ts")).toThrow(/no tiene commit/);
+  });
+
   it("reconstruye el árbol base con los archivos que no nacieron en el run", () => {
     expect(reconstructBaseFiles([
       { nodeId: "n1", files: [{ path: "src/new.ts", status: "A" }, { path: "README.md", status: "M" }] },

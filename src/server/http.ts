@@ -166,6 +166,10 @@ export function createApp(store: HrpStore, options: { webRoot?: string } = {}) {
   app.get("/api/runs/:runId/evolution", handle((request, response) => {
     response.json(store.getRunEvolution(request.params.runId));
   }));
+  app.get("/api/runs/:runId/evolution/file", handle((request, response) => {
+    const query = parse(z.object({ nodeId: z.string().trim().min(1), path: z.string().min(1) }), request.query);
+    response.json(store.getRunEvolutionFile(request.params.runId, query.nodeId, query.path));
+  }));
   app.get("/api/runs/:runId/attachments/:file", handle((request, response) => {
     const run = store.requireRun(request.params.runId);
     const directory = path.join(path.dirname(run.issuePath), "attachments");

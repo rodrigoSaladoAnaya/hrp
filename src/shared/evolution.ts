@@ -65,3 +65,15 @@ export function fileChangesFromDiff(diff: string): EvolutionFileChange[] {
   }
   return changes;
 }
+
+// Un archivo en las dos versiones que separa un nodo: el commit padre y el
+// commit del nodo. 'before' ausente = no existía; 'after' ausente = borrado.
+export const evolutionFileContentLimit = 1_000_000;
+
+export type EvolutionFileContent = {
+  path: string;
+  before?: string;
+  after?: string;
+  binary: boolean;
+  truncated: boolean;
+};
