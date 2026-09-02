@@ -972,3 +972,24 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
 .evolution-src .hljs-code { color: #34433e; }
 .evolution-src .hljs-link { color: #1f4e9c; text-decoration: underline; }
 .evolution-src .hljs-punctuation, .evolution-src .hljs-operator { color: #4a5853; }
+
+/* Inspector plegable: una barra estrecha con el botón de abrir y el nodo. */
+.workspace.inspector-collapsed { grid-template-columns: minmax(520px, 1fr) 46px; }
+.inspector-toggle { flex: none; width: 34px; min-height: 34px; border: 1px solid #8f9b95; border-radius: 3px; color: #27332f; background: #f8f6ec; cursor: pointer; font-size: .9rem; line-height: 1; }
+.inspector-toggle:hover { background: #dfe5e1; }
+.inspector-signals .inspector-toggle { margin-bottom: 4px; }
+.inspector-empty-tools { position: absolute; top: 14px; right: 14px; }
+.empty-inspector { position: relative; }
+.inspector.inspector-collapsed { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 0; overflow: hidden; }
+.inspector-rail-label { max-height: 60vh; overflow: hidden; color: #53615c; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; }
+
+@media (max-width: 1050px) {
+  .workspace.inspector-collapsed { grid-template-columns: minmax(460px, 1fr) 46px; }
+}
+@media (max-width: 900px) {
+  .workspace.inspector-collapsed { grid-template-columns: minmax(430px, 1fr) 46px; }
+}
+@media (max-width: 760px) {
+  .inspector.inspector-collapsed { flex-direction: row; min-height: 48px; padding: 0 12px; }
+  .inspector-rail-label { max-height: none; max-width: 70vw; writing-mode: horizontal-tb; }
+}

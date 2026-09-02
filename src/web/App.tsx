@@ -60,6 +60,11 @@ const graphMagnifierTargetScale = 1.45;
 const graphMagnifierFramePadding = 48;
 const graphMagnifierSize = 2 * Math.ceil((changeNodeWidthFallback * graphMagnifierTargetScale + graphMagnifierFramePadding) / 2);
 const uiPreferencesKey = "hrp.ui-preferences";
+const inspectorCollapsedKey = "hrp.inspector-collapsed";
+
+function readInspectorCollapsed(): boolean {
+  try { return localStorage.getItem(inspectorCollapsedKey) === "true"; } catch { return false; }
+}
 
 function readCssPixels(property: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
@@ -284,10 +289,25 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-function Inspector({ node, nodes, findings, onSelectFinding }: { node?: ChangeNode; nodes: ChangeNode[]; findings: Finding[]; onSelectFinding: (id: string) => void }) {
+// Botón de plegar/abrir el inspector; el estado vive en App y se recuerda.
+function InspectorToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? "Abrir el detalle del nodo" : "Plegar el detalle del nodo";
+  return <button type="button" className="inspector-toggle" aria-expanded={!collapsed} aria-label={label} title={label} onClick={onToggle}>{collapsed ? "◂" : "▸"}</button>;
+}
+
+function Inspector({ node, nodes, findings, collapsed, onToggle, onSelectFinding }: { node?: ChangeNode; nodes: ChangeNode[]; findings: Finding[]; collapsed: boolean; onToggle: () => void; onSelectFinding: (id: string) => void }) {
+  if (collapsed) {
+    return (
+      <aside className="inspector inspector-collapsed" aria-label="Detalle del nodo, plegado">
+        <InspectorToggle collapsed onToggle={onToggle}/>
+        <span className="inspector-rail-label" title={node ? `${node.file} · ${node.symbol}` : undefined}>{node ? `${node.id} · ${node.symbol}` : "Sin nodo seleccionado"}</span>
+      </aside>
+    );
+  }
   if (!node) {
     return (
       <aside className="inspector empty-inspector">
+        <div className="inspector-empty-tools"><InspectorToggle collapsed={false} onToggle={onToggle}/></div>
         <div className="empty-symbol"><Icon name="route" /></div>
         <h2>Selecciona una operación</h2>
         <p>Cada nodo es un cambio concreto en un archivo y símbolo. Aquí aparecen su intención, su diff, su verificación y quién lo auditó.</p>
@@ -305,6 +325,7 @@ function Inspector({ node, nodes, findings, onSelectFinding }: { node?: ChangeNo
           <h2>{node.symbol}</h2>
         </div>
         <div className="inspector-signals">
+          <InspectorToggle collapsed={false} onToggle={onToggle}/>
           <StatusSignal status={node.status}/>
           <span className="inspector-executor">{node.status === "completed" ? "por" : "ejecuta"} {node.author}</span>
         </div>
@@ -1256,6 +1277,12 @@ export function App() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [buildStale, setBuildStale] = useState(false);
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(readUiPreferences);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(readInspectorCollapsed);
+  const toggleInspector = useCallback(() => setInspectorCollapsed((current) => {
+    const next = !current;
+    try { localStorage.setItem(inspectorCollapsedKey, String(next)); } catch { /* preferencia efímera */ }
+    return next;
+  }), []);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
   const [error, setError] = useState<string>();
@@ -1643,7 +1670,7 @@ export function App() {
             </nav>
           </div>
           {loadingRun ? <LoadingState label="Cargando run"/> : !runId || !detail ? <EmptyState kind="runs"/> : (
-            <main className="workspace">
+            <main className={`workspace ${inspectorCollapsed ? "inspector-collapsed" : ""}`}>
               <section className="map-stage" aria-label={view === "map" ? "Mapa de cambios" : view === "issue" ? "Issue del run" : view === "activity" ? "Actividad del run" : view === "evolution" ? "Evolución del run" : "Hallazgos del run"}>
                 <header className="stage-head">
                   <div>
@@ -1705,7 +1732,7 @@ export function App() {
                     : <div className="map-empty"><Icon name="route"/><h2>Todavía no hay nodos</h2><p>El mapa se dibuja conforme el base abre y completa operaciones.</p><button type="button" className="map-empty-cta" onClick={() => setView("issue")}><Icon name="doc"/>Ver el issue</button></div>
                 ) : <ActivityLedger activity={detail.activity} nodes={detail.nodes} sessionFilter={sessionFilter} onSelect={(id) => { setSelectedId(id); setView("map"); }}/>}
               </section>
-              <Inspector node={selectedNode} nodes={detail.nodes} findings={detail.findings} onSelectFinding={openFinding}/>
+              <Inspector node={selectedNode} nodes={detail.nodes} findings={detail.findings} collapsed={inspectorCollapsed} onToggle={toggleInspector} onSelectFinding={openFinding}/>
             </main>
           )}
         </div>
