@@ -4,11 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { computeAttention } from "./attention.js";
-import { HrpStore } from "./store.js";
+import { FAILED_OUTPUT_HEAD, FAILED_OUTPUT_TAIL, HrpStore, PASSED_OUTPUT_LIMIT, runVerification, stripAnsi, trimVerificationOutput } from "./store.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
+
+const exercised = [{ text: "abrir el panel", observed: "el panel muestra el nodo con su diff" }];
 
 let dataDir: string;
 let workspace: string;
@@ -19,7 +21,7 @@ function baseInput(overrides: Partial<Parameters<HrpStore["createRun"]>[1]> = {}
     title: "Guardar tema",
     requirement: "Quiero que el tema elegido se guarde",
     interpretation: "Persistir la preferencia en localStorage",
-    acceptance: [{ text: "el test pasa", command: "test -f src/prefs.ts" }],
+    acceptance: [{ text: "el test pasa", command: "test -f src/prefs.ts" }, { text: "abrir el panel", exercise: true }],
     ...overrides,
   };
 }
@@ -78,6 +80,13 @@ describe("run", () => {
     expect(store.readIssue(run.id)).toContain(`attachments/${path.basename(source)} — pantalla`);
   });
 
+  it("exige un criterio que ejercite el artefacto", () => {
+    const project = store.attachProject(workspace);
+    expect(() => store.createRun(project.id, baseInput({ acceptance: [{ text: "compila", command: "true" }] }), "claude")).toThrow(/exercise: true/);
+    const { run } = store.createRun(project.id, baseInput(), "claude");
+    expect(store.readIssue(run.id)).toContain("- [ejercicio] abrir el panel");
+  });
+
   it("no abre dos runs vivos en el mismo proyecto", () => {
     const { project } = startRun();
     expect(() => store.createRun(project.id, baseInput(), "codex")).toThrow(/ya tiene un run abierto/);
@@ -94,6 +103,34 @@ describe("nodos", () => {
     expect(node.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(git(workspace, "log", "-1", "--format=%s")).toBe(`hrp(${run.id}) ${node.id}: Persistir tema`);
     expect(store.getRun(run.id)!.completedCount).toBe(1);
+  });
+
+  it("un nodo de varios archivos deja un solo commit con todos", () => {
+    const { run } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    const node = store.openNode(run.id, "claude:1", { files: ["src/mod.ts", "src/mod.test.ts"], symbol: "mod", title: "Módulo y prueba", description: "d", rationale: "r" });
+    expect(node.files).toEqual(["src/mod.ts", "src/mod.test.ts"]);
+    expect(node.file).toBe("src/mod.ts");
+    writeFileSync(path.join(workspace, "src/mod.ts"), "export const mod = 1;\n");
+    writeFileSync(path.join(workspace, "src/mod.test.ts"), "import { mod } from './mod';\n");
+    store.verifyNode(run.id, node.id, "true", "claude:1");
+    const done = store.completeNode(run.id, node.id, "claude:1", { summary: "ambos" });
+    expect(done.diff).toContain("src/mod.ts");
+    expect(done.diff).toContain("src/mod.test.ts");
+    expect(git(workspace, "show", "--stat", "--format=", "HEAD")).toMatch(/2 files changed/);
+    expect(() => store.openNode(run.id, "claude:1", { files: ["../fuera.ts"], symbol: "x", title: "t", description: "d", rationale: "r" })).toThrow(/fuera del workspace/);
+  });
+
+  it("la verificación se guarda sin color y recortada según el resultado", () => {
+    const passed = runVerification(workspace, "printf '\\033[32mok\\033[0m\\n'; printf 'a\\rb\\n'");
+    // El retorno de carro suelto se elimina sin reescribir la línea: queda "ab".
+    expect(passed.output).toBe("ok\nab\n");
+    expect(stripAnsi("\u001b]0;title\u0007x\u001b[1;31my\u001b[0m")).toBe("xy");
+    const long = "x".repeat(PASSED_OUTPUT_LIMIT + 100);
+    expect(trimVerificationOutput(long, true)).toHaveLength(PASSED_OUTPUT_LIMIT + 2);
+    expect(trimVerificationOutput(long, false)).toBe(long);
+    const failed = trimVerificationOutput("y".repeat(FAILED_OUTPUT_HEAD + FAILED_OUTPUT_TAIL + 1), false);
+    expect(failed).toHaveLength(FAILED_OUTPUT_HEAD + FAILED_OUTPUT_TAIL + 3);
   });
 
   it("exige verificación aprobada y diff real", () => {
@@ -121,7 +158,9 @@ describe("auditoría y gate", () => {
     expect(auditor.id).toBe("claude:2");
 
     expect(() => store.closeRun(run.id, "claude:2")).toThrow(/Sólo el base/);
-    const closed = store.closeRun(run.id, "claude:1");
+    expect(() => store.closeRun(run.id, "claude:1")).toThrow(/Ejercita el artefacto/);
+    const closed = store.closeRun(run.id, "claude:1", exercised);
+    expect(closed.acceptance.find((criterion) => criterion.exercise)?.observed).toBe(exercised[0].observed);
     expect(closed.passed).toBe(true);
     expect(closed.run.status).toBe("implemented");
     expect(closed.run.audit.canClose).toBe(false);
@@ -164,12 +203,12 @@ describe("auditoría y gate", () => {
 
   it("el cierre no procede con criterios de aceptación fallidos", () => {
     const project = store.attachProject(workspace);
-    const { run } = store.createRun(project.id, baseInput({ acceptance: [{ text: "falla", command: "false" }] }), "claude");
+    const { run } = store.createRun(project.id, baseInput({ acceptance: [{ text: "falla", command: "false" }, { text: "abrir", exercise: true }] }), "claude");
     const node = store.openNode(run.id, "claude:1", { file: "README.md", symbol: "intro", title: "t", description: "d", rationale: "r" });
     writeFileSync(path.join(workspace, "README.md"), "# demo 2\n");
     store.verifyNode(run.id, node.id, "true", "claude:1");
     store.completeNode(run.id, node.id, "claude:1", { summary: "x" });
-    const result = store.closeRun(run.id, "claude:1");
+    const result = store.closeRun(run.id, "claude:1", [{ text: "abrir", observed: "abierto" }]);
     expect(result.passed).toBe(false);
     expect(result.run.status).toBe("open");
     expect(result.acceptance[0].result?.exitCode).not.toBe(0);
@@ -187,7 +226,7 @@ describe("auditoría y gate", () => {
     store.markAudited(run.id, auditor.id, { nodeIds: [node.id] });
     expect(computeAttention(detail(), auditor.id).kind).toBe("wait");
     expect(computeAttention(detail(), "claude:1").kind).toBe("resume");
-    store.closeRun(run.id, "claude:1");
+    store.closeRun(run.id, "claude:1", exercised);
     expect(computeAttention(detail(), auditor.id).kind).toBe("close");
     expect(computeAttention(detail(), "claude:1").kind).toBe("wait");
   });
