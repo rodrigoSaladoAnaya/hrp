@@ -15,8 +15,16 @@ describe("filesAtFrame", () => {
     expect(filesAtFrame(base, frames, -1)).toEqual([...base].sort());
     expect(filesAtFrame(base, frames, 0)).toEqual(["README.md", "docs/guide.md", "src/app.ts", "src/new.ts", "src/old.ts"]);
     expect(filesAtFrame(base, frames, 1)).toEqual(["README.md", "docs/guide.md", "src/app.ts", "src/moved.ts", "src/new.ts"]);
-    expect(filesAtFrame(base, frames, 2)).toEqual(["README.md", "src/app.ts", "src/moved.ts", "src/new.ts"]);
+    // El borrado de docs/guide.md ocurre en el cuadro 2: ahí sigue visible.
+    expect(filesAtFrame(base, frames, 2)).toEqual(["README.md", "docs/guide.md", "src/app.ts", "src/moved.ts", "src/new.ts"]);
+    expect(filesAtFrame(base, frames, 3)).toEqual(["README.md", "src/app.ts", "src/moved.ts", "src/new.ts"]);
     expect(filesAtFrame(base, frames, 99)).toEqual(["README.md", "src/app.ts", "src/moved.ts", "src/new.ts"]);
+  });
+
+  it("mantiene el archivo borrado sólo durante su cuadro", () => {
+    const deleting: EvolutionFrame[] = [{ nodeId: "n1", files: [{ path: "src/app.ts", status: "D" }] }, { nodeId: "n2", files: [{ path: "README.md", status: "M" }] }];
+    expect(filesAtFrame(["README.md", "src/app.ts"], deleting, 0)).toEqual(["README.md", "src/app.ts"]);
+    expect(filesAtFrame(["README.md", "src/app.ts"], deleting, 1)).toEqual(["README.md"]);
   });
 });
 

@@ -590,7 +590,8 @@ function EvolutionView({ runId, evolution, error, nodes, findings, frameIndex, o
   const dirCounts = useMemo(() => {
     const counts = new Map<string, { current: number; past: number }>();
     for (const [path, highlight] of highlights) {
-      if (highlight.status === "D") continue;
+      // Un borrado sólo está en el árbol durante su cuadro.
+      if (highlight.status === "D" && highlight.kind !== "current") continue;
       const segments = path.split("/");
       for (let depth = 1; depth < segments.length; depth += 1) {
         const directory = segments.slice(0, depth).join("/");

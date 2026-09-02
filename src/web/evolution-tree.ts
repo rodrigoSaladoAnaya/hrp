@@ -26,15 +26,17 @@ export function highlightLevel(age: number): number {
   return Math.min(Math.max(age, 0), evolutionHighlightLevels);
 }
 
+// Un archivo borrado sigue en el árbol durante el cuadro que lo borra (marcado
+// D y enfocable, para ver su antes) y desaparece a partir del siguiente.
 export function filesAtFrame(baseFiles: string[], frames: EvolutionFrame[], index: number): string[] {
   const live = new Set(baseFiles);
-  for (const frame of frames.slice(0, index + 1)) {
+  frames.slice(0, index + 1).forEach((frame, position) => {
     for (const change of frame.files) {
-      if (change.status === "D") { live.delete(change.path); continue; }
+      if (change.status === "D") { if (position < index) live.delete(change.path); continue; }
       if (change.status === "R" && change.from) live.delete(change.from);
       live.add(change.path);
     }
-  }
+  });
   return [...live].sort();
 }
 
