@@ -245,6 +245,142 @@ function mkdirSyncSafe(target: string) {
   execFileSync("mkdir", ["-p", target]);
 }
 
+// Lleva un run hasta 'closed' con un auditor: la continuación exige eso.
+function closeWithAuditor(runId: string, family = "codex") {
+  const node = implementNode(runId, "claude:1");
+  const auditor = store.attachSession(runId, family);
+  store.closeRun(runId, "claude:1", exercised);
+  store.markAudited(runId, auditor.id, { nodeIds: [node.id], requirement: true });
+  store.vote(runId, auditor.id, "ok");
+  expect(store.getRun(runId)!.status).toBe("closed");
+  return { node, auditor };
+}
+
+describe("continuación", () => {
+  it("un run nuevo continúa uno cerrado y su rama nace de la punta de la anterior", () => {
+    const { run, project } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    closeWithAuditor(run.id);
+    const tip = git(workspace, "rev-parse", run.branch);
+    git(workspace, "switch", "-q", "main");
+    const next = store.createRun(project.id, baseInput({ title: "Guardar tema 2", continues: run.id }), "claude");
+    expect(next.run.continues).toBe(run.id);
+    expect(git(workspace, "branch", "--show-current")).toBe(next.run.branch);
+    expect(git(workspace, "rev-parse", "HEAD")).toBe(tip);
+    expect(store.getRun(run.id)!.continuedBy).toEqual([next.run.id]);
+    const issue = store.readIssue(next.run.id);
+    expect(issue).toContain(`continues: ${run.id}`);
+    expect(issue).toContain(`## Antecedente\nContinúa el run ${run.id} (Guardar tema)`);
+    expect(store.getRunDetail(run.id)!.activity[0].message).toContain(`Continuado por el run ${next.run.id}`);
+  });
+
+  it("sólo se continúa un run cerrado del mismo proyecto", () => {
+    const { run, project } = startRun();
+    expect(() => store.createRun(project.id, baseInput({ continues: run.id }), "claude")).toThrow(/ya tiene un run abierto/);
+    store.setRunControl(run.id, "stopped");
+    expect(() => store.createRun(project.id, baseInput({ continues: run.id }), "claude")).toThrow(/sólo se continúa un run cerrado/);
+    expect(() => store.createRun(project.id, baseInput({ continues: "00000000" }), "claude")).toThrow(/Unknown run/);
+  });
+
+  it("si la rama anterior ya no existe, la continuación parte del árbol actual", () => {
+    const { run, project } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    closeWithAuditor(run.id);
+    git(workspace, "switch", "-q", "main");
+    git(workspace, "merge", "-q", run.branch);
+    git(workspace, "branch", "-D", run.branch);
+    const next = store.createRun(project.id, baseInput({ continues: run.id }), "claude");
+    expect(git(workspace, "branch", "--show-current")).toBe(next.run.branch);
+    expect(store.getRunDetail(next.run.id)!.activity.some((entry) => entry.detail?.includes("ya no existe"))).toBe(true);
+  });
+});
+
+describe("adenda", () => {
+  it("anexa el requerimiento al issue, suma criterios y reabre un run implementado", () => {
+    const { run } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    const node = implementNode(run.id, "claude:1");
+    const auditor = store.attachSession(run.id, "codex");
+    store.closeRun(run.id, "claude:1", exercised);
+    store.markAudited(run.id, auditor.id, { nodeIds: [node.id], requirement: true });
+    expect(computeAttention(store.getRunDetail(run.id)!, auditor.id).kind).toBe("close");
+    expect(() => store.extendRun(run.id, auditor.id, { requirement: "x", interpretation: "y" })).toThrow(/Sólo el base/);
+    expect(() => store.extendRun(run.id, "claude:1", { requirement: "x" })).toThrow(/interpretación del base/);
+
+    const extended = store.extendRun(run.id, "claude:1", {
+      requirement: "Y que también se guarde el idioma",
+      interpretation: "Persistir el idioma junto al tema",
+      acceptance: [{ text: "el idioma persiste", command: "test -f src/lang.ts" }],
+    });
+    expect(extended.status).toBe("open");
+    expect(extended.extensions).toHaveLength(1);
+    expect(extended.extensions[0]).toMatchObject({ ordinal: 1, author: "claude:1", requirement: "Y que también se guarde el idioma" });
+    expect(extended.acceptance.map((criterion) => criterion.text)).toEqual(["el test pasa", "abrir el panel", "el idioma persiste"]);
+    const issue = store.readIssue(run.id);
+    expect(issue).toContain("## Requerimiento literal\nQuiero que el tema elegido se guarde");
+    expect(issue).toMatch(/## Adenda 1 · .* · claude:1\n\n### Requerimiento literal\nY que también se guarde el idioma/);
+    expect(issue).toContain("- `test -f src/lang.ts` — el idioma persiste");
+
+    // La auditoría del nodo se conserva; el requerimiento se vuelve a auditar.
+    expect(store.getNode(run.id, node.id)!.auditedBy).toEqual([auditor.id]);
+    const detail = store.getRunDetail(run.id)!;
+    expect(detail.sessions.find((session) => session.id === auditor.id)!.requirementReviewed).toBe(false);
+    const requirement = computeAttention(detail, auditor.id);
+    expect(requirement.kind).toBe("requirement");
+    expect(requirement.directive).toContain("adenda 1");
+    const resume = computeAttention(detail, "claude:1");
+    expect(resume.kind).toBe("resume");
+    expect(resume.directive).toContain("adenda 1");
+    expect(() => store.extendRun(run.id, "claude:1", { requirement: "otra", interpretation: "i", acceptance: [{ text: "abrir el panel" }] })).toThrow(/ya existe/);
+  });
+
+  it("anula los votos y el cierre exige cumplir también lo nuevo", () => {
+    const { run } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    const node = implementNode(run.id, "claude:1");
+    const first = store.attachSession(run.id, "codex");
+    const second = store.attachSession(run.id, "codex");
+    store.closeRun(run.id, "claude:1", exercised);
+    store.markAudited(run.id, first.id, { nodeIds: [node.id], requirement: true });
+    store.markAudited(run.id, second.id, { nodeIds: [node.id], requirement: true });
+    store.vote(run.id, second.id, "reject", "falta el idioma");
+    store.vote(run.id, first.id, "ok");
+    const tied = store.getRun(run.id)!;
+    expect(tied.status).toBe("implemented");
+    expect(tied.audit.okVotes).toEqual([first.id]);
+    expect(tied.audit.rejectVotes).toEqual([second.id]);
+
+    store.extendRun(run.id, "human", { requirement: "Y el idioma", acceptance: [{ text: "el idioma persiste", command: "test -f src/lang.ts" }] });
+    const reopened = store.getRun(run.id)!;
+    expect(reopened.status).toBe("open");
+    expect(reopened.audit.okVotes).toEqual([]);
+    expect(reopened.audit.rejectVotes).toEqual([]);
+    expect(reopened.extensions[0].author).toBe("human");
+    expect(store.readIssue(run.id)).toContain("(sin interpretación: la adenda la escribió el humano");
+    expect(computeAttention(store.getRunDetail(run.id)!, second.id).kind).toBe("requirement");
+
+    // Cerrar sin implementar la adenda falla en su criterio.
+    const failed = store.closeRun(run.id, "claude:1", exercised);
+    expect(failed.passed).toBe(false);
+    expect(failed.acceptance.find((criterion) => criterion.text === "el idioma persiste")!.result!.passed).toBe(false);
+    implementNode(run.id, "claude:1", "src/lang.ts", "export const lang = 'es';\n");
+    expect(computeAttention(store.getRunDetail(run.id)!, "claude:1").directive).not.toContain("adenda");
+    const passed = store.closeRun(run.id, "claude:1", exercised);
+    expect(passed.passed).toBe(true);
+    expect(passed.run.status).toBe("implemented");
+  });
+
+  it("un run cerrado o detenido no se amplía", () => {
+    const { run } = startRun();
+    mkdirSyncSafe(path.join(workspace, "src"));
+    store.setRunControl(run.id, "stopped");
+    expect(() => store.extendRun(run.id, "human", { requirement: "más" })).toThrow(/detenido/);
+    store.setRunControl(run.id, "active");
+    closeWithAuditor(run.id);
+    expect(() => store.extendRun(run.id, "human", { requirement: "más" })).toThrow(/run nuevo que lo continúe/);
+  });
+});
+
 describe("evolución", () => {
   it("parte del padre del primer commit y ordena los cuadros por commit", () => {
     const { run } = startRun();

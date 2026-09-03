@@ -180,6 +180,39 @@ export type AuditStatus = {
   blockers: string[];
 };
 
+// Adenda: el alcance de un run vivo crece sin tocar lo ya auditado. Se
+// anexa al issue con su requerimiento literal (y la interpretación del base
+// si la escribió él), reabre un run 'implemented' y anula los votos.
+export type RunExtension = {
+  ordinal: number;
+  // Sesión base, o el literal "human" cuando la escribió la persona.
+  author: string;
+  requirement: string;
+  interpretation?: string;
+  scopeIncludes?: string[];
+  scopeExcludes?: string[];
+  acceptance: Array<{ text: string; command?: string; exercise?: boolean }>;
+  risks?: string[];
+  attachments: string[];
+  createdAt: string;
+};
+
+export type RunExtensionInput = {
+  requirement: string;
+  interpretation?: string;
+  scopeIncludes?: string[];
+  scopeExcludes?: string[];
+  acceptance?: Array<{ text: string; command?: string; exercise?: boolean }>;
+  risks?: string[];
+  attachments?: Array<{ path: string; note?: string }>;
+};
+
+// Una adenda está pendiente mientras el base no haya abierto ningún nodo
+// después de ella: es la señal de que todavía no la retomó.
+export function pendingExtensions(extensions: RunExtension[], nodes: Pick<ChangeNode, "createdAt">[]): RunExtension[] {
+  return extensions.filter((extension) => !nodes.some((node) => node.createdAt >= extension.createdAt));
+}
+
 export type RunSummary = {
   id: string;
   projectId: string;
@@ -192,6 +225,11 @@ export type RunSummary = {
   issuePath: string;
   attachments: string[];
   acceptance: AcceptanceCriterion[];
+  // Linaje: un run cerrado no se reabre; el trabajo que le sigue es otro run
+  // que lo continúa y cuya rama nace de la punta de la suya.
+  continues?: string;
+  continuedBy: string[];
+  extensions: RunExtension[];
   nodeCount: number;
   completedCount: number;
   runningCount: number;
@@ -239,6 +277,8 @@ export type RunInput = {
   acceptance: Array<{ text: string; command?: string; exercise?: boolean }>;
   risks?: string[];
   attachments?: Array<{ path: string; note?: string }>;
+  // Run cerrado del mismo proyecto al que este da continuidad.
+  continues?: string;
 };
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]+$/;

@@ -33,6 +33,7 @@ import {
   type ViewShortcutModifier,
 } from "../shared/protocol";
 import type { EvolutionData, EvolutionFileChange, EvolutionFileContent, EvolutionFileStatus } from "../shared/evolution";
+import { runLineage } from "../shared/lineage";
 import { collectCatalogRunIds, resolveCatalogChange, resolveCatalogRunFocus, type CatalogChange, type CatalogRunFocus } from "./catalog-focus";
 import { decideGraphFit, decideGraphViewportAction, graphMaxZoom, graphMinZoom, graphNodesMeasured, isGraphFlowMounted, magnifierContentTransform, shouldPersistGraphViewport, type GraphView, type StoredGraphViewport } from "./graph-viewport";
 import { buildEvolutionTree, evolutionHighlights, expandedDirectories, filesAtFrame, frameIndexForNode, highlightLevel, type EvolutionHighlight, type EvolutionTreeNode } from "./evolution-tree";
@@ -412,9 +413,75 @@ function Inspector({ node, nodes, findings, collapsed, onToggle, onSelectFinding
   );
 }
 
+// La historia de una implementación: los runs que este continúa y los que
+// lo continúan. Un run cerrado no se reabre; la cadena es su historia.
+function RunLineage({ run, runs, onOpenRun }: { run: RunSummary; runs: RunSummary[]; onOpenRun: (runId: string) => void }) {
+  const chain = runLineage(runs, run.id);
+  if (chain.length <= 1) return null;
+  const formatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", year: "numeric" });
+  return (
+    <section className="issue-section issue-lineage" aria-label="Historia de la implementación">
+      <h3>Historia</h3>
+      <ol className="lineage-list">
+        {chain.map((link) => (
+          <li key={link.id} className={link.id === run.id ? "is-current" : ""}>
+            <span className={`dependency-dot ${link.phase === "closed" ? "status-completed" : link.phase === "hold" ? "status-failed" : "status-running"}`}/>
+            <button type="button" disabled={link.id === run.id} aria-current={link.id === run.id ? "page" : undefined} onClick={() => onOpenRun(link.id)}>
+              <strong>{link.title}</strong>
+              <small>{link.id} · {phaseCopy[link.phase]} · {link.completedCount}/{link.nodeCount} nodos · {formatter.format(new Date(link.createdAt))}{link.continues ? ` · continúa ${link.continues}` : ""}{link.extensions.length ? ` · ${link.extensions.length} ${link.extensions.length === 1 ? "adenda" : "adendas"}` : ""}</small>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+// El humano amplía el alcance desde el panel: el requerimiento entra literal
+// como adenda, y el base lo retoma por la señal de atención.
+function ExtendRunForm({ run, onChanged }: { run: RunSummary; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [requirement, setRequirement] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (run.status === "closed") {
+    return (
+      <p className="issue-closed-note">Este run cerró: su auditoría certifica exactamente lo que contiene. Más trabajo sobre el mismo issue es un run nuevo que lo continúe (<code>hrp_run_start</code> con <code>continues: {run.id}</code>).</p>
+    );
+  }
+  if (!open) {
+    return <button type="button" className="issue-extend-toggle" onClick={() => setOpen(true)}>Ampliar el alcance</button>;
+  }
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    const response = await fetch(`/api/runs/${run.id}/extend`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor: "human", requirement }) }).catch(() => undefined);
+    setBusy(false);
+    if (!response?.ok) {
+      const body = await response?.json().catch(() => ({})) as { error?: string } | undefined;
+      setError(body?.error ?? "No se pudo anexar la adenda");
+      return;
+    }
+    setRequirement("");
+    setOpen(false);
+    onChanged();
+  };
+  return (
+    <form className="issue-extend-form" onSubmit={(event) => { event.preventDefault(); submit().catch(() => undefined); }}>
+      <label htmlFor="extend-requirement">Adenda {run.extensions.length + 1}: qué más hace falta, con tus palabras</label>
+      <textarea id="extend-requirement" value={requirement} rows={4} placeholder="El requerimiento se anexa literal al issue. El base lo retoma; si el run ya estaba implementado vuelve a abrirse y los votos se anulan." onChange={(event) => setRequirement(event.target.value)}/>
+      {error && <p className="approve-error" role="alert">{error}</p>}
+      <div className="issue-extend-actions">
+        <button type="submit" disabled={busy || !requirement.trim()}>Anexar al issue</button>
+        <button type="button" className="issue-extend-cancel" onClick={() => { setOpen(false); setError(""); }}>Cancelar</button>
+      </div>
+    </form>
+  );
+}
+
 // El issue se escribe en markdown con secciones fijas; se pinta por secciones
 // y los adjuntos se sirven desde el propio run.
-function IssueView({ detail }: { detail: RunDetail }) {
+function IssueView({ detail, runs, onOpenRun, onChanged }: { detail: RunDetail; runs: RunSummary[]; onOpenRun: (runId: string) => void; onChanged: () => void }) {
   const body = detail.issue.replace(/^---[\s\S]*?---\s*/, "");
   const sections = body.split(/\n(?=## )/).map((chunk) => chunk.trim()).filter(Boolean);
   const title = sections[0]?.startsWith("# ") ? sections.shift()?.slice(2) : undefined;
@@ -422,13 +489,19 @@ function IssueView({ detail }: { detail: RunDetail }) {
   return (
     <div className="issue-view">
       {title && <h2>{title}</h2>}
-      <p className="issue-meta"><code>{detail.run.issuePath}</code> · rama <code>{detail.run.branch}</code> · base <strong>{detail.run.base}</strong></p>
+      <p className="issue-meta"><code>{detail.run.issuePath}</code> · rama <code>{detail.run.branch}</code> · base <strong>{detail.run.base}</strong>{detail.run.continues && <> · continúa <button type="button" className="issue-link" onClick={() => onOpenRun(detail.run.continues!)}>{detail.run.continues}</button></>}</p>
+      <RunLineage run={detail.run} runs={runs} onOpenRun={onOpenRun}/>
       {sections.map((section) => {
         const [heading, ...rest] = section.split("\n");
         return (
-          <section className="issue-section" key={heading}>
+          <section className={`issue-section ${heading.startsWith("## Adenda") ? "issue-extension" : ""}`} key={heading}>
             <h3>{heading.replace(/^## /, "")}</h3>
-            <pre className="issue-text">{rest.join("\n").trim()}</pre>
+            {rest.join("\n").trim().split(/\n(?=### )/).map((block) => {
+              const [subheading, ...lines] = block.split("\n");
+              return subheading.startsWith("### ")
+                ? <div className="issue-subsection" key={subheading}><h4>{subheading.slice(4)}</h4><pre className="issue-text">{lines.join("\n").trim()}</pre></div>
+                : <pre className="issue-text" key={subheading}>{block.trim()}</pre>;
+            })}
           </section>
         );
       })}
@@ -456,6 +529,7 @@ function IssueView({ detail }: { detail: RunDetail }) {
           </div>
         </section>
       )}
+      <ExtendRunForm run={detail.run} onChanged={onChanged}/>
     </div>
   );
 }
@@ -1033,7 +1107,7 @@ function ProjectTree({ projects, projectId, runId, dock, onProject, onRun, onDel
                         <span className="tree-signal"/>
                         <span className="tree-run-copy">
                           <strong>{run.title}{run.status === "implemented" && <span className="tree-run-approval" title="Implementado; esperando auditoría">Por auditar</span>}{run.openFindings > 0 && <span className="tree-run-findings" title={`${run.openFindings} ${run.openFindings === 1 ? "hallazgo vivo" : "hallazgos vivos"}`}>En debate</span>}</strong>
-                          <small>{phaseCopy[run.phase]} · {run.completedCount}/{run.nodeCount} · {formatter.format(new Date(run.updatedAt))}</small>
+                          <small>{phaseCopy[run.phase]} · {run.completedCount}/{run.nodeCount} · {formatter.format(new Date(run.updatedAt))}{run.continues ? ` · ↳ ${run.continues}` : ""}{run.extensions.length ? ` · +${run.extensions.length}` : ""}</small>
                         </span>
                       </button>
                       <button type="button" className="tree-delete" aria-label={`Eliminar el run ${run.title}`} title="Eliminar run" onClick={() => onDeleteRun(run)}>×</button>
@@ -1675,7 +1749,7 @@ export function App() {
                 <header className="stage-head">
                   <div>
                     <h1>{detail.run.title}</h1>
-                    <p>{phaseCopy[detail.run.phase]} · base {detail.run.base} · <span className="activity-agent" title={`Rama del run: ${detail.run.branch}`}>{detail.run.branch}</span></p>
+                    <p>{phaseCopy[detail.run.phase]} · base {detail.run.base} · <span className="activity-agent" title={`Rama del run: ${detail.run.branch}`}>{detail.run.branch}</span>{detail.run.continues && <> · continúa <button type="button" className="issue-link" title="Abrir el run anterior" onClick={() => setRunId(detail.run.continues!)}>{detail.run.continues}</button></>}{detail.run.extensions.length > 0 && <> · {detail.run.extensions.length} {detail.run.extensions.length === 1 ? "adenda" : "adendas"}</>}</p>
                   </div>
                   <div className="stage-actions">
                     <RunControls run={detail.run} onChanged={refresh}/>
@@ -1713,7 +1787,7 @@ export function App() {
                 )}
                 {(view === "activity" || view === "findings") && <SessionFilterBar sessions={sessionNames} value={sessionFilter} onChange={setSessionFilter}/>}
                 {view === "issue" ? (
-                  <IssueView detail={detail}/>
+                  <IssueView detail={detail} runs={project?.runs ?? []} onOpenRun={(nextRunId) => setRunId(nextRunId)} onChanged={refresh}/>
                 ) : view === "evolution" ? (
                   <EvolutionView runId={detail.run.id} evolution={evolutionData} error={evolutionError} nodes={detail.nodes} findings={detail.findings} frameIndex={frameIndex} onFrame={goToFrame} onSelectFinding={openFinding}/>
                 ) : view === "findings" ? (

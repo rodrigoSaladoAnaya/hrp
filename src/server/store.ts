@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -28,6 +28,8 @@ import {
   type Project,
   type RunControl,
   type RunDetail,
+  type RunExtension,
+  type RunExtensionInput,
   type RunInput,
   type RunStatus,
   type RunSummary,
@@ -162,8 +164,18 @@ function bulletList(items: string[] | undefined, empty: string): string {
   return items && items.length ? items.map((item) => `- ${item}`).join("\n") : `- ${empty}`;
 }
 
+function acceptanceLines(acceptance: Array<{ text: string; command?: string; exercise?: boolean }>): string {
+  return acceptance.map((criterion) => `- ${criterion.exercise ? "[ejercicio] " : ""}${criterion.command ? `\`${criterion.command}\` — ` : ""}${criterion.text}`).join("\n");
+}
+
+function attachmentLines(attachments: Array<{ file: string; note?: string }>): string {
+  return attachments.length ? attachments.map((attachment) => `- attachments/${attachment.file}${attachment.note ? ` — ${attachment.note}` : ""}`).join("\n") : "- ninguno";
+}
+
+export type IssueAntecedent = { id: string; title: string; issuePath: string };
+
 export function renderIssue(fields: {
-  id: string; project: string; workspaceRoot: string; branch: string; base: string; createdAt: string;
+  id: string; project: string; workspaceRoot: string; branch: string; base: string; createdAt: string; continues?: IssueAntecedent;
 }, input: RunInput, attachments: Array<{ file: string; note?: string }>): string {
   return [
     frontMatter({
@@ -173,10 +185,16 @@ export function renderIssue(fields: {
       branch: fields.branch,
       base: fields.base,
       createdAt: fields.createdAt,
+      ...(fields.continues ? { continues: fields.continues.id } : {}),
     }),
     "",
     `# ${input.title}`,
     "",
+    ...(fields.continues ? [
+      "## Antecedente",
+      `Continúa el run ${fields.continues.id} (${fields.continues.title}), ya cerrado y auditado. Su issue: ${fields.continues.issuePath}. La rama de este run nace de la punta de la suya.`,
+      "",
+    ] : []),
     "## Requerimiento literal",
     input.requirement.trim(),
     "",
@@ -188,13 +206,37 @@ export function renderIssue(fields: {
     `- Excluye: ${input.scopeExcludes?.length ? input.scopeExcludes.join("; ") : "(sin declarar)"}`,
     "",
     "## Criterios de aceptación",
-    input.acceptance.map((criterion) => `- ${criterion.exercise ? "[ejercicio] " : ""}${criterion.command ? `\`${criterion.command}\` — ` : ""}${criterion.text}`).join("\n"),
+    acceptanceLines(input.acceptance),
     "",
     "## Riesgos",
     bulletList(input.risks, "ninguno declarado"),
     "",
     "## Adjuntos",
-    attachments.length ? attachments.map((attachment) => `- attachments/${attachment.file}${attachment.note ? ` — ${attachment.note}` : ""}`).join("\n") : "- ninguno",
+    attachmentLines(attachments),
+    "",
+  ].join("\n");
+}
+
+// Una adenda se anexa al final del issue: el requerimiento original queda
+// intacto y los auditores ven exactamente qué creció y cuándo.
+export function renderExtension(extension: RunExtension, attachments: Array<{ file: string; note?: string }>): string {
+  const scope = [
+    extension.scopeIncludes?.length ? `- Incluye: ${extension.scopeIncludes.join("; ")}` : "",
+    extension.scopeExcludes?.length ? `- Excluye: ${extension.scopeExcludes.join("; ")}` : "",
+  ].filter(Boolean);
+  return [
+    "",
+    `## Adenda ${extension.ordinal} · ${extension.createdAt} · ${extension.author}`,
+    "",
+    "### Requerimiento literal",
+    extension.requirement.trim(),
+    "",
+    "### Interpretación del base",
+    extension.interpretation?.trim() || "(sin interpretación: la adenda la escribió el humano; el base la retoma tal cual)",
+    ...(scope.length ? ["", "### Alcance", ...scope] : []),
+    ...(extension.acceptance.length ? ["", "### Criterios de aceptación", acceptanceLines(extension.acceptance)] : []),
+    ...(extension.risks?.length ? ["", "### Riesgos", bulletList(extension.risks, "")] : []),
+    ...(attachments.length ? ["", "### Adjuntos", attachmentLines(attachments)] : []),
     "",
   ].join("\n");
 }
@@ -229,6 +271,8 @@ export class HrpStore {
         issue_path TEXT NOT NULL,
         attachments_json TEXT NOT NULL DEFAULT '[]',
         acceptance_json TEXT NOT NULL DEFAULT '[]',
+        continues TEXT,
+        extensions_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         implemented_at TEXT,
@@ -327,6 +371,10 @@ export class HrpStore {
       this.database.exec("ALTER TABLE nodes ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
       this.database.exec("UPDATE nodes SET files_json = json_array(file)");
     }
+    // Bases anteriores al linaje y las adendas.
+    const runColumns = new Set((this.database.pragma("table_info(runs)") as Row[]).map((column) => String(column.name)));
+    if (!runColumns.has("continues")) this.database.exec("ALTER TABLE runs ADD COLUMN continues TEXT");
+    if (!runColumns.has("extensions_json")) this.database.exec("ALTER TABLE runs ADD COLUMN extensions_json TEXT NOT NULL DEFAULT '[]'");
   }
 
   close(): void {
@@ -434,6 +482,16 @@ export class HrpStore {
     if (this.git(project, ["rev-parse", "--is-inside-work-tree"])?.trim() !== "true") {
       throw new Error(`${project.workspaceRoot} no es un repositorio git; HRP v4 deja cada nodo como commit en una rama del run`);
     }
+    // Continuar exige un run cerrado del mismo proyecto: uno abierto se
+    // amplía con una adenda y uno detenido se reanuda.
+    let previous: RunSummary | undefined;
+    if (input.continues?.trim()) {
+      previous = this.getRun(input.continues.trim());
+      if (!previous || previous.projectId !== projectId) throw new Error(`Unknown run: ${input.continues.trim()}`);
+      if (previous.status !== "closed") {
+        throw new Error(`El run ${previous.id} está ${previous.status}; sólo se continúa un run cerrado. Si sigue abierto, amplíalo con una adenda (hrp_run_extend); si está detenido, reanúdalo`);
+      }
+    }
 
     const id = shortId();
     const branch = runBranchName(id);
@@ -442,46 +500,34 @@ export class HrpStore {
     const runDirectory = path.join(this.runsDirectory, id);
     const attachmentsDirectory = path.join(runDirectory, "attachments");
     mkdirSync(attachmentsDirectory, { recursive: true });
-
-    // Los adjuntos se copian: las rutas que recibe una sesión son temporales.
-    const copied: Array<{ file: string; note?: string }> = [];
-    const taken = new Set<string>();
-    for (const attachment of input.attachments ?? []) {
-      const source = path.resolve(attachment.path);
-      if (!existsSync(source) || !statSync(source).isFile()) throw new Error(`Adjunto no encontrado: ${source}`);
-      let file = path.basename(source);
-      let ordinal = 2;
-      while (taken.has(file)) {
-        const parsed = path.parse(path.basename(source));
-        file = `${parsed.name}-${ordinal}${parsed.ext}`;
-        ordinal += 1;
-      }
-      taken.add(file);
-      copyFileSync(source, path.join(attachmentsDirectory, file));
-      copied.push({ file, note: attachment.note });
-    }
+    const copied = this.copyAttachments(attachmentsDirectory, input.attachments ?? []);
 
     const issuePath = path.join(runDirectory, "issue.md");
     writeFileSync(issuePath, renderIssue({
       id, project: project.name, workspaceRoot: project.workspaceRoot, branch, base: baseId, createdAt,
+      continues: previous ? { id: previous.id, title: previous.title, issuePath: previous.issuePath } : undefined,
     }, input, copied));
     const acceptance: AcceptanceCriterion[] = input.acceptance.map((criterion) => ({ text: criterion.text, command: criterion.command || undefined, exercise: criterion.exercise || undefined }));
-    writeFileSync(path.join(runDirectory, "run.json"), `${JSON.stringify({
+    this.writeRunJson(runDirectory, {
       id, project: project.name, projectId, workspaceRoot: project.workspaceRoot, branch, base: baseId, createdAt,
-      title: input.title, attachments: copied.map((attachment) => `attachments/${attachment.file}`), acceptance,
-    }, null, 2)}\n`);
+      continues: previous?.id, title: input.title, attachments: copied.map((attachment) => `attachments/${attachment.file}`), acceptance,
+    });
 
     if (this.git(project, ["show-ref", "--verify", `refs/heads/${branch}`]) !== undefined) {
       throw new Error(`La rama ${branch} ya existe`);
     }
-    this.requireGit(project, ["switch", "-c", branch], "No se pudo crear la rama del run");
+    // La rama de una continuación nace de la punta de la rama anterior, para
+    // heredar el trabajo sin depender de que el humano ya lo haya fusionado.
+    // Si esa rama ya no existe (fusionada y borrada), parte del árbol actual.
+    const inherited = previous && this.git(project, ["show-ref", "--verify", `refs/heads/${previous.branch}`]) !== undefined;
+    this.requireGit(project, ["switch", "-c", branch, ...(inherited ? [previous!.branch] : [])], "No se pudo crear la rama del run");
 
     this.database.transaction(() => {
       this.database.prepare(`
-        INSERT INTO runs (id, project_id, title, status, control, branch, base, issue_path, attachments_json, acceptance_json, created_at, updated_at)
-        VALUES (?, ?, ?, 'open', 'active', ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO runs (id, project_id, title, status, control, branch, base, issue_path, attachments_json, acceptance_json, continues, created_at, updated_at)
+        VALUES (?, ?, ?, 'open', 'active', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(id, projectId, input.title.trim(), branch, baseId, issuePath,
-        JSON.stringify(copied.map((attachment) => `attachments/${attachment.file}`)), JSON.stringify(acceptance), createdAt, createdAt);
+        JSON.stringify(copied.map((attachment) => `attachments/${attachment.file}`)), JSON.stringify(acceptance), previous?.id ?? null, createdAt, createdAt);
       this.database.prepare(`
         INSERT INTO sessions (id, run_id, family, role, status, attached_at, last_seen_at)
         VALUES (?, ?, ?, 'base', 'attached', ?, ?)
@@ -489,7 +535,89 @@ export class HrpStore {
       this.database.prepare("UPDATE projects SET last_opened_at = ? WHERE id = ?").run(createdAt, projectId);
     })();
     this.addActivity(id, "run", `Run abierto por ${baseId}: ${input.title.trim()}`, `Issue en ${issuePath} · rama ${branch}`, undefined, baseId);
+    if (previous) {
+      this.addActivity(id, "run", `Continúa el run ${previous.id}: ${previous.title}`,
+        inherited ? `Rama creada desde ${previous.branch}` : `La rama ${previous.branch} ya no existe; la rama parte del árbol actual`, undefined, baseId);
+      this.addActivity(previous.id, "run", `Continuado por el run ${id}: ${input.title.trim()}`, undefined, undefined, baseId);
+    }
     return { run: this.getRun(id)!, session: this.getSession(id, baseId)! };
+  }
+
+  // Los adjuntos se copian: las rutas que recibe una sesión son temporales.
+  // Los nombres no chocan con los que ya viven en el directorio.
+  private copyAttachments(directory: string, attachments: Array<{ path: string; note?: string }>): Array<{ file: string; note?: string }> {
+    const copied: Array<{ file: string; note?: string }> = [];
+    const taken = new Set<string>();
+    for (const attachment of attachments) {
+      const source = path.resolve(attachment.path);
+      if (!existsSync(source) || !statSync(source).isFile()) throw new Error(`Adjunto no encontrado: ${source}`);
+      let file = path.basename(source);
+      let ordinal = 2;
+      while (taken.has(file) || existsSync(path.join(directory, file))) {
+        const parsed = path.parse(path.basename(source));
+        file = `${parsed.name}-${ordinal}${parsed.ext}`;
+        ordinal += 1;
+      }
+      taken.add(file);
+      copyFileSync(source, path.join(directory, file));
+      copied.push({ file, note: attachment.note });
+    }
+    return copied;
+  }
+
+  private writeRunJson(runDirectory: string, fields: Record<string, unknown>): void {
+    writeFileSync(path.join(runDirectory, "run.json"), `${JSON.stringify(fields, null, 2)}\n`);
+  }
+
+  // Adenda: el alcance de un run vivo crece. El requerimiento nuevo se anexa
+  // al issue y los criterios a la lista; un run 'implemented' vuelve a 'open';
+  // las auditorías de nodos ya hechas siguen valiendo (esos nodos no
+  // cambiaron), pero los votos y la pasada de requerimiento se repiten.
+  extendRun(runId: string, actor: string, input: RunExtensionInput): RunSummary {
+    const run = this.requireRun(runId);
+    if (run.status === "closed") throw new Error("El run ya está cerrado; lo que sigue es un run nuevo que lo continúe (hrp_run_start con continues)");
+    if (run.control === "stopped") throw new Error("El run está detenido; reanúdalo antes de ampliarlo");
+    if (actor !== "human" && actor !== run.base) throw new Error(`Sólo el base (${run.base}) o el humano amplían el alcance`);
+    if (!input.requirement?.trim()) throw new Error("La adenda necesita el requerimiento literal");
+    if (actor !== "human" && !input.interpretation?.trim()) throw new Error("La interpretación del base es obligatoria en una adenda del base");
+    const runDirectory = path.dirname(run.issuePath);
+    const attachmentsDirectory = path.join(runDirectory, "attachments");
+    mkdirSync(attachmentsDirectory, { recursive: true });
+    const copied = this.copyAttachments(attachmentsDirectory, input.attachments ?? []);
+    const timestamp = now();
+    const extension: RunExtension = {
+      ordinal: run.extensions.length + 1,
+      author: actor,
+      requirement: input.requirement.trim(),
+      interpretation: input.interpretation?.trim() || undefined,
+      scopeIncludes: input.scopeIncludes?.length ? input.scopeIncludes : undefined,
+      scopeExcludes: input.scopeExcludes?.length ? input.scopeExcludes : undefined,
+      acceptance: (input.acceptance ?? []).map((criterion) => ({ text: criterion.text, command: criterion.command || undefined, exercise: criterion.exercise || undefined })),
+      risks: input.risks?.length ? input.risks : undefined,
+      attachments: copied.map((attachment) => `attachments/${attachment.file}`),
+      createdAt: timestamp,
+    };
+    const known = new Set(run.acceptance.map((criterion) => criterion.text.trim()));
+    const duplicated = extension.acceptance.find((criterion) => known.has(criterion.text.trim()));
+    if (duplicated) throw new Error(`El criterio "${duplicated.text}" ya existe en el run`);
+    appendFileSync(run.issuePath, renderExtension(extension, copied));
+    const acceptance = [...run.acceptance, ...extension.acceptance];
+    const attachments = [...run.attachments, ...extension.attachments];
+    const extensions = [...run.extensions, extension];
+    const project = this.getProject(run.projectId)!;
+    this.writeRunJson(runDirectory, {
+      id: run.id, project: project.name, projectId: run.projectId, workspaceRoot: project.workspaceRoot, branch: run.branch, base: run.base, createdAt: run.createdAt,
+      continues: run.continues, title: run.title, attachments, acceptance, extensions,
+    });
+    this.database.transaction(() => {
+      this.database.prepare("UPDATE runs SET acceptance_json = ?, attachments_json = ?, extensions_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(acceptance), JSON.stringify(attachments), JSON.stringify(extensions), timestamp, runId);
+      this.database.prepare("UPDATE sessions SET vote = NULL, vote_detail = NULL, voted_at = NULL, requirement_reviewed = 0, integration_reviewed = 0 WHERE run_id = ? AND role = 'auditor'").run(runId);
+      if (run.status === "implemented") this.setRunStatus(runId, "open");
+    })();
+    this.addActivity(runId, "run", `Alcance ampliado por ${actor} (adenda ${extension.ordinal})`, extension.requirement, undefined, actor);
+    if (run.status === "implemented") this.addActivity(runId, "run", "Run reabierto: el alcance creció; los votos se anulan y el requerimiento se vuelve a auditar", undefined, undefined, actor);
+    return this.requireRun(runId);
   }
 
   listRuns(projectId: string): RunSummary[] {
@@ -1156,6 +1284,9 @@ export class HrpStore {
       issuePath: String(row.issue_path),
       attachments: JSON.parse(String(row.attachments_json ?? "[]")) as string[],
       acceptance: JSON.parse(String(row.acceptance_json ?? "[]")) as AcceptanceCriterion[],
+      continues: row.continues ? String(row.continues) : undefined,
+      continuedBy: (this.database.prepare("SELECT id FROM runs WHERE continues = ? ORDER BY created_at, id").all(id) as Row[]).map((child) => String(child.id)),
+      extensions: JSON.parse(String(row.extensions_json ?? "[]")) as RunExtension[],
       nodeCount: nodes.length,
       completedCount: nodes.filter((node) => node.status === "completed").length,
       runningCount: nodes.filter((node) => node.status === "running").length,

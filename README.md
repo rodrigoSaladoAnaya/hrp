@@ -6,7 +6,8 @@ verificación, commits en una rama del run—, otras sesiones (del mismo modelo 
 de otro) se enganchan y auditan mientras avanza, y el run cierra solo cuando la
 auditoría está completa. El humano inicia, engancha sesiones y monitorea.
 
-La mecánica completa está en [`docs/protocol.md`](docs/protocol.md).
+La mecánica completa está en [`docs/protocol.md`](docs/protocol.md); ejemplos
+de uso paso a paso en [`docs/ejemplos.md`](docs/ejemplos.md).
 
 ## Uso
 
@@ -53,6 +54,7 @@ Si vienes de v3, primero `./scripts/uninstall-v3.sh --apply`.
 | Ruta | Qué es |
 |---|---|
 | `docs/protocol.md` | Mecánica de v4: roles, ciclo del run, atención, estados, suelo común en `~/.hrp`. |
+| `docs/ejemplos.md` | Ejemplos básicos para el humano: iniciar, enganchar, monitorear, adenda, continuación. |
 | `src/shared/protocol.ts` | Contrato: tipos y la regla del gate (`computeAuditStatus`). |
 | `src/server` | Servicio local: store SQLite + git, resolutor de atención, HTTP/SSE, paquete de auditoría, runner. |
 | `src/mcp` | Servidor MCP por stdio con las herramientas `hrp_*`; es la vía normal de uso. |

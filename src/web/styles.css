@@ -993,3 +993,29 @@ button:focus-visible, select:focus-visible, .change-node:focus-visible {
   .inspector.inspector-collapsed { flex-direction: row; min-height: 48px; padding: 0 12px; }
   .inspector-rail-label { max-height: none; max-width: 70vw; writing-mode: horizontal-tb; }
 }
+
+/* Linaje y adendas: la historia de una implementación en el issue. */
+.issue-link { padding: 0; border: 0; background: transparent; color: #35443f; font: inherit; text-decoration: underline; cursor: pointer; }
+.issue-link:hover { color: #17201e; }
+.lineage-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.lineage-list li { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
+.lineage-list button { display: grid; gap: 2px; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 3px; background: transparent; text-align: left; font: inherit; cursor: pointer; }
+.lineage-list button:hover:not(:disabled) { border-color: #b5beb8; background: #fff; }
+.lineage-list button:disabled { cursor: default; }
+.lineage-list li.is-current button { border-color: #b5beb8; background: #fffdf5; }
+.lineage-list strong { color: #27332f; font-size: .8rem; }
+.lineage-list small { color: #5c6964; font-size: .68rem; font-variant-numeric: tabular-nums; }
+.issue-extension { border-style: dashed; background: #fdf8ea; }
+.issue-closed-note { margin: 0 0 16px; color: #53615c; font-size: .8rem; }
+.issue-extend-toggle { min-height: 36px; padding: 0 14px; border: 1px solid #8a6a1c; border-radius: 3px; color: #6d4d05; background: transparent; font-size: .8rem; font-weight: 750; cursor: pointer; }
+.issue-extend-toggle:hover { background: #f2d28b; color: #17201e; }
+.issue-extend-form { display: grid; gap: 8px; margin: 0 0 16px; padding: 12px 14px; border: 1px dashed #d9b98a; border-radius: 4px; background: #fdf8ea; }
+.issue-extend-form label { color: #35443f; font-size: .8rem; font-weight: 750; }
+.issue-extend-form textarea { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #b5beb8; border-radius: 3px; background: #fff; font: inherit; font-size: .84rem; line-height: 1.4; resize: vertical; }
+.issue-extend-actions { display: flex; gap: 8px; }
+.issue-extend-actions button { min-height: 36px; padding: 0 14px; border: 0; border-radius: 3px; color: #fff; background: #35443f; font-size: .8rem; font-weight: 750; cursor: pointer; }
+.issue-extend-actions button:disabled { color: #7b8782; background: #d8ddd8; cursor: not-allowed; }
+.issue-extend-actions .issue-extend-cancel { border: 1px solid #b5beb8; color: #35443f; background: transparent; }
+.issue-subsection { margin: 0 0 10px; }
+.issue-subsection:last-child { margin-bottom: 0; }
+.issue-subsection h4 { margin: 0 0 4px; color: #53615c; font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }

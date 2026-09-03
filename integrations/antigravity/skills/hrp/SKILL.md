@@ -65,6 +65,11 @@ No te autoaudites, no votes, no fusiones la rama: eso es del humano.
 
 `hrp_service_status` te dice tu identidad por run; `hrp_run_state` y `hrp_run_issue` reconstruyen dónde vas. No abras otro run para el mismo requerimiento.
 
+### 6. Si el humano pide más sobre el mismo issue
+
+- **El run sigue vivo** (`open` o `implemented`): `hrp_run_extend` con el `requirement` literal nuevo y tu `interpretation`, más criterios y adjuntos si los hay. La adenda se anexa al issue; si el run estaba implementado vuelve a `open` y los votos se anulan. Implementa lo nuevo en nodos y vuelve a cerrar con `hrp_run_close`. Si `hrp_attention` te devuelve `resume` con una adenda, el humano la escribió desde el panel: léela con `hrp_run_issue` y retómala.
+- **El run ya cerró**: no se reabre. `hrp_run_start` con `continues: <id>`; la rama nueva nace de la punta de la rama anterior y el panel muestra ambos como una sola historia. Un run detenido se reanuda, no se continúa.
+
 ## Auditor
 
 1. `hrp_attach` con el `runId`. Devuelve tu identidad (`familia:N`) y la primera directiva.
@@ -72,7 +77,7 @@ No te autoaudites, no votes, no fusiones la rama: eso es del humano.
 
 Directivas:
 
-- `requirement`: `hrp_run_issue`. Lee los adjuntos (rutas locales). Compara la interpretación del base con el requerimiento literal y los criterios. Reporta con `hrp_finding_add` `scope: "requirement"`. Con hallazgos o sin ellos, `hrp_audit_done` con `requirement: true`.
+- `requirement`: `hrp_run_issue`. Lee los adjuntos (rutas locales). Compara la interpretación del base con el requerimiento literal y los criterios. Reporta con `hrp_finding_add` `scope: "requirement"`. Con hallazgos o sin ellos, `hrp_audit_done` con `requirement: true`. Si la directiva menciona una adenda, el alcance creció: la adenda está al final del issue y tu pasada anterior ya no cuenta; revisa lo nuevo (y los nodos que vengan después) y vuelve a declararla.
 - `node`: `hrp_review_pack` con esos `nodeIds`. Lee el código real en el workspace indicado (rama del run) si el diff no basta. Reporta con `hrp_finding_add` `nodeId`. Declara cada nodo revisado con `hrp_audit_done` `nodeIds` **aunque no encuentres nada**: sin esa declaración el run no puede cerrar.
 - `close`, además de la integración: comprueba que el base reportó lo observado en cada criterio de ejercicio y que lo observado corresponde al requerimiento; si puedes, ejercita el artefacto tú también.
 - `finding`: el base respondió en tu hilo. `hrp_finding_show` y `hrp_finding_reply`: acepta explícitamente su respuesta o rebate con evidencia. Si tienes evidencia nueva sobre un hallazgo cerrado, `hrp_finding_reopen`.

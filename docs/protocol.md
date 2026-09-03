@@ -54,7 +54,8 @@ Herramientas MCP previstas (nombres provisionales; la lista definitiva sale de
 la implementación):
 
 - `hrp_service_start`, `hrp_service_status`
-- `hrp_run_start`, `hrp_run_state`, `hrp_run_close`
+- `hrp_run_start` (con `continues` para dar continuidad a un run cerrado),
+  `hrp_run_extend` (adenda a un run vivo), `hrp_run_state`, `hrp_run_close`
 - `hrp_attach`, `hrp_attention`, `hrp_release`
 - `hrp_node_open`, `hrp_node_complete`, `hrp_node_fail`
 - `hrp_finding_add`, `hrp_finding_reply`, `hrp_finding_accept`,
@@ -236,6 +237,36 @@ visible así en el panel, indefinidamente. Nunca se cierra solo.
 
 La fusión de la rama es un acto del humano, fuera del protocolo.
 
+### 7. Cuando el issue crece
+
+Es normal que un issue pida más de lo que decía al inicio. Hay dos casos y
+se tratan distinto, porque el cierre tiene que seguir significando lo mismo:
+los auditores votaron OK sobre un conjunto concreto de nodos.
+
+**Adenda (el run sigue vivo: `open` o `implemented`).** El base llama
+`hrp_run_extend` con el requerimiento literal nuevo y su interpretación; el
+humano puede hacerlo desde el panel con sólo el requerimiento. El servicio:
+
+- anexa la adenda al final de `issue.md` (el requerimiento original no se
+  toca) y suma los criterios de aceptación nuevos;
+- si el run estaba `implemented`, lo devuelve a `open`;
+- conserva las auditorías de nodos ya hechas (esos nodos no cambiaron), pero
+  anula los votos y la pasada de requerimiento de todos los auditores, que
+  reciben de nuevo la directiva `requirement` con la adenda señalada;
+- avisa al base con `resume` mientras no abra ningún nodo posterior a la
+  adenda.
+
+**Continuación (el run ya cerró).** Un run cerrado **no se reabre**: tocarlo
+haría que sus votos certificaran algo que nadie miró. Lo que sigue es otro run
+con `continues: <id>` en `hrp_run_start`. Su rama nace de la punta de la rama
+del run anterior (si ya no existe, del árbol actual) y su issue lleva una
+sección *Antecedente*. El panel muestra la cadena completa como la historia de
+una implementación; cada eslabón conserva su certificación. Un run que quedó
+"a medias" porque el alcance inicial era parcial no está a medias: es un run
+completo de un alcance parcial, y lo que falta es una continuación.
+
+Un run detenido no se continúa ni se amplía: se reanuda.
+
 ## Atención
 
 Directivas que puede recibir una sesión, en orden de prioridad:
@@ -257,6 +288,9 @@ ordenadas por prioridad.
 - **Run:** `open` (implementando), `hold`, `implemented` (cierre del base,
   pendiente de auditoría), `closed`. Control humano ortogonal: `active`,
   `paused`, `stopped`.
+  `closed` es terminal: un run cerrado se continúa con otro run
+  (`continues`), nunca se reabre. Un run vivo crece con adendas
+  (`extensions`), que reabren un `implemented` y anulan los votos.
 - **Nodo:** `running`, `completed`, `failed`. Desaparece `pending`: un nodo
   existe cuando el base lo abre.
 - **Hallazgo:** `open`, `debating`, `accepted`, `rejected`, `escalated`.

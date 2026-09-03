@@ -14,6 +14,8 @@ function run(id: string, createdAt: string): RunSummary {
     issuePath: "/tmp/issue.md",
     attachments: [],
     acceptance: [],
+    continuedBy: [],
+    extensions: [],
     nodeCount: 0,
     completedCount: 0,
     runningCount: 0,

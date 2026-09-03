@@ -127,9 +127,10 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
     inputSchema: { type: "object", properties: { workspace: str("Ruta del proyecto (por defecto, el directorio actual).") } } },
   { name: "hrp_service_status", description: "Estado del servicio HRP y las identidades de esta sesión.",
     inputSchema: { type: "object", properties: {} } },
-  { name: "hrp_run_start", description: "Inicia un run como modelo base: escribe el issue en ~/.hrp/runs/<id>/, copia adjuntos, crea la rama hrp/run-<id> y devuelve el comando de enganche (/hrp attention <id>), el comando del runner y la URL del panel. Responde al humano con esas tres cosas una sola vez y empieza a implementar.",
+  { name: "hrp_run_start", description: "Inicia un run como modelo base: escribe el issue en ~/.hrp/runs/<id>/, copia adjuntos, crea la rama hrp/run-<id> y devuelve el comando de enganche (/hrp attention <id>), el comando del runner y la URL del panel. Responde al humano con esas tres cosas una sola vez y empieza a implementar. Con continues, el run da continuidad a uno ya cerrado del mismo proyecto: su rama nace de la punta de la rama anterior y el panel los muestra como una sola historia.",
     inputSchema: { type: "object", required: ["title", "requirement", "interpretation", "acceptance"], properties: {
       workspace: str("Ruta del proyecto (por defecto, el directorio actual)."),
+      continues: str("Id del run cerrado al que este da continuidad (más trabajo sobre el mismo issue). Un run cerrado nunca se reabre."),
       title: str("Título corto del run."),
       requirement: str("Requerimiento LITERAL del humano, sin editar ni resumir."),
       interpretation: str("Qué entendiste que hay que hacer."),
@@ -151,6 +152,17 @@ export const hrpToolDefinitions: McpToolDefinition[] = [
     inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp } } },
   { name: "hrp_run_issue", description: "El issue del run (requerimiento literal, interpretación, alcance, criterios, riesgos, adjuntos) con las rutas de los adjuntos.",
     inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp } } },
+  { name: "hrp_run_extend", description: "Adenda: amplía el alcance de un run vivo (abierto o implementado) cuando el humano pide más sobre el mismo issue. Anexa el requerimiento literal nuevo al issue, suma criterios de aceptación, reabre un run implementado y anula los votos; las auditorías de nodos ya hechas siguen valiendo. Sólo el base. Un run cerrado no se amplía: se continúa con hrp_run_start (continues).",
+    inputSchema: { type: "object", required: ["runId", "requirement", "interpretation"], properties: {
+      runId: runIdProp, session: sessionProp,
+      requirement: str("Requerimiento LITERAL nuevo del humano, sin editar ni resumir."),
+      interpretation: str("Qué entendiste que hay que hacer además."),
+      scopeIncludes: strList("Qué entra ahora en el alcance."),
+      scopeExcludes: strList("Qué sigue fuera."),
+      acceptance: { type: "array", description: "Criterios de aceptación nuevos; se suman a los existentes (el run ya tiene su criterio de ejercicio).", items: { type: "object", required: ["text"], properties: { text: str("Criterio."), command: str("Comando que lo verifica (exit 0 = cumplido)."), exercise: bool("El criterio exige usar el artefacto de verdad.") } } },
+      risks: strList("Riesgos nuevos."),
+      attachments: { type: "array", description: "Imágenes o archivos que envió el humano con la adenda; se COPIAN al run.", items: { type: "object", required: ["path"], properties: { path: str("Ruta local del archivo."), note: str("Para qué sirve.") } } },
+    } } },
   { name: "hrp_run_close", description: "Cierre del base. Antes, ejercita el artefacto (ábrelo, úsalo, mira lo que hace) y reporta lo observado por cada criterio con exercise; sin ese reporte el cierre se rechaza. Después la máquina ejecuta los criterios con command; si pasan, el run queda implementado y se avisa a los auditores.",
     inputSchema: { type: "object", required: ["runId"], properties: { runId: runIdProp, session: sessionProp,
       exercised: { type: "array", description: "Lo que viste al ejercitar cada criterio de ejercicio.", items: { type: "object", required: ["text", "observed"], properties: { text: str("Texto exacto del criterio."), observed: str("Qué hiciste y qué observaste (pantalla, salida, comportamiento).") } } } } } },
@@ -213,6 +225,8 @@ function summarizeRun(detail: RunDetail): Record<string, unknown> {
   const { run } = detail;
   return {
     id: run.id, title: run.title, phase: run.phase, control: run.control, branch: run.branch, base: run.base,
+    continues: run.continues, continuedBy: run.continuedBy,
+    extensions: run.extensions.map((extension) => ({ ordinal: extension.ordinal, author: extension.author, createdAt: extension.createdAt, requirement: extension.requirement })),
     workspaceRoot: detail.project.workspaceRoot, issuePath: run.issuePath, attachments: run.attachments,
     nodes: detail.nodes.map((node) => ({ id: node.id, status: node.status, files: node.files, symbol: node.symbol, title: node.title, author: node.author, dependencies: node.dependencies, auditedBy: node.auditedBy, commit: node.commit?.slice(0, 10), failure: node.failure })),
     sessions: detail.sessions.map((session) => ({ id: session.id, role: session.role, status: session.status, reviewed: session.reviewedNodeIds, requirementReviewed: session.requirementReviewed, vote: session.vote })),
@@ -262,12 +276,13 @@ export async function executeHrpTool(client: HrpMcpClient, toolName: string, arg
         acceptance: Array.isArray(args.acceptance) ? args.acceptance : [],
         risks: optionalList(args, "risks"),
         attachments: Array.isArray(args.attachments) ? args.attachments : undefined,
+        continues: text(args, "continues", false) || undefined,
       };
       const started = await post<{ run: RunSummary; session: Session }>(`/api/projects/${encoded(project.id)}/runs`, { family: client.family, hostPids: ancestorPids(), input });
       client.identities.set(started.run.id, started.session.id);
       const url = panelUrl(client.baseUrl, project.id, started.run.id);
       return [
-        `Run ${started.run.id} abierto. Tu identidad en este run es ${started.session.id} (base). Rama: ${started.run.branch}.`,
+        `Run ${started.run.id} abierto${started.run.continues ? `; continúa el run ${started.run.continues}` : ""}. Tu identidad en este run es ${started.session.id} (base). Rama: ${started.run.branch}.`,
         "",
         "Dile al humano, una sola vez y tal cual:",
         `- Para enganchar otra sesión (Claude, Codex, Antigravity): ${attentionCommand(started.run.id)}`,
@@ -311,7 +326,7 @@ export async function executeHrpTool(client: HrpMcpClient, toolName: string, arg
       const { runs } = await client.request<{ runs: RunSummary[] }>("/api/runs");
       const { projects } = await client.request<{ projects: Array<{ id: string; workspaceRoot: string }> }>("/api/projects");
       const filtered = workspace ? runs.filter((run) => projects.find((project) => project.id === run.projectId)?.workspaceRoot === path.resolve(workspace)) : runs;
-      return filtered.map((run) => ({ id: run.id, title: run.title, phase: run.phase, control: run.control, workspaceRoot: projects.find((project) => project.id === run.projectId)?.workspaceRoot, sessions: run.attachedSessions, updatedAt: run.updatedAt }));
+      return filtered.map((run) => ({ id: run.id, title: run.title, phase: run.phase, control: run.control, continues: run.continues, workspaceRoot: projects.find((project) => project.id === run.projectId)?.workspaceRoot, sessions: run.attachedSessions, updatedAt: run.updatedAt }));
     }
 
     case "hrp_run_state":
@@ -326,6 +341,22 @@ export async function executeHrpTool(client: HrpMcpClient, toolName: string, arg
         detail.run.attachments.length ? `Adjuntos (rutas locales legibles por cualquier modelo):\n${detail.run.attachments.map((file) => `- ${path.join(directory, file)}`).join("\n")}` : "Sin adjuntos.",
         `Workspace: ${detail.project.workspaceRoot} · rama ${detail.run.branch}`,
       ].join("\n");
+    }
+
+    case "hrp_run_extend": {
+      const id = runId();
+      const run = await post<RunSummary>(`/api/runs/${encoded(id)}/extend`, {
+        actor: client.sessionFor(args, id),
+        requirement: text(args, "requirement"),
+        interpretation: text(args, "interpretation"),
+        scopeIncludes: optionalList(args, "scopeIncludes"),
+        scopeExcludes: optionalList(args, "scopeExcludes"),
+        acceptance: Array.isArray(args.acceptance) ? args.acceptance : undefined,
+        risks: optionalList(args, "risks"),
+        attachments: Array.isArray(args.attachments) ? args.attachments : undefined,
+      });
+      const latest = run.extensions[run.extensions.length - 1];
+      return `Adenda ${latest?.ordinal ?? run.extensions.length} anexada al issue de ${id}; el run está ${run.phase} con ${run.acceptance.length} criterios. Implementa lo nuevo en nodos (hrp_node_open) y, al terminar, hrp_run_close vuelve a ejercitar y correr todos los criterios; los auditores repetirán la pasada de requerimiento y el voto.`;
     }
 
     case "hrp_run_close": {

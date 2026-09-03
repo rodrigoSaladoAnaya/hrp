@@ -14,6 +14,8 @@ function run(index: number): RunSummary {
     issuePath: "/tmp/issue.md",
     attachments: [],
     acceptance: [],
+    continuedBy: [],
+    extensions: [],
     nodeCount: 1,
     completedCount: 1,
     runningCount: 0,

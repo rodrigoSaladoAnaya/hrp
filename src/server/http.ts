@@ -25,6 +25,18 @@ const runInput = z.object({
   acceptance: z.array(z.object({ text: z.string().trim().min(1), command: z.string().trim().min(1).optional(), exercise: z.boolean().optional() })).min(1),
   risks: z.array(z.string().trim().min(1)).optional(),
   attachments: z.array(z.object({ path: z.string().trim().min(1), note: z.string().trim().optional() })).optional(),
+  continues: z.string().trim().min(1).optional(),
+}).strict();
+
+const extensionInput = z.object({
+  actor,
+  requirement: z.string().trim().min(1),
+  interpretation: z.string().trim().optional(),
+  scopeIncludes: z.array(z.string().trim().min(1)).optional(),
+  scopeExcludes: z.array(z.string().trim().min(1)).optional(),
+  acceptance: z.array(z.object({ text: z.string().trim().min(1), command: z.string().trim().min(1).optional(), exercise: z.boolean().optional() })).optional(),
+  risks: z.array(z.string().trim().min(1)).optional(),
+  attachments: z.array(z.object({ path: z.string().trim().min(1), note: z.string().trim().optional() })).optional(),
 }).strict();
 
 const nodeInput = z.object({
@@ -191,6 +203,12 @@ export function createApp(store: HrpStore, options: { webRoot?: string } = {}) {
     const result = store.closeRun(request.params.runId, body.actor, body.exercised ?? []);
     broadcast(request.params.runId, "run-close");
     response.json(result);
+  }));
+  app.post("/api/runs/:runId/extend", handle((request, response) => {
+    const { actor: author, ...input } = parse(extensionInput, request.body);
+    const run = store.extendRun(request.params.runId, author, input);
+    broadcast(run.id, "run-extended");
+    response.json(run);
   }));
   app.post("/api/runs/:runId/activity", handle((request, response) => {
     const body = parse(z.object({

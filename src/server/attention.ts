@@ -1,4 +1,4 @@
-import { isLiveFinding, isUnresolvedAcceptance, runIsOnHold, type Finding, type RunDetail, type Session } from "../shared/protocol.js";
+import { isLiveFinding, isUnresolvedAcceptance, pendingExtensions, runIsOnHold, type Finding, type RunDetail, type Session } from "../shared/protocol.js";
 
 // Directivas que puede recibir una sesión, en orden de prioridad. Las cinco
 // primeras exigen acción; 'resume' recuerda al base que el run sigue abierto;
@@ -99,6 +99,11 @@ export function computeAttention(detail: RunDetail, sessionId: string): Attentio
       const audit = run.audit;
       return decide("wait", `Implementación cerrada; esperando auditoría. ${audit.blockers.length ? `Bloquea: ${audit.blockers.join("; ")}.` : ""} Sesiones enganchadas: ${list(run.attachedSessions)}.`);
     }
+    const addenda = pendingExtensions(run.extensions, detail.nodes);
+    if (addenda.length) {
+      const latest = addenda[addenda.length - 1];
+      return decide("resume", `El alcance de ${run.id} creció: adenda ${latest.ordinal} de ${latest.author}${addenda.length > 1 ? ` (y ${addenda.length - 1} más)` : ""}. Lee el issue con hrp_run_issue (la adenda está al final) y retoma ${where}: abre nodos con hrp_node_open, verifica y completa; al terminar, hrp_run_close vuelve a correr todos los criterios.`);
+    }
     return decide("resume", `El run ${run.id} sigue abierto ${where}. Si falta trabajo, abre el siguiente nodo con hrp_node_open; si terminaste, cierra con hrp_run_close (corre los criterios de aceptación). Si necesitas al humano, dilo y termina el turno.`);
   }
 
@@ -111,7 +116,9 @@ export function computeAttention(detail: RunDetail, sessionId: string): Attentio
     return decide("finding", `El base respondió en ${list(mine.map((finding) => finding.id))}. Lee el hilo con hrp_finding_show y contesta con hrp_finding_reply: rebate con evidencia o di explícitamente que aceptas la respuesta. Si el desacuerdo es genuino tras dos rondas, hrp_finding_escalate.`);
   }
   if (!session.requirementReviewed) {
-    return decide("requirement", `Audita el requerimiento de ${run.id} ${where}: lee el issue con hrp_run_issue (requerimiento literal, interpretación del base, alcance, criterios y adjuntos). Reporta desviaciones con hrp_finding_add scope=requirement y, con hallazgos o sin ellos, declara la pasada con hrp_audit_done requirement=true.`);
+    const latest = run.extensions[run.extensions.length - 1];
+    const grown = latest ? ` El alcance creció: la adenda ${latest.ordinal} (${latest.author}) está al final del issue; compárala con los nodos que vengan después de ella.` : "";
+    return decide("requirement", `Audita el requerimiento de ${run.id} ${where}: lee el issue con hrp_run_issue (requerimiento literal, interpretación del base, alcance, criterios y adjuntos).${grown} Reporta desviaciones con hrp_finding_add scope=requirement y, con hallazgos o sin ellos, declara la pasada con hrp_audit_done requirement=true.`);
   }
   const pendingNodes = detail.nodes.filter((node) => node.status === "completed" && node.author !== sessionId && !node.auditedBy.includes(sessionId));
   if (pendingNodes.length) {
